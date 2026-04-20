@@ -1,0 +1,198 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Jarvis Browser</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: Arial;
+      }
+
+      #nav {
+        padding: 5px;
+        background: #333;
+      }
+
+      #url {
+        width: 60%;
+        padding: 8px;
+      }
+
+      #layout {
+        display: flex;
+        height: 90vh;
+      }
+
+      #browser {
+        flex: 3;
+      }
+
+      #ai {
+        flex: 1;
+        background: #111;
+        color: #0f0;
+        display: flex;
+        flex-direction: column;
+      }
+
+      #cmd {
+        padding: 8px;
+        width: 100%;
+      }
+
+      #logs {
+        flex: 1;
+        overflow: auto;
+        font-size: 12px;
+      }
+
+      webview {
+        width: 100%;
+        height: 100%;
+      }
+    </style>
+  </head>
+
+  <body>
+    <!-- NAV -->
+    <div id="nav">
+      <button onclick="goBack()">⬅</button>
+      <button onclick="goForward()">➡</button>
+      <button onclick="reloadPage()">⟳</button>
+
+      <input id="url" value="https://example.com" />
+      <button onclick="navigate()">Go</button>
+    </div>
+
+    <!-- LAYOUT -->
+    <div id="layout">
+      <div id="browser"></div>
+
+      <div id="ai">
+        <form id="ai-form">
+          <input id="cmd" placeholder="Type command..." />
+        </form>
+        <div id="logs"></div>
+      </div>
+    </div>
+
+    <script>
+      // ✅ GLOBAL STATE
+      window.aiState = {
+        ready: false,
+        pendingCommand: null,
+      };
+
+      function formatURL(url) {
+        if (!url.startsWith("http")) {
+          return "https://" + url;
+        }
+        return url;
+      }
+
+      function renderBrowser() {
+        if (document.getElementById("webview")) return;
+
+        const webview = document.createElement("webview");
+
+        webview.id = "webview";
+        webview.src = formatURL(document.getElementById("url").value);
+
+        // ✅ DOM READY
+        webview.addEventListener("dom-ready", () => {
+          console.log("✅ Page loaded");
+
+          window.aiState.ready = true;
+
+          // 🚀 run pending AI command
+          if (window.aiState.pendingCommand) {
+            const cmd = window.aiState.pendingCommand;
+            window.aiState.pendingCommand = null;
+            runAI(cmd);
+          }
+        });
+
+        // ✅ URL SYNC
+        webview.addEventListener("did-navigate", (e) => {
+          document.getElementById("url").value = e.url;
+        });
+
+        webview.addEventListener("did-navigate-in-page", (e) => {
+          document.getElementById("url").value = e.url;
+        });
+
+        document.getElementById("browser").appendChild(webview);
+      }
+
+      function navigate() {
+        const webview = document.getElementById("webview");
+
+        if (!webview) {
+          renderBrowser();
+          return;
+        }
+
+        window.aiState.ready = false;
+
+        webview.loadURL(formatURL(document.getElementById("url").value));
+      }
+
+      function getWebview() {
+        return document.getElementById("webview");
+      }
+
+      // 🔙 BACK
+      function goBack() {
+        const webview = getWebview();
+
+        if (!webview) return log("❌ No webview");
+
+        if (webview.canGoBack()) {
+          window.aiState.ready = false;
+          webview.goBack();
+        } else {
+          log("⚠️ No back history");
+        }
+      }
+
+      // 🔜 FORWARD
+      function goForward() {
+        const webview = getWebview();
+
+        if (!webview) return log("❌ No webview");
+
+        if (webview.canGoForward()) {
+          window.aiState.ready = false;
+          webview.goForward();
+        } else {
+          log("⚠️ No forward history");
+        }
+      }
+
+      // 🔄 RELOAD
+      function reloadPage() {
+        const webview = getWebview();
+
+        if (!webview) return log("❌ No webview");
+
+        window.aiState.ready = false;
+        webview.reload();
+      }
+
+      function log(msg) {
+        const logs = document.getElementById("logs");
+        const div = document.createElement("div");
+        div.innerText = msg;
+        logs.appendChild(div);
+        logs.scrollTop = logs.scrollHeight;
+      }
+
+      // INIT
+      window.onload = () => {
+        renderBrowser();
+      };
+    </script>
+
+    <script src="ai.js"></script>
+  </body>
+</html>
