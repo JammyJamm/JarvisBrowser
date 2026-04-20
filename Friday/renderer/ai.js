@@ -11,7 +11,7 @@ form.addEventListener("submit", (e) => {
 });
 
 async function runAI(cmd) {
-  log("🧑 " + cmd);
+  log("Log " + cmd);
 
   const webview = document.getElementById("webview");
 
