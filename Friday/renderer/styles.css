@@ -10,6 +10,7 @@ body {
   font-weight: 500;
   font-size: 14px;
   background-color: #22282e;
+  color: #434c55;
 }
 .scroll-default {
   overflow-y: auto;
@@ -37,7 +38,7 @@ body {
   flex: 1;
   padding: 10px;
   background-color: #ffffff;
-  /* box-shadow: inset 2px 5px 36px -5px rgba(134, 110, 110, 0.25); */
+  border-left: 1px solid rgb(67 76 85 / 15%);
   display: flex;
   flex-direction: column-reverse;
 }
@@ -54,6 +55,7 @@ body {
   background: #ffffff;
   padding: 5px 15px;
   display: flex;
+  border-bottom: 1px solid rgb(67 76 85 / 15%);
 }
 .newtab {
   display: flex;
@@ -67,7 +69,8 @@ body {
   color: #fff;
 }
 #logs {
-  color: #b6c0ca;
+  height: 100%;
+  /* color: #b6c0ca; */
   font-size: small;
   font-weight: 400;
 }
@@ -121,6 +124,9 @@ button {
   padding: 10px 6px;
   margin-right: 5px;
   min-width: 36px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
 }
 button:hover {
   background-color: #ff6c2f;
@@ -144,6 +150,65 @@ button:hover {
 .urlBlock input {
   text-indent: 20px;
 }
+.statusBlock {
+  display: flex;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.statusBlock img {
+  width: 20px;
+  margin-right: 10px;
+}
+.statusBlock p {
+  font-size: 12px;
+}
+#myPayload {
+  display: flex;
+  flex-direction: row-reverse;
+}
+#myPayload span {
+  background-color: rgb(67 76 85 / 5%);
+  color: #434c55;
+  padding: 10px;
+  border-radius: 6px;
+}
+#logs {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 10px;
+  overflow-y: auto;
+}
+
+.msg-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.user-msg {
+  align-self: flex-end;
+  background-color: rgb(67 76 85 / 5%);
+  color: #434c55;
+  padding: 8px 12px;
+  border-radius: 10px;
+  max-width: 75%;
+}
+
+.ai-msg {
+  align-self: flex-start;
+  padding: 8px 12px;
+  border-radius: 10px;
+  white-space: pre-wrap;
+}
+/* @keyframes myPayload {
+  from {
+    top: 86%;
+  }
+  to {
+    top: auto;
+  }
+} */
 
 webview {
   width: 100%;

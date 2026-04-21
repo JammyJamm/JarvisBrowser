@@ -1,6 +1,9 @@
 const form = document.getElementById("ai-form");
 const input = document.getElementById("cmd");
 
+let currentBlock = null;
+
+// FORM SUBMIT
 form.addEventListener("submit", (e) => {
   e.preventDefault();
 
@@ -11,16 +14,15 @@ form.addEventListener("submit", (e) => {
   input.value = "";
 });
 
-// INTENT DETECTION
-
+// 🧠 INTENT DETECTION
 function isActionCommand(cmd) {
   const keywords = ["click", "open", "press", "select", "go", "scroll"];
   return keywords.some((k) => cmd.toLowerCase().includes(k));
 }
-// MAIN ROUTER
 
+// 🚀 MAIN ROUTER
 async function runAI(cmd) {
-  // log(cmd);
+  createMessageBlock(cmd); // ✅ create block
 
   if (isActionCommand(cmd)) {
     return handleAction(cmd);
@@ -29,16 +31,13 @@ async function runAI(cmd) {
   }
 }
 
-// FRONTEND → OLLAMA (NO BACKEND)
-
+// 💬 FRONTEND → OLLAMA
 async function handleChatDirect(cmd) {
-  log(" Thinking...");
+  logResp("🤖 Thinking...\n");
 
   const res = await fetch("http://localhost:11434/api/generate", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "qwen3",
       prompt: cmd,
@@ -54,23 +53,20 @@ async function handleChatDirect(cmd) {
     if (done) break;
 
     const chunk = decoder.decode(value);
-
-    // Ollama sends JSON per line
     const lines = chunk.split("\n").filter(Boolean);
 
     for (const line of lines) {
       try {
         const json = JSON.parse(line);
         if (json.response) {
-          log(json.response);
+          logResp(json.response); // stream inside block
         }
       } catch {}
     }
   }
 }
 
-// ACTION → BACKEND
-
+// ⚡ ACTION → BACKEND
 async function handleAction(cmd) {
   const webview = document.getElementById("webview");
 
@@ -95,8 +91,7 @@ async function handleAction(cmd) {
   await handleActionStream(res);
 }
 
-// STREAM HANDLER (ACTION)
-
+// 🔁 STREAM HANDLER
 async function handleActionStream(res) {
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -124,7 +119,7 @@ async function handleActionStream(res) {
 
         if (json.response) {
           fullText += json.response;
-          log("🧠 " + json.response);
+          logResp("🧠 " + json.response);
         }
       } catch {}
     }
@@ -133,15 +128,14 @@ async function handleActionStream(res) {
   const action = extractJSON(fullText);
 
   if (action) {
-    log("⚡ ACTION: " + JSON.stringify(action, null, 2));
+    logResp("\n⚡ ACTION: " + JSON.stringify(action, null, 2));
     executeAI(action);
   } else {
-    log("❌ No valid action found");
+    logResp("\n❌ No valid action found");
   }
 }
 
-//JSON EXTRACT
-
+// 🧠 JSON EXTRACT
 function extractJSON(text) {
   try {
     const match = text.match(/\{[\s\S]*?\}/g);
@@ -159,13 +153,12 @@ function extractJSON(text) {
   }
 }
 
-// EXECUTION
-
+// ⚡ EXECUTION
 function executeAI(action) {
   const webview = document.getElementById("webview");
 
   if (!action || action.action !== "click") {
-    log("❌ Invalid action format");
+    logResp("\n❌ Invalid action format");
     return;
   }
 
@@ -189,18 +182,39 @@ function executeAI(action) {
 
   webview
     .executeJavaScript(script)
-    .then((r) => log("⚡ " + r))
-    .catch((e) => log("❌ " + e.message));
+    .then((r) => logResp("\n⚡ " + r))
+    .catch((e) => logResp("\n❌ " + e.message));
 }
 
-// LOGGER
-
-function log(msg) {
+// 🎨 CREATE MESSAGE BLOCK
+function createMessageBlock(payload) {
   const logs = document.getElementById("logs");
 
-  const div = document.createElement("div");
-  div.innerText = msg;
+  const block = document.createElement("div");
+  block.classList.add("msg-block");
 
-  logs.appendChild(div);
+  const user = document.createElement("div");
+  user.classList.add("user-msg");
+  user.innerText = payload;
+
+  const ai = document.createElement("div");
+  ai.classList.add("ai-msg");
+
+  block.appendChild(user);
+  block.appendChild(ai);
+
+  logs.appendChild(block);
   logs.scrollTop = logs.scrollHeight;
+
+  currentBlock = ai; // ✅ attach AI output here
+}
+
+// 🧾 RESPONSE LOGGER (ONLY THIS NOW)
+function logResp(msg) {
+  if (!currentBlock) return;
+
+  const span = document.createElement("span");
+  span.innerText = msg;
+
+  currentBlock.appendChild(span);
 }
