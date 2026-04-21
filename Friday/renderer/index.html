@@ -2,66 +2,29 @@
 <html>
   <head>
     <title>Jarvis Browser</title>
-    <style>
-      body {
-        margin: 0;
-        font-family: Arial;
-      }
-
-      #nav {
-        padding: 5px;
-        background: #333;
-      }
-
-      #url {
-        width: 60%;
-        padding: 8px;
-      }
-
-      #layout {
-        display: flex;
-        height: 90vh;
-      }
-
-      #browser {
-        flex: 3;
-      }
-
-      #ai {
-        flex: 1;
-        background: #111;
-        color: #0f0;
-        display: flex;
-        flex-direction: column;
-      }
-
-      #cmd {
-        padding: 8px;
-        width: 100%;
-      }
-
-      #logs {
-        flex: 1;
-        overflow: auto;
-        font-size: 12px;
-      }
-
-      webview {
-        width: 100%;
-        height: 100%;
-      }
-    </style>
+    <link rel="stylesheet" href="styles.css" />
   </head>
 
   <body>
     <!-- NAV -->
     <div id="nav">
-      <button onclick="goBack()">⬅</button>
-      <button onclick="goForward()">➡</button>
-      <button onclick="reloadPage()">⟳</button>
+      <button onclick="goBack()">
+        <img class="icon" src="./icon/chevron-left.svg" alt="leftNav-Icon" />
+      </button>
+      <button onclick="goForward()">
+        <img class="icon" src="./icon/chevron-right.svg" alt="rightNav-Icon" />
+      </button>
+      <button onclick="reloadPage()">
+        <img class="icon" src="./icon/refresh-cw.svg" alt="refreshNav-Icon" />
+      </button>
+      <div class="urlBlock">
+        <img src="./icon/logo.svg" alt="refreshNav-Icon" />
+        <input id="url" value="https://example.com" />
+      </div>
 
-      <input id="url" value="https://example.com" />
-      <button onclick="navigate()">Go</button>
+      <button onclick="navigate()">
+        <img class="icon" src="./icon/send.svg" alt="sendNav-Icon" />
+      </button>
     </div>
 
     <!-- LAYOUT -->
