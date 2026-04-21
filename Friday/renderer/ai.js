@@ -2,6 +2,8 @@ const form = document.getElementById("ai-form");
 const input = document.getElementById("cmd");
 
 let currentBlock = null;
+let currentTextNode = null;
+let isFirstChunk = true;
 
 // FORM SUBMIT
 form.addEventListener("submit", (e) => {
@@ -22,7 +24,8 @@ function isActionCommand(cmd) {
 
 // 🚀 MAIN ROUTER
 async function runAI(cmd) {
-  createMessageBlock(cmd); // ✅ create block
+  startShimmer();
+  createMessageBlock(cmd); // create UI block first
 
   if (isActionCommand(cmd)) {
     return handleAction(cmd);
@@ -33,8 +36,6 @@ async function runAI(cmd) {
 
 // 💬 FRONTEND → OLLAMA
 async function handleChatDirect(cmd) {
-  logResp("🤖 Thinking...\n");
-
   const res = await fetch("http://localhost:11434/api/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -50,7 +51,10 @@ async function handleChatDirect(cmd) {
 
   while (true) {
     const { done, value } = await reader.read();
-    if (done) break;
+    if (done) {
+      stopShimmer(); // ✅ STOP after action
+      break;
+    }
 
     const chunk = decoder.decode(value);
     const lines = chunk.split("\n").filter(Boolean);
@@ -58,8 +62,10 @@ async function handleChatDirect(cmd) {
     for (const line of lines) {
       try {
         const json = JSON.parse(line);
-        if (json.response) {
-          logResp(json.response); // stream inside block
+
+        // ✅ ignore empty chunks
+        if (json.response && json.response.trim() !== "") {
+          logResp(json.response);
         }
       } catch {}
     }
@@ -91,7 +97,7 @@ async function handleAction(cmd) {
   await handleActionStream(res);
 }
 
-// 🔁 STREAM HANDLER
+// 🔁 STREAM HANDLER (ACTION)
 async function handleActionStream(res) {
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
@@ -101,7 +107,10 @@ async function handleActionStream(res) {
 
   while (true) {
     const { done, value } = await reader.read();
-    if (done) break;
+    if (done) {
+      stopShimmer(); // ✅ STOP after action
+      break;
+    }
 
     buffer += decoder.decode(value, { stream: true });
 
@@ -119,7 +128,7 @@ async function handleActionStream(res) {
 
         if (json.response) {
           fullText += json.response;
-          logResp("🧠 " + json.response);
+          logResp(json.response);
         }
       } catch {}
     }
@@ -200,21 +209,41 @@ function createMessageBlock(payload) {
   const ai = document.createElement("div");
   ai.classList.add("ai-msg");
 
+  // ✅ ONE node only
+  const span = document.createElement("span");
+  span.innerText = "Thinking...";
+
+  ai.appendChild(span);
+
   block.appendChild(user);
   block.appendChild(ai);
 
   logs.appendChild(block);
   logs.scrollTop = logs.scrollHeight;
 
-  currentBlock = ai; // ✅ attach AI output here
+  currentBlock = ai;
+  currentTextNode = span;
+  isFirstChunk = true;
 }
 
-// 🧾 RESPONSE LOGGER (ONLY THIS NOW)
+// 🧾 STREAM LOGGER (FINAL FIX)
 function logResp(msg) {
-  if (!currentBlock) return;
+  if (!currentTextNode) return;
 
-  const span = document.createElement("span");
-  span.innerText = msg;
+  if (!msg || msg.trim() === "") return;
 
-  currentBlock.appendChild(span);
+  // ✅ first chunk replaces thinking
+  if (isFirstChunk) {
+    currentTextNode.innerText = msg;
+    isFirstChunk = false;
+  } else {
+    currentTextNode.innerText += msg;
+  }
+}
+function startShimmer() {
+  document.querySelector(".animation").classList.add("active");
+}
+
+function stopShimmer() {
+  document.querySelector(".animation").classList.remove("active");
 }
