@@ -39,6 +39,7 @@ body {
 }
 #browser {
   flex: 3;
+  position: relative;
 }
 #ai {
   flex: 1;
@@ -204,15 +205,18 @@ button:hover {
   animation: slideUp 0.3s ease;
 }
 .animation {
+  width: 100%;
+  height: 100%;
   display: none;
+  position: absolute;
 }
 .animation.active {
   display: block;
 }
 
 .animationLayer {
-  width: 100vh;
-  height: 100vh;
+  width: 100%;
+  height: 100%;
   position: absolute;
 
   background:
@@ -232,8 +236,8 @@ button:hover {
   animation: shimmerMove 6s linear infinite;
 }
 .animationLayerColor {
-  width: 100vh;
-  height: 100vh;
+  width: 100%;
+  height: 100%;
   position: absolute;
   pointer-events: none;
 
