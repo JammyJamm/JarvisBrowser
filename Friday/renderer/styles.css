@@ -209,6 +209,11 @@ button:hover {
   height: 100%;
   display: none;
   position: absolute;
+  overflow: hidden;
+  /* Removeable code  */
+  /* display: block; */
+  pointer-events: none;
+  /* Removeable code  */
 }
 .animation.active {
   display: block;
@@ -220,7 +225,7 @@ button:hover {
   position: absolute;
 
   background:
-    radial-gradient(circle, rgba(255, 255, 255, 0.1), rgba(255, 108, 47, 0.7)),
+    radial-gradient(circle, rgba(255, 255, 255, 0.1), rgba(2, 255, 255, 0.7)),
     url("./icon/circledot.svg");
 
   background-size:
@@ -244,11 +249,18 @@ button:hover {
   background: radial-gradient(
     circle at center,
     rgba(255, 255, 255, 0.08),
-    rgba(255, 108, 47, 0.15),
+    rgba(2, 255, 255, 0.15),
     transparent 70%
   );
 
   animation: pulseGlow 4s ease-in-out infinite;
+  /* Removeable code  */
+  background: radial-gradient(
+    circle at center,
+    rgba(255, 255, 255, 1.08),
+    rgba(2, 255, 255, 1.15),
+    transparent 100%
+  ); /* Removeable code  */
 }
 
 @keyframes pulseGlow {
