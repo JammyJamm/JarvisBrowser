@@ -1,75 +1,141 @@
 const express = require("express");
 const cors = require("cors");
+const { chromium } = require("playwright");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.post("/ai", async (req, res) => {
-  const { command, page } = req.body;
+let browser;
+let page;
 
-  // 🧠 STRONG PROMPT (VERY IMPORTANT)
-  const prompt = `
-You are a browser AI.
-
-User command: "${command}"
-
-Available buttons:
-${page.buttons.map((b, i) => `${i}: ${b.text}`).join("\n")}
-
-Return ONLY JSON.
-No explanation.
-
-Format:
-{
-  "action": "click",
-  "index": number
-}
-`;
-
-  const ollamaRes = await fetch("http://localhost:11434/api/generate", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "qwen3",
-      prompt,
-      stream: true,
-    }),
+(async () => {
+  browser = await chromium.launch({
+    headless: false,
   });
 
-  // ✅ SSE HEADERS
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
+  const context = await browser.newContext();
+  page = await context.newPage();
 
-  const reader = ollamaRes.body.getReader();
-  const decoder = new TextDecoder();
+  await page.goto("https://example.com");
+})();
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+// =========================
+// MIRROR STATE
+// =========================
+app.get("/state", async (req, res) => {
+  res.json({
+    url: page.url(),
+  });
+});
 
-    const chunk = decoder.decode(value);
-    const lines = chunk.split("\n").filter(Boolean);
+// =========================
+// NAVIGATION
+// =========================
+app.post("/navigate", async (req, res) => {
+  const { url } = req.body;
 
-    for (const line of lines) {
-      try {
-        const json = JSON.parse(line);
+  await page.goto(url);
 
-        if (json.response) {
-          // ✅ SEND SSE FORMAT
-          res.write(`data: ${JSON.stringify({ response: json.response })}\n\n`);
-        }
-      } catch {}
+  res.json({
+    success: true,
+    url: page.url(),
+  });
+});
+
+// =========================
+// AI ACTION
+// =========================
+app.post("/ai", async (req, res) => {
+  try {
+    const { command } = req.body;
+    const cmd = command.toLowerCase();
+
+    const buttons = await page.$$eval("button,a,[role='button']", (els) =>
+      els.map((b, i) => ({
+        text: (b.innerText || "").trim(),
+        index: i,
+      })),
+    );
+
+    let match = buttons.find((b) => cmd.includes(b.text.toLowerCase()));
+
+    if (!match) {
+      match = buttons.find((b) =>
+        b.text.toLowerCase().includes(cmd.replace("click ", "").trim()),
+      );
     }
-  }
 
-  res.write(`data: [DONE]\n\n`);
-  res.end();
+    // -------------------------
+    // LLM fallback
+    // -------------------------
+    if (!match) {
+      const prompt = `
+Pick best button.
+
+Command: "${command}"
+
+Buttons:
+${buttons.map((b) => `${b.index}: ${b.text}`).join("\n")}
+
+Return ONLY JSON:
+{"index":number}
+`;
+
+      const ollamaRes = await fetch("http://localhost:11434/api/generate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "qwen3:0.6b",
+          prompt,
+          stream: false,
+        }),
+      });
+
+      const json = await ollamaRes.json();
+
+      const clean = json.response.match(/\{[\s\S]*\}/);
+
+      if (clean) {
+        const parsed = JSON.parse(clean[0]);
+        match = buttons[parsed.index];
+      }
+    }
+
+    if (!match) {
+      return res.json({
+        success: false,
+        error: "No match found",
+      });
+    }
+
+    const els = await page.$$("button,a,[role='button']");
+
+    await els[match.index].click();
+
+    await page
+      .waitForLoadState("networkidle", {
+        timeout: 5000,
+      })
+      .catch(() => {});
+
+    res.json({
+      success: true,
+      url: page.url(),
+      action: match,
+    });
+  } catch (err) {
+    console.error("AI ERROR:", err);
+
+    res.status(500).json({
+      success: false,
+      error: err.message,
+    });
+  }
 });
 
 app.listen(3001, () => {
-  console.log("🚀 AI Server running on http://localhost:3001");
+  console.log("AI server running :3001");
 });

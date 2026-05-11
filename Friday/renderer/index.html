@@ -96,17 +96,18 @@
         document.getElementById("browser").appendChild(webview);
       }
 
-      function navigate() {
-        const webview = document.getElementById("webview");
+      async function navigate() {
+        const url = formatURL(document.getElementById("url").value);
 
-        if (!webview) {
-          renderBrowser();
-          return;
-        }
+        await fetch("http://localhost:3001/navigate", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ url }),
+        });
 
-        window.aiState.ready = false;
-
-        webview.loadURL(formatURL(document.getElementById("url").value));
+        document.getElementById("webview").loadURL(url);
       }
 
       function getWebview() {

@@ -12,7 +12,8 @@
     "electron": "^30.0.0",
     "express": "^4.22.1",
     "node-fetch": "^2.7.0",
-    "openai": "^6.32.0"
+    "openai": "^6.32.0",
+    "playwright": "^1.59.1"
   },
   "devDependencies": {
     "concurrently": "^8.0.0"
