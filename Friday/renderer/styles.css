@@ -210,10 +210,6 @@ button:hover {
   display: none;
   position: absolute;
   overflow: hidden;
-  /* Removeable code  */
-  /* display: block; */
-  pointer-events: none;
-  /* Removeable code  */
 }
 .animation.active {
   display: block;
@@ -254,13 +250,6 @@ button:hover {
   );
 
   animation: pulseGlow 4s ease-in-out infinite;
-  /* Removeable code  */
-  background: radial-gradient(
-    circle at center,
-    rgba(255, 255, 255, 1.08),
-    rgba(2, 255, 255, 1.15),
-    transparent 100%
-  ); /* Removeable code  */
 }
 
 @keyframes pulseGlow {

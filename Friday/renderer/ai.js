@@ -1,9 +1,11 @@
 const form = document.getElementById("ai-form");
-
 const input = document.getElementById("cmd");
 
-// ENTER = submit
-// SHIFT+ENTER = new line
+let currentTextNode;
+
+// ==========================
+// ENTER SUBMIT
+// ==========================
 input.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
@@ -11,86 +13,100 @@ input.addEventListener("keydown", (e) => {
   }
 });
 
-let currentTextNode;
-
+// ==========================
+// SUBMIT
+// ==========================
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
 
   const cmd = input.value.trim();
-
   if (!cmd) return;
 
   createMessageBlock(cmd);
-
   startShimmer();
 
-  await handleAction(cmd);
-
-  stopShimmer();
-
-  input.value = "";
-});
-
-async function mirror(url) {
-  const webview = document.getElementById("webview");
-
-  return new Promise((resolve) => {
-    webview.addEventListener("dom-ready", resolve, { once: true });
-
-    webview.loadURL(url);
-  });
-}
-
-async function handleAction(cmd) {
-  const res = await fetch("http://localhost:3001/ai", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      command: cmd,
-    }),
-  });
-
-  const data = await res.json();
-
-  if (!data.success) {
-    logResp(data.error);
-    return;
-  }
-
-  if (data.mode === "single") {
-    logResp(JSON.stringify(data.action));
-
-    await mirror(data.url);
-
-    return;
-  }
-
-  for (const step of data.steps) {
-    logResp(step);
-
-    const r = await fetch("http://localhost:3001/step", {
+  try {
+    const res = await fetch("http://localhost:3001/ai", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        instruction: step,
+        command: cmd,
       }),
     });
 
-    const d = await r.json();
+    const data = await res.json();
 
-    if (!d.success) {
-      logResp(d.error);
+    if (!data.success) {
+      logResp(data.error || "Planner failed");
+      stopShimmer();
       return;
     }
 
-    await mirror(d.url);
+    // unified execution
+    for (const step of data.steps) {
+      await runStep(step);
+    }
+
+    input.value = "";
+  } catch (err) {
+    logResp(err.message);
+  }
+
+  stopShimmer();
+});
+
+// ==========================
+// RUN STEP
+// ==========================
+async function runStep(step) {
+  logResp("STEP:\n" + JSON.stringify(step, null, 2));
+
+  const r = await fetch("http://localhost:3001/step", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(step),
+  });
+
+  const d = await r.json();
+
+  if (!d.success) {
+    logResp("ERROR:\n" + d.error);
+    throw new Error(d.error);
+  }
+
+  await mirror(d.url);
+
+  if (d.content) {
+    logResp("READ:\n\n" + d.content);
   }
 }
 
+// ==========================
+// MIRROR PLAYWRIGHT → WEBVIEW
+// ==========================
+async function mirror(url) {
+  const webview = document.getElementById("webview");
+
+  return new Promise((resolve) => {
+    const done = () => {
+      webview.removeEventListener("dom-ready", done);
+
+      resolve();
+    };
+
+    webview.addEventListener("dom-ready", done);
+
+    webview.loadURL(url);
+  });
+}
+
+// ==========================
+// UI BLOCK
+// ==========================
 function createMessageBlock(payload) {
   const logs = document.getElementById("logs");
 
@@ -101,6 +117,7 @@ function createMessageBlock(payload) {
   const user = document.createElement("div");
 
   user.classList.add("user-msg");
+
   user.innerText = payload;
 
   const ai = document.createElement("div");
@@ -118,13 +135,23 @@ function createMessageBlock(payload) {
 
   logs.appendChild(block);
 
+  logs.scrollTop = logs.scrollHeight;
+
   currentTextNode = span;
 }
 
+// ==========================
+// LOG
+// ==========================
 function logResp(msg) {
+  if (!currentTextNode) return;
+
   currentTextNode.innerText = msg;
 }
 
+// ==========================
+// SHIMMER
+// ==========================
 function startShimmer() {
   document.querySelector(".animation").classList.add("active");
 }

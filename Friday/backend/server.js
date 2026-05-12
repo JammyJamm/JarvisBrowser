@@ -1,85 +1,27 @@
 const express = require("express");
 const cors = require("cors");
 const { chromium } = require("playwright");
+const MCP = require("./mcp");
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
 
-let browser;
-let page;
+let browser, page;
 
-(async () => {
-  browser = await chromium.launch({ headless: false });
-  const context = await browser.newContext();
-  page = await context.newPage();
-  await page.goto("https://example.com");
-})();
+// =====================
+// INIT
+// =====================
+app.post("/init", async (req, res) => {
+  if (!browser) {
+    browser = await chromium.launch({ headless: false });
 
-async function settle() {
-  await page.waitForLoadState("domcontentloaded").catch(() => {});
-}
+    const context = await browser.newContext();
+    page = await context.newPage();
+  }
 
-async function smartWait(oldUrl) {
-  try {
-    await page.waitForURL((u) => u.toString() !== oldUrl, {
-      timeout: 2500,
-    });
-
-    await settle();
-    return;
-  } catch {}
-
-  await page.waitForTimeout(400);
-}
-
-async function getDOM() {
-  await settle();
-
-  return page.evaluate(() => ({
-    buttons: [
-      ...document.querySelectorAll(
-        "button,a,[role='button'],input[type='submit']",
-      ),
-    ].map((b, i) => ({
-      text: (b.innerText || b.value || "").trim(),
-      index: i,
-    })),
-
-    inputs: [...document.querySelectorAll("input")].map((i, idx) => ({
-      type: i.type || "",
-      placeholder: i.placeholder || "",
-      name: i.name || "",
-      index: idx,
-    })),
-  }));
-}
-
-async function clickIndex(index) {
-  const oldUrl = page.url();
-
-  const els = await page.$$("button,a,[role='button'],input[type='submit']");
-
-  if (!els[index]) throw new Error("Button not found");
-
-  await els[index].click();
-
-  await smartWait(oldUrl);
-}
-
-async function typeIndex(index, value) {
-  const els = await page.$$("input");
-
-  if (!els[index]) throw new Error("Input not found");
-
-  await els[index].fill(value);
-}
-
-app.post("/navigate", async (req, res) => {
   await page.goto(req.body.url);
-
-  await settle();
 
   res.json({
     success: true,
@@ -87,50 +29,156 @@ app.post("/navigate", async (req, res) => {
   });
 });
 
-async function executeSingle(command) {
-  const dom = await getDOM();
+// =====================
+// SAFE PARSE
+// =====================
+function safeParse(raw) {
+  raw = raw
+    .replace(/```json/g, "")
+    .replace(/```/g, "")
+    .trim();
 
-  const btn = dom.buttons.find((b) =>
-    command.toLowerCase().includes(b.text.toLowerCase()),
-  );
+  const match = raw.match(/\[[\s\S]*\]/);
 
-  if (!btn) throw new Error("No button found");
+  if (!match) throw new Error("Planner parse failed");
 
-  await clickIndex(btn.index);
-
-  return {
-    action: btn,
-    url: page.url(),
-  };
+  return JSON.parse(match[0]);
 }
 
-function makePlan(command) {
-  return command
+// =====================
+// DOM
+// =====================
+async function getDOM() {
+  return page.evaluate(() => ({
+    buttons: [
+      ...document.querySelectorAll(
+        "button,a,[role='button'],input[type='submit']",
+      ),
+    ].map((b) => ({
+      text: (b.innerText || b.value || "").trim(),
+    })),
+
+    inputs: [...document.querySelectorAll("input")].map((i) => ({
+      placeholder: i.placeholder || "",
+      name: i.name || "",
+      type: i.type || "",
+    })),
+
+    text: document.body.innerText.slice(0, 3000),
+  }));
+}
+
+// =====================
+// FAST REGEX PLANNER
+// =====================
+function regexPlan(command) {
+  const steps = [];
+
+  const parts = command
     .split(/\d+\)/)
     .map((x) => x.trim())
     .filter(Boolean);
+
+  for (const p of parts) {
+    const lower = p.toLowerCase();
+
+    if (lower.startsWith("click")) {
+      steps.push({
+        tool: "click",
+        args: {
+          text: p.replace(/click/i, "").trim(),
+        },
+      });
+    } else if (lower.startsWith("type")) {
+      const m = p.match(/type\s+(.+?)\s+as\s+(.+)/i);
+
+      if (m) {
+        steps.push({
+          tool: "type",
+          args: {
+            field: m[1],
+            value: m[2],
+          },
+        });
+      }
+    } else if (lower.startsWith("read") || lower.startsWith("get")) {
+      const m = p.match(/"(.*?)"/) || p.match(/read\s+(.+?)\s+passage/i);
+
+      if (m) {
+        steps.push({
+          tool: "read",
+          args: {
+            title: m[1],
+          },
+        });
+      }
+    }
+  }
+
+  return steps.length ? steps : null;
 }
 
+// =====================
+// QWEN FALLBACK
+// =====================
+async function qwenPlan(command) {
+  const dom = await getDOM();
+
+  const prompt = `
+Return ONLY JSON array.
+
+Schema:
+[
+ {"tool":"click","args":{"text":"..."}},
+ {"tool":"type","args":{"field":"...","value":"..."}},
+ {"tool":"read","args":{"title":"..."}}
+]
+
+DOM:
+${JSON.stringify(dom, null, 2)}
+
+Command:
+${command}
+`;
+
+  const r = await fetch("http://localhost:11434/api/generate", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "qwen3:latest",
+      prompt,
+      stream: false,
+      options: {
+        temperature: 0,
+        top_p: 0.1,
+      },
+    }),
+  });
+
+  const json = await r.json();
+
+  return safeParse(json.response);
+}
+
+// =====================
+// PLAN
+// =====================
+async function plan(command) {
+  return regexPlan(command) || (await qwenPlan(command));
+}
+
+// =====================
+// AI
+// =====================
 app.post("/ai", async (req, res) => {
   try {
-    const { command } = req.body;
-
-    const isPlan = command.includes("\n") || command.includes("1)");
-
-    if (!isPlan) {
-      const result = await executeSingle(command);
-
-      return res.json({
-        success: true,
-        mode: "single",
-        ...result,
-      });
-    }
+    const steps = await plan(req.body.command);
 
     res.json({
       success: true,
-      mode: "plan",
-      steps: makePlan(command),
+      steps,
     });
   } catch (err) {
     res.status(500).json({
@@ -140,46 +188,22 @@ app.post("/ai", async (req, res) => {
   }
 });
 
+// =====================
+// STEP
+// =====================
 app.post("/step", async (req, res) => {
   try {
-    const { instruction } = req.body;
+    const result = await MCP.execute({ page }, req.body.tool, req.body.args);
 
-    const dom = await getDOM();
+    await page
+      .waitForLoadState("networkidle", { timeout: 2500 })
+      .catch(() => {});
 
-    const lower = instruction.toLowerCase();
-
-    if (lower.includes("click")) {
-      const txt = lower.replace("click", "").trim();
-
-      const btn = dom.buttons.find((b) => b.text.toLowerCase().includes(txt));
-
-      if (!btn) throw new Error("Button not found");
-
-      await clickIndex(btn.index);
-    }
-
-    if (lower.includes("type")) {
-      const match = instruction.match(/type\s+(.+?)\s+as\s+(.+)/i);
-
-      if (!match) throw new Error("Invalid type");
-
-      const field = match[1].toLowerCase();
-      const value = match[2];
-
-      const input = dom.inputs.find((i) =>
-        (i.placeholder + " " + i.name + " " + i.type)
-          .toLowerCase()
-          .includes(field),
-      );
-
-      if (!input) throw new Error("Input not found");
-
-      await typeIndex(input.index, value);
-    }
+    await page.waitForTimeout(400);
 
     res.json({
       success: true,
-      url: page.url(),
+      ...result,
     });
   } catch (err) {
     res.status(500).json({
@@ -189,4 +213,4 @@ app.post("/step", async (req, res) => {
   }
 });
 
-app.listen(3001, () => console.log("AI running :3001"));
+app.listen(3001, () => console.log("Planner ready"));

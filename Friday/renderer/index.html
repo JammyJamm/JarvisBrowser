@@ -162,8 +162,20 @@
       }
 
       // INIT
-      window.onload = () => {
+      window.onload = async () => {
         renderBrowser();
+
+        const url = document.getElementById("url").value;
+
+        await fetch("http://localhost:3001/init", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            url,
+          }),
+        });
       };
     </script>
 
