@@ -11,25 +11,33 @@ let browser;
 let page;
 
 (async () => {
-  browser = await chromium.launch({
-    headless: false,
-  });
-
+  browser = await chromium.launch({ headless: false });
   const context = await browser.newContext();
-
   page = await context.newPage();
-
   await page.goto("https://example.com");
 })();
 
-async function syncPage() {
-  await page.waitForLoadState("networkidle").catch(() => {});
+async function settle() {
+  await page.waitForLoadState("domcontentloaded").catch(() => {});
+}
+
+async function smartWait(oldUrl) {
+  try {
+    await page.waitForURL((u) => u.toString() !== oldUrl, {
+      timeout: 2500,
+    });
+
+    await settle();
+    return;
+  } catch {}
+
+  await page.waitForTimeout(400);
 }
 
 async function getDOM() {
-  await syncPage();
+  await settle();
 
-  return await page.evaluate(() => ({
+  return page.evaluate(() => ({
     buttons: [
       ...document.querySelectorAll(
         "button,a,[role='button'],input[type='submit']",
@@ -49,13 +57,15 @@ async function getDOM() {
 }
 
 async function clickIndex(index) {
+  const oldUrl = page.url();
+
   const els = await page.$$("button,a,[role='button'],input[type='submit']");
 
   if (!els[index]) throw new Error("Button not found");
 
   await els[index].click();
 
-  await syncPage();
+  await smartWait(oldUrl);
 }
 
 async function typeIndex(index, value) {
@@ -64,14 +74,12 @@ async function typeIndex(index, value) {
   if (!els[index]) throw new Error("Input not found");
 
   await els[index].fill(value);
-
-  await syncPage();
 }
 
 app.post("/navigate", async (req, res) => {
   await page.goto(req.body.url);
 
-  await syncPage();
+  await settle();
 
   res.json({
     success: true,
@@ -82,9 +90,9 @@ app.post("/navigate", async (req, res) => {
 async function executeSingle(command) {
   const dom = await getDOM();
 
-  const cmd = command.toLowerCase();
-
-  const btn = dom.buttons.find((b) => cmd.includes(b.text.toLowerCase()));
+  const btn = dom.buttons.find((b) =>
+    command.toLowerCase().includes(b.text.toLowerCase()),
+  );
 
   if (!btn) throw new Error("No button found");
 
@@ -96,13 +104,11 @@ async function executeSingle(command) {
   };
 }
 
-async function makePlan(command) {
-  const parts = command
+function makePlan(command) {
+  return command
     .split(/\d+\)/)
     .map((x) => x.trim())
     .filter(Boolean);
-
-  return parts;
 }
 
 app.post("/ai", async (req, res) => {
@@ -121,12 +127,10 @@ app.post("/ai", async (req, res) => {
       });
     }
 
-    const steps = await makePlan(command);
-
     res.json({
       success: true,
       mode: "plan",
-      steps,
+      steps: makePlan(command),
     });
   } catch (err) {
     res.status(500).json({
@@ -139,10 +143,6 @@ app.post("/ai", async (req, res) => {
 app.post("/step", async (req, res) => {
   try {
     const { instruction } = req.body;
-
-    if (!instruction) {
-      throw new Error("Instruction missing");
-    }
 
     const dom = await getDOM();
 
@@ -163,8 +163,8 @@ app.post("/step", async (req, res) => {
 
       if (!match) throw new Error("Invalid type");
 
-      const field = match[1].toLowerCase().trim();
-      const value = match[2].trim();
+      const field = match[1].toLowerCase();
+      const value = match[2];
 
       const input = dom.inputs.find((i) =>
         (i.placeholder + " " + i.name + " " + i.type)
@@ -176,8 +176,6 @@ app.post("/step", async (req, res) => {
 
       await typeIndex(input.index, value);
     }
-
-    await syncPage();
 
     res.json({
       success: true,

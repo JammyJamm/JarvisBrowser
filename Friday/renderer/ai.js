@@ -1,5 +1,15 @@
 const form = document.getElementById("ai-form");
+
 const input = document.getElementById("cmd");
+
+// ENTER = submit
+// SHIFT+ENTER = new line
+input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    form.requestSubmit();
+  }
+});
 
 let currentTextNode;
 
@@ -25,7 +35,7 @@ async function mirror(url) {
   const webview = document.getElementById("webview");
 
   return new Promise((resolve) => {
-    webview.addEventListener("dom-ready", () => resolve(), { once: true });
+    webview.addEventListener("dom-ready", resolve, { once: true });
 
     webview.loadURL(url);
   });
@@ -50,7 +60,7 @@ async function handleAction(cmd) {
   }
 
   if (data.mode === "single") {
-    logResp(JSON.stringify(data.action, null, 2));
+    logResp(JSON.stringify(data.action));
 
     await mirror(data.url);
 
@@ -89,13 +99,16 @@ function createMessageBlock(payload) {
   block.classList.add("msg-block");
 
   const user = document.createElement("div");
+
   user.classList.add("user-msg");
   user.innerText = payload;
 
   const ai = document.createElement("div");
+
   ai.classList.add("ai-msg");
 
   const span = document.createElement("span");
+
   span.innerText = "Thinking...";
 
   ai.appendChild(span);
