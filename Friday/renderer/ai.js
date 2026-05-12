@@ -7,24 +7,28 @@ form.addEventListener("submit", async (e) => {
   e.preventDefault();
 
   const cmd = input.value.trim();
+
   if (!cmd) return;
 
   createMessageBlock(cmd);
+
   startShimmer();
 
-  if (isActionCommand(cmd)) {
-    await handleAction(cmd);
-  } else {
-    await handleChat(cmd);
-  }
+  await handleAction(cmd);
+
+  stopShimmer();
 
   input.value = "";
-  stopShimmer();
 });
 
-function isActionCommand(cmd) {
-  const keywords = ["click", "open", "press", "select", "go", "scroll"];
-  return keywords.some((k) => cmd.toLowerCase().includes(k));
+async function mirror(url) {
+  const webview = document.getElementById("webview");
+
+  return new Promise((resolve) => {
+    webview.addEventListener("dom-ready", () => resolve(), { once: true });
+
+    webview.loadURL(url);
+  });
 }
 
 async function handleAction(cmd) {
@@ -33,38 +37,55 @@ async function handleAction(cmd) {
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ command: cmd }),
-  });
-
-  const data = await res.json();
-
-  logResp(JSON.stringify(data.action, null, 2));
-
-  document.getElementById("webview").loadURL(data.url);
-}
-
-async function handleChat(cmd) {
-  const res = await fetch("http://localhost:11434/api/generate", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
     body: JSON.stringify({
-      model: "qwen3",
-      prompt: cmd,
-      stream: false,
+      command: cmd,
     }),
   });
 
   const data = await res.json();
 
-  logResp(data.response);
+  if (!data.success) {
+    logResp(data.error);
+    return;
+  }
+
+  if (data.mode === "single") {
+    logResp(JSON.stringify(data.action, null, 2));
+
+    await mirror(data.url);
+
+    return;
+  }
+
+  for (const step of data.steps) {
+    logResp(step);
+
+    const r = await fetch("http://localhost:3001/step", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        instruction: step,
+      }),
+    });
+
+    const d = await r.json();
+
+    if (!d.success) {
+      logResp(d.error);
+      return;
+    }
+
+    await mirror(d.url);
+  }
 }
 
 function createMessageBlock(payload) {
   const logs = document.getElementById("logs");
 
   const block = document.createElement("div");
+
   block.classList.add("msg-block");
 
   const user = document.createElement("div");
