@@ -4,77 +4,75 @@ const { chromium } = require("playwright");
 const MCP = require("./mcp");
 
 const app = express();
-
 app.use(cors());
 app.use(express.json());
 
 let browser, page;
 
+const MODEL = "qwen3:8b";
+
 // =====================
 // INIT
 // =====================
 app.post("/init", async (req, res) => {
-  if (!browser) {
-    browser = await chromium.launch({ headless: false });
+  try {
+    if (!browser) {
+      browser = await chromium.launch({
+        headless: false,
+        args: ["--start-maximized"],
+      });
 
-    const context = await browser.newContext();
-    page = await context.newPage();
+      const context = await browser.newContext({
+        viewport: null,
+      });
+
+      page = await context.newPage();
+
+      fetch("http://localhost:11434/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: MODEL,
+          prompt: "hi",
+          stream: false,
+        }),
+      }).catch(() => {});
+    }
+
+    const url = req.body?.url || "https://example.com";
+
+    await page.goto(url, {
+      waitUntil: "networkidle",
+    });
+
+    res.json({
+      success: true,
+      url: page.url(),
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err.message,
+    });
   }
-
-  await page.goto(req.body.url);
-
-  res.json({
-    success: true,
-    url: page.url(),
-  });
 });
-
-// =====================
-// SAFE PARSE
-// =====================
-function safeParse(raw) {
-  raw = raw
-    .replace(/```json/g, "")
-    .replace(/```/g, "")
-    .trim();
-
-  const match = raw.match(/\[[\s\S]*\]/);
-
-  if (!match) throw new Error("Planner parse failed");
-
-  return JSON.parse(match[0]);
-}
 
 // =====================
 // DOM
 // =====================
 async function getDOM() {
-  return page.evaluate(() => ({
-    buttons: [
-      ...document.querySelectorAll(
-        "button,a,[role='button'],input[type='submit']",
-      ),
-    ].map((b) => ({
-      text: (b.innerText || b.value || "").trim(),
-    })),
-
-    inputs: [...document.querySelectorAll("input")].map((i) => ({
-      placeholder: i.placeholder || "",
-      name: i.name || "",
-      type: i.type || "",
-    })),
-
+  return await page.evaluate(() => ({
     text: document.body.innerText.slice(0, 3000),
   }));
 }
 
 // =====================
-// FAST REGEX PLANNER
+// REGEX FAST PATH
 // =====================
 function regexPlan(command) {
   const steps = [];
 
-  const parts = command
+  const parts = String(command)
     .split(/\d+\)/)
     .map((x) => x.trim())
     .filter(Boolean);
@@ -85,9 +83,7 @@ function regexPlan(command) {
     if (lower.startsWith("click")) {
       steps.push({
         tool: "click",
-        args: {
-          text: p.replace(/click/i, "").trim(),
-        },
+        args: { text: p.replace(/click/i, "").trim() },
       });
     } else if (lower.startsWith("type")) {
       const m = p.match(/type\s+(.+?)\s+as\s+(.+)/i);
@@ -107,9 +103,7 @@ function regexPlan(command) {
       if (m) {
         steps.push({
           tool: "read",
-          args: {
-            title: m[1],
-          },
+          args: { title: m[1] },
         });
       }
     }
@@ -119,25 +113,57 @@ function regexPlan(command) {
 }
 
 // =====================
-// QWEN FALLBACK
+// SAFE PARSE
 // =====================
-async function qwenPlan(command) {
+function safeParse(raw) {
+  raw = raw.replace(/```json|```/g, "").trim();
+
+  const m = raw.match(/\{[\s\S]*\}/);
+
+  if (!m) return null;
+
+  try {
+    return JSON.parse(m[0]);
+  } catch {
+    return null;
+  }
+}
+
+// =====================
+// QWEN ROUTER
+// =====================
+async function aiRouter(command) {
+  const fast = regexPlan(command);
+
+  if (fast) {
+    return {
+      mode: "action",
+      steps: fast,
+    };
+  }
+
   const dom = await getDOM();
 
   const prompt = `
-Return ONLY JSON array.
+Return ONLY valid JSON.
 
-Schema:
-[
- {"tool":"click","args":{"text":"..."}},
- {"tool":"type","args":{"field":"...","value":"..."}},
- {"tool":"read","args":{"title":"..."}}
+CHAT:
+{"mode":"chat","reply":"..."}
+
+ACTION:
+{
+"mode":"action",
+"steps":[
+{"tool":"click","args":{"text":"..."}},
+{"tool":"type","args":{"field":"...","value":"..."}},
+{"tool":"read","args":{"title":"..."}}
 ]
+}
 
-DOM:
-${JSON.stringify(dom, null, 2)}
+PAGE:
+${dom.text}
 
-Command:
+USER:
 ${command}
 `;
 
@@ -147,26 +173,23 @@ ${command}
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "qwen3:latest",
+      model: MODEL,
       prompt,
       stream: false,
       options: {
         temperature: 0,
-        top_p: 0.1,
       },
     }),
   });
 
   const json = await r.json();
 
-  return safeParse(json.response);
-}
-
-// =====================
-// PLAN
-// =====================
-async function plan(command) {
-  return regexPlan(command) || (await qwenPlan(command));
+  return (
+    safeParse(json.response) || {
+      mode: "chat",
+      reply: json.response,
+    }
+  );
 }
 
 // =====================
@@ -174,11 +197,11 @@ async function plan(command) {
 // =====================
 app.post("/ai", async (req, res) => {
   try {
-    const steps = await plan(req.body.command);
+    const result = await aiRouter(req.body.command);
 
     res.json({
       success: true,
-      steps,
+      ...result,
     });
   } catch (err) {
     res.status(500).json({
@@ -196,14 +219,17 @@ app.post("/step", async (req, res) => {
     const result = await MCP.execute({ page }, req.body.tool, req.body.args);
 
     await page
-      .waitForLoadState("networkidle", { timeout: 2500 })
+      .waitForLoadState("networkidle", {
+        timeout: 2500,
+      })
       .catch(() => {});
 
-    await page.waitForTimeout(400);
+    await page.waitForTimeout(300);
 
     res.json({
       success: true,
       ...result,
+      url: page.url(),
     });
   } catch (err) {
     res.status(500).json({
@@ -213,4 +239,4 @@ app.post("/step", async (req, res) => {
   }
 });
 
-app.listen(3001, () => console.log("Planner ready"));
+app.listen(3001, () => console.log("Jarvis ready :3001"));

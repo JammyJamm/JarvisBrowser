@@ -35,19 +35,29 @@ form.addEventListener("submit", async (e) => {
         command: cmd,
       }),
     });
-
     const data = await res.json();
 
     if (!data.success) {
-      logResp(data.error || "Planner failed");
+      logResp(data.error);
       stopShimmer();
       return;
     }
 
-    // unified execution
+    // CHAT MODE
+    if (data.mode === "chat") {
+      logResp(data.reply);
+      stopShimmer();
+      input.value = "";
+      return;
+    }
+
+    // ACTION MODE
     for (const step of data.steps) {
       await runStep(step);
     }
+
+    input.value = "";
+    stopShimmer();
 
     input.value = "";
   } catch (err) {
