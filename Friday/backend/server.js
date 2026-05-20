@@ -74,7 +74,11 @@ function regexPlan(command) {
   const lower = String(command).toLowerCase();
 
   // Read page fast path
-  if (lower.includes("read page") || lower.includes("read current") || lower.includes("get page")) {
+  if (
+    lower.includes("read page") ||
+    lower.includes("read current") ||
+    lower.includes("get page")
+  ) {
     return [
       {
         tool: "read",
@@ -140,12 +144,24 @@ function regexPlan(command) {
         });
       }
     } else if (pLower.startsWith("read") || pLower.startsWith("get")) {
-      const m = p.match(/"(.*?)"/) || p.match(/read\s+(.+?)\s+passage/i);
+      let title = "";
 
-      if (m) {
+      // Try quoted text first
+      const quoted = p.match(/"(.*?)"/);
+      if (quoted) {
+        title = quoted[1];
+      } else {
+        // Extract text after "read" or "get"
+        const m = p.match(/(?:read|get)\s+(.+?)(?:\s+(?:passage|from|in)|$)/i);
+        if (m) {
+          title = m[1].trim();
+        }
+      }
+
+      if (title) {
         steps.push({
           tool: "read",
-          args: { title: m[1] },
+          args: { title },
         });
       }
     }
@@ -160,7 +176,9 @@ function regexPlan(command) {
 function safeParse(raw) {
   if (!raw) return null;
 
-  raw = String(raw).replace(/```json|```/g, "").trim();
+  raw = String(raw)
+    .replace(/```json|```/g, "")
+    .trim();
 
   try {
     return JSON.parse(raw);
@@ -238,7 +256,9 @@ ${command}
 
   return {
     mode: "chat",
-    reply: String(json.response).replace(/```json|```/g, "").trim(),
+    reply: String(json.response)
+      .replace(/```json|```/g, "")
+      .trim(),
   };
 }
 
