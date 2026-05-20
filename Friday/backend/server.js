@@ -148,16 +148,21 @@ function regexPlan(command) {
 // SAFE PARSE
 // =====================
 function safeParse(raw) {
-  raw = raw.replace(/```json|```/g, "").trim();
+  if (!raw) return null;
 
-  const m = raw.match(/\{[\s\S]*\}/);
-
-  if (!m) return null;
+  raw = String(raw).replace(/```json|```/g, "").trim();
 
   try {
-    return JSON.parse(m[0]);
-  } catch {
-    return null;
+    return JSON.parse(raw);
+  } catch (e) {
+    const m = raw.match(/\{[\s\S]*\}/);
+    if (!m) return null;
+
+    try {
+      return JSON.parse(m[0]);
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -215,13 +220,16 @@ ${command}
   });
 
   const json = await r.json();
+  const parsed = safeParse(json.response);
 
-  return (
-    safeParse(json.response) || {
-      mode: "chat",
-      reply: json.response,
-    }
-  );
+  if (parsed) {
+    return parsed;
+  }
+
+  return {
+    mode: "chat",
+    reply: String(json.response).replace(/```json|```/g, "").trim(),
+  };
 }
 
 // =====================
