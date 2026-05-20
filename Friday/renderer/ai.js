@@ -20,7 +20,8 @@ function initializePlanner(steps) {
   stepCounter.innerHTML = `Total Steps: <strong>${steps.length}</strong>`;
 
   stepList.innerHTML = steps
-    .map((step, idx) => `
+    .map(
+      (step, idx) => `
       <div class="step-item" id="step-${idx}">
         <div class="step-number">${idx + 1}</div>
         <div class="step-content">
@@ -28,7 +29,8 @@ function initializePlanner(steps) {
           <div class="step-details">${JSON.stringify(step.args)}</div>
         </div>
       </div>
-    `)
+    `,
+    )
     .join("");
 }
 
@@ -162,27 +164,7 @@ async function runStep(step, stepIdx) {
   await mirror(d.url);
 
   if (d.content) {
-    const content = d.content;
-
-    if (typeof content === "object" && content.html) {
-      // Display structured content with tags
-      let displayText = "[Step " + (stepIdx + 1) + "] READ:\n\n";
-
-      if (Array.isArray(content.html)) {
-        // Array of elements
-        displayText += content.html
-          .map((el) => `<${el.tag}>\n${el.text}\n</${el.tag}>`)
-          .join("\n\n");
-      } else {
-        // HTML content
-        displayText += content.html || content.text;
-      }
-
-      logResp(displayText);
-    } else {
-      // Plain text content
-      logResp(`[Step ${stepIdx + 1}] READ:\n\n${content}`);
-    }
+    logResp(`[Step ${stepIdx + 1}] READ:\n\n${d.content}`);
   }
 
   logResp(`[Step ${stepIdx + 1}] Completed ✓`);
