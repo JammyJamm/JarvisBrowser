@@ -73,6 +73,16 @@ function regexPlan(command) {
   const steps = [];
   const lower = String(command).toLowerCase();
 
+  // Read page fast path
+  if (lower.includes("read page") || lower.includes("read current") || lower.includes("get page")) {
+    return [
+      {
+        tool: "read",
+        args: { title: "" },
+      },
+    ];
+  }
+
   // Navigation fast path
   if (
     lower.includes("go to") ||
