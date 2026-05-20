@@ -9,8 +9,8 @@ app.use(express.json());
 
 let browser, page;
 
-const MODEL = "qwen3:8b";
-
+// const MODEL = "qwen3:8b";
+const MODEL = "llama3";
 // =====================
 // INIT
 // =====================
@@ -71,6 +71,27 @@ async function getDOM() {
 // =====================
 function regexPlan(command) {
   const steps = [];
+  const lower = String(command).toLowerCase();
+
+  // Navigation fast path
+  if (lower.includes("go to") || lower.includes("navigate to") || lower.includes("visit")) {
+    let url = "";
+
+    if (lower.includes("amazon")) url = "https://amazon.com";
+    else if (lower.includes("google")) url = "https://google.com";
+    else if (lower.includes("github")) url = "https://github.com";
+    else {
+      const m = command.match(/(?:go to|navigate to|visit)\s+(.+?)(?:\s|$)/i);
+      if (m) url = m[1].trim();
+    }
+
+    if (url) {
+      return [{
+        tool: "navigate",
+        args: { url },
+      }];
+    }
+  }
 
   const parts = String(command)
     .split(/\d+\)/)
@@ -78,14 +99,14 @@ function regexPlan(command) {
     .filter(Boolean);
 
   for (const p of parts) {
-    const lower = p.toLowerCase();
+    const pLower = p.toLowerCase();
 
-    if (lower.startsWith("click")) {
+    if (pLower.startsWith("click")) {
       steps.push({
         tool: "click",
         args: { text: p.replace(/click/i, "").trim() },
       });
-    } else if (lower.startsWith("type")) {
+    } else if (pLower.startsWith("type")) {
       const m = p.match(/type\s+(.+?)\s+as\s+(.+)/i);
 
       if (m) {
@@ -97,7 +118,7 @@ function regexPlan(command) {
           },
         });
       }
-    } else if (lower.startsWith("read") || lower.startsWith("get")) {
+    } else if (pLower.startsWith("read") || pLower.startsWith("get")) {
       const m = p.match(/"(.*?)"/) || p.match(/read\s+(.+?)\s+passage/i);
 
       if (m) {
@@ -230,6 +251,27 @@ app.post("/step", async (req, res) => {
       success: true,
       ...result,
       url: page.url(),
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err.message,
+    });
+  }
+});
+
+// =====================
+// NAVIGATE
+// =====================
+app.post("/navigate", async (req, res) => {
+  try {
+    const result = await MCP.execute({ page }, "navigate", {
+      url: req.body.url,
+    });
+
+    res.json({
+      success: true,
+      ...result,
     });
   } catch (err) {
     res.status(500).json({
