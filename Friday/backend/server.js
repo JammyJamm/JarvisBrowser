@@ -74,22 +74,33 @@ function regexPlan(command) {
   const lower = String(command).toLowerCase();
 
   // Navigation fast path
-  if (lower.includes("go to") || lower.includes("navigate to") || lower.includes("visit")) {
-    let url = "";
+  if (
+    lower.includes("go to") ||
+    lower.includes("navigate to") ||
+    lower.includes("visit")
+  ) {
+    let domain = "";
+    const m = command.match(/(?:go to|navigate to|visit)\s+(.+?)(?:\s|$)/i);
 
-    if (lower.includes("amazon")) url = "https://amazon.com";
-    else if (lower.includes("google")) url = "https://google.com";
-    else if (lower.includes("github")) url = "https://github.com";
-    else {
-      const m = command.match(/(?:go to|navigate to|visit)\s+(.+?)(?:\s|$)/i);
-      if (m) url = m[1].trim();
+    if (m) {
+      domain = m[1].trim();
     }
 
-    if (url) {
-      return [{
-        tool: "navigate",
-        args: { url },
-      }];
+    if (domain) {
+      let url = domain;
+      if (!url.startsWith("http")) {
+        url = "https://" + url;
+      }
+      if (!url.includes(".")) {
+        url = "https://" + domain + ".com";
+      }
+
+      return [
+        {
+          tool: "navigate",
+          args: { url },
+        },
+      ];
     }
   }
 
