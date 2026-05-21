@@ -20,6 +20,7 @@
       <div class="urlBlock">
         <img src="./icon/logo.svg" alt="refreshNav-Icon" />
         <input id="url" value="https://example.com" />
+        <!-- <input id="url" value="https://india-1x-bet.com/en/user/login/" /> -->
       </div>
 
       <button onclick="navigate()">
@@ -42,7 +43,6 @@
             <img src="./icon/logo.svg" alt="refreshNav-Icon" />
             <p>Limit your availability to create exclusivity...</p>
           </div>
-          <!-- <input id="cmd" placeholder="Type command..." /> -->
           <textarea id="cmd" placeholder="Type command..." rows="4"></textarea>
         </form>
         <div id="logs"></div>
@@ -76,13 +76,6 @@
           console.log("✅ Page loaded");
 
           window.aiState.ready = true;
-
-          // 🚀 run pending AI command
-          if (window.aiState.pendingCommand) {
-            const cmd = window.aiState.pendingCommand;
-            window.aiState.pendingCommand = null;
-            runAI(cmd);
-          }
         });
 
         // ✅ URL SYNC
@@ -167,15 +160,28 @@
 
         const url = document.getElementById("url").value;
 
-        await fetch("http://localhost:3001/init", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            url,
-          }),
-        });
+        try {
+          const res = await fetch("http://localhost:3001/init", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              url,
+            }),
+          });
+
+          if (!res.ok) {
+            throw new Error(`Init failed: HTTP ${res.status}`);
+          }
+
+          const data = await res.json();
+          if (!data.success) {
+            console.error("Backend init error:", data.error);
+          }
+        } catch (err) {
+          console.error("Failed to initialize backend:", err.message);
+        }
       };
     </script>
 

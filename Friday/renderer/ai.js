@@ -12,26 +12,39 @@ function initializePlanner(steps) {
   currentSteps = steps;
   currentStepIndex = 0;
 
-  const plannerSection = document.getElementById("planner-section");
-  const stepCounter = document.getElementById("step-counter");
-  const stepList = document.getElementById("step-list");
+  // Create planner message block
+  const logs = document.getElementById("logs");
+  const block = document.createElement("div");
+  block.classList.add("msg-block");
 
-  plannerSection.style.display = "block";
-  stepCounter.innerHTML = `Total Steps: <strong>${steps.length}</strong>`;
+  const header = document.createElement("div");
+  header.classList.add("ai-msg");
+  header.innerHTML = `<strong>🔄 Executing ${steps.length} Steps...</strong>`;
+  block.appendChild(header);
 
-  stepList.innerHTML = steps
-    .map(
-      (step, idx) => `
-      <div class="step-item" id="step-${idx}">
-        <div class="step-number">${idx + 1}</div>
-        <div class="step-content">
-          <div class="step-action">${step.tool.toUpperCase()}</div>
-          <div class="step-details">${JSON.stringify(step.args)}</div>
-        </div>
+  // Add step list
+  const stepListDiv = document.createElement("div");
+  stepListDiv.id = "step-list-container";
+  stepListDiv.classList.add("planner-steps");
+
+  steps.forEach((step, idx) => {
+    const stepDiv = document.createElement("div");
+    stepDiv.classList.add("step-item");
+    stepDiv.id = `step-${idx}`;
+    stepDiv.innerHTML = `
+      <div class="step-number">${idx + 1}</div>
+      <div class="step-content">
+        <div class="step-action">${step.tool.toUpperCase()}</div>
+        <div class="step-details">${JSON.stringify(step.args)}</div>
       </div>
-    `,
-    )
-    .join("");
+      <div class="step-status"></div>
+    `;
+    stepListDiv.appendChild(stepDiv);
+  });
+
+  block.appendChild(stepListDiv);
+  logs.appendChild(block);
+  logs.scrollTop = logs.scrollHeight;
 }
 
 function updateStepStatus(stepIdx, status, message) {
@@ -104,7 +117,6 @@ form.addEventListener("submit", async (e) => {
 
     // CHAT MODE
     if (data.mode === "chat") {
-      document.getElementById("planner-section").style.display = "none";
       logResp(data.reply);
       stopShimmer();
       input.value = "";
@@ -161,7 +173,7 @@ async function runStep(step, stepIdx) {
     throw new Error(d.error);
   }
 
-  await mirror(d.url);
+  await mirror(d.url, d.html);
 
   if (d.content) {
     logResp(`[Step ${stepIdx + 1}] READ:\n\n${d.content}`);
@@ -173,19 +185,18 @@ async function runStep(step, stepIdx) {
 // ==========================
 // MIRROR PLAYWRIGHT → WEBVIEW
 // ==========================
-async function mirror(url) {
+async function mirror(url, html) {
   const webview = document.getElementById("webview");
 
   return new Promise((resolve) => {
     const done = () => {
-      webview.removeEventListener("dom-ready", done);
-
+      webview.removeEventListener("did-finish-load", done);
       resolve();
     };
 
-    webview.addEventListener("dom-ready", done);
+    webview.addEventListener("did-finish-load", done);
 
-    webview.loadURL(url);
+    webview.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
   });
 }
 

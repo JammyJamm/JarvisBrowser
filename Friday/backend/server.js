@@ -65,6 +65,9 @@ async function getDOM() {
     text: document.body.innerText.slice(0, 3000),
   }));
 }
+async function getHTML() {
+  return await page.content();
+}
 
 // =====================
 // REGEX FAST PATH
@@ -87,72 +90,150 @@ function regexPlan(command) {
     ];
   }
 
-  // Navigation fast path
+  // Go back fast path
+  if (
+    lower.includes("go back") ||
+    lower.includes("back") ||
+    lower.includes("previous")
+  ) {
+    return [
+      {
+        tool: "goback",
+        args: {},
+      },
+    ];
+  }
+
+  // Go forward fast path
+  if (
+    lower.includes("go forward") ||
+    lower.includes("forward") ||
+    lower.includes("next page")
+  ) {
+    return [
+      {
+        tool: "goforward",
+        args: {},
+      },
+    ];
+  }
+
+  // Refresh/reload fast path
+  if (
+    lower.includes("refresh") ||
+    lower.includes("reload") ||
+    lower.includes("retry")
+  ) {
+    return [
+      {
+        tool: "refresh",
+        args: {},
+      },
+    ];
+  }
+
+  // Extract navigation if present
+  let navUrl = null;
   if (
     lower.includes("go to") ||
     lower.includes("navigate to") ||
     lower.includes("visit")
   ) {
-    let domain = "";
-    const m = command.match(/(?:go to|navigate to|visit)\s+(.+?)(?:\s|$)/i);
+    // First, try to extract an actual URL
+    const urlMatch = command.match(/https?:\/\/[^\s\n]+/i);
 
-    if (m) {
-      domain = m[1].trim();
-    }
+    if (urlMatch) {
+      navUrl = urlMatch[0];
+      steps.push({
+        tool: "navigate",
+        args: { url: navUrl },
+      });
+    } else {
+      // Fallback: extract text after "go to" until newline
+      const m = command.match(/(?:go to|navigate to|visit)\s+(.+?)(?:\n|$)/i);
 
-    if (domain) {
-      let url = domain;
-      if (!url.startsWith("http")) {
-        url = "https://" + url;
+      if (m) {
+        let domain = m[1].trim();
+        if (domain) {
+          let url = domain;
+          if (!url.startsWith("http")) {
+            url = "https://" + url;
+          }
+          if (!url.includes(".")) {
+            url = "https://" + domain + ".com";
+          }
+          navUrl = url;
+          steps.push({
+            tool: "navigate",
+            args: { url },
+          });
+        }
       }
-      if (!url.includes(".")) {
-        url = "https://" + domain + ".com";
-      }
-
-      return [
-        {
-          tool: "navigate",
-          args: { url },
-        },
-      ];
     }
   }
 
-  const parts = String(command)
-    .split(/\d+\)/)
-    .map((x) => x.trim())
+  // Parse remaining instructions
+  const lines = String(command)
+    .split(/\n/)
+    .map((x) =>
+      x
+        .trim()
+        .replace(/^\d+\)\s*/, "") // remove 1) 2) 3)
+        .replace(/^-\s*/, ""),
+    )
     .filter(Boolean);
 
-  for (const p of parts) {
-    const pLower = p.toLowerCase();
+  for (const line of lines) {
+    const lineLower = line.toLowerCase();
 
-    if (pLower.startsWith("click")) {
+    // Skip navigation lines
+    if (
+      lineLower.includes("go to") ||
+      lineLower.includes("navigate to") ||
+      lineLower.includes("visit") ||
+      lineLower.includes("find my input")
+    ) {
+      continue;
+    }
+
+    if (/^click\b/i.test(line)) {
       steps.push({
         tool: "click",
-        args: { text: p.replace(/click/i, "").trim() },
+        args: {
+          text: line
+            .replace(/^click\s*/i, "")
+            .replace(/\s*\(.*?\)\s*$/, "")
+            .replace(/\bbutton\b$/i, "")
+            .replace(/^["']|["']$/g, "")
+            .trim(),
+        },
       });
-    } else if (pLower.startsWith("type")) {
-      const m = p.match(/type\s+(.+?)\s+as\s+(.+)/i);
+    } else if (/^type\b/i.test(line)) {
+      // Try format: "Type [field] as [value]"
+
+      let m =
+        line.match(/type\s+(.+?)\s+as\s+(.+)/i) ||
+        line.match(/type\s+(.+?)\s+["'](.+?)["']/i);
 
       if (m) {
         steps.push({
           tool: "type",
           args: {
-            field: m[1],
-            value: m[2],
+            field: m[1].trim().replace(/^["']|["']$/g, ""),
+            value: m[2].trim().replace(/^["']|["']$/g, ""),
           },
         });
       }
-    } else if (pLower.startsWith("read") || pLower.startsWith("get")) {
+    } else if (/^(read|get)\b/i.test(line)) {
       let title = "";
 
-      // Try quoted text first
-      const quoted = p.match(/"(.*?)"/);
+      const quoted = line.match(/"(.*?)"/);
       if (quoted) {
         title = quoted[1];
       } else {
-        // Extract text after "read" or "get"
-        const m = p.match(/(?:read|get)\s+(.+?)(?:\s+(?:passage|from|in)|$)/i);
+        const m = line.match(
+          /(?:read|get)\s+(.+?)(?:\s+(?:passage|from|in)|$)/i,
+        );
         if (m) {
           title = m[1].trim();
         }
@@ -290,16 +371,17 @@ app.post("/step", async (req, res) => {
 
     await page
       .waitForLoadState("networkidle", {
-        timeout: 2500,
+        timeout: 10000,
       })
       .catch(() => {});
 
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(1500);
 
     res.json({
       success: true,
       ...result,
       url: page.url(),
+      html: await getHTML(),
     });
   } catch (err) {
     res.status(500).json({
@@ -321,6 +403,8 @@ app.post("/navigate", async (req, res) => {
     res.json({
       success: true,
       ...result,
+      url: page.url(),
+      html: await getHTML(),
     });
   } catch (err) {
     res.status(500).json({
