@@ -30,7 +30,12 @@ module.exports.execute = async ({ page }, tool, args = {}) => {
     if (/^signup$/i.test(exact)) exact = "Sign up";
 
     const locators = [
-      page.locator(`button:has-text("${exact}")`).first(),
+      page.getByText(exact, { exact: true }).first(),
+      page.locator("button").filter({ hasText: exact }).first(),
+      page.locator('[role="tab"]').filter({ hasText: exact }).first(),
+      page.locator("span").filter({ hasText: exact }).first(),
+      page.locator("div").filter({ hasText: exact }).first(),
+      page.locator("li").filter({ hasText: exact }).first(),
 
       page.locator(`button:has(span:has-text("${exact}"))`).first(),
 
