@@ -173,7 +173,7 @@ async function runStep(step, stepIdx) {
     throw new Error(d.error);
   }
 
-  await mirror(d.url, d.html);
+  await mirror(d.url);
 
   if (d.content) {
     logResp(`[Step ${stepIdx + 1}] READ:\n\n${d.content}`);
@@ -185,21 +185,41 @@ async function runStep(step, stepIdx) {
 // ==========================
 // MIRROR PLAYWRIGHT → WEBVIEW
 // ==========================
-async function mirror(url, html) {
+async function mirror(url) {
   const webview = document.getElementById("webview");
 
+  const r = await fetch("http://localhost:3001/cookies");
+  const d = await r.json();
+
   return new Promise((resolve) => {
-    const done = () => {
+    const done = async () => {
       webview.removeEventListener("did-finish-load", done);
+
+      if (d.success) {
+        for (const c of d.cookies) {
+          try {
+            await webview.executeJavaScript(`
+              document.cookie =
+                "${c.name}=${c.value}; path=${c.path}; domain=${c.domain}";
+            `);
+          } catch {}
+        }
+      }
+
       resolve();
     };
 
     webview.addEventListener("did-finish-load", done);
 
-    webview.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
+    if (webview.src !== url) {
+      webview.src = url;
+    } else {
+      resolve();
+    }
   });
 }
 
+setInterval(syncMirror, 1500);
 // ==========================
 // UI BLOCK
 // ==========================

@@ -127,8 +127,17 @@ module.exports.execute = async ({ page }, tool, args = {}) => {
   // ==========================
   if (tool === "navigate") {
     await page.goto(args.url, {
-      waitUntil: "networkidle",
+      waitUntil: "domcontentloaded",
+      timeout: 90000,
     });
+
+    await page.waitForTimeout(8000);
+
+    await page
+      .waitForLoadState("networkidle", {
+        timeout: 5000,
+      })
+      .catch(() => {});
 
     return {};
   }
@@ -231,6 +240,56 @@ module.exports.execute = async ({ page }, tool, args = {}) => {
     await waitReady();
     return {};
   }
+  // ==========================
+  // IFRAME CLICK
+  // ==========================
+  if (tool === "iframeClick") {
+    await waitReady();
 
+    const exact = String(args.text).trim();
+
+    let clicked = false;
+
+    for (const frame of page.frames()) {
+      try {
+        const locators = [
+          frame.getByText(exact, { exact: true }).first(),
+          frame.locator(`text="${exact}"`).first(),
+          frame.locator(`span:has-text("${exact}")`).first(),
+          frame.locator(`div:has-text("${exact}")`).first(),
+          frame.locator(`li:has-text("${exact}")`).first(),
+        ];
+
+        for (const loc of locators) {
+          if (await loc.count()) {
+            await loc.waitFor({
+              state: "visible",
+              timeout: 15000,
+            });
+
+            await loc.scrollIntoViewIfNeeded().catch(() => {});
+
+            await loc.click({
+              force: true,
+              timeout: 15000,
+            });
+
+            clicked = true;
+            break;
+          }
+        }
+
+        if (clicked) break;
+      } catch {}
+    }
+
+    if (!clicked) {
+      throw new Error(`Iframe element not found: ${exact}`);
+    }
+
+    await waitReady();
+
+    return {};
+  }
   throw new Error(`Unknown tool: ${tool}`);
 };

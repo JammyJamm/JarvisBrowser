@@ -56,7 +56,22 @@ app.post("/init", async (req, res) => {
     });
   }
 });
+app.get("/cookies", async (_, res) => {
+  try {
+    const cookies = await page.context().cookies();
 
+    res.json({
+      success: true,
+      cookies,
+      url: page.url(),
+    });
+  } catch (e) {
+    res.json({
+      success: false,
+      error: e.message,
+    });
+  }
+});
 // =====================
 // DOM
 // =====================
@@ -89,9 +104,7 @@ function regexPlan(command) {
   for (const line of lines) {
     const lower = line.toLowerCase();
 
-    // =====================
     // NAVIGATE
-    // =====================
     if (/^(navigate to|go to|visit)\b/i.test(line)) {
       const urlMatch = line.match(/https?:\/\/[^\s]+/i);
 
@@ -105,9 +118,7 @@ function regexPlan(command) {
       continue;
     }
 
-    // =====================
     // SUBMIT LOGIN
-    // =====================
     if (/^submit\b/i.test(line) || lower.includes("submit login form")) {
       steps.push({
         tool: "click",
@@ -117,11 +128,9 @@ function regexPlan(command) {
       continue;
     }
 
-    // =====================
     // IFRAME CLICK
-    // =====================
     if (/^inside iframe click\b/i.test(line)) {
-      let txt = line
+      const txt = line
         .replace(/^inside iframe click\s*/i, "")
         .replace(/^category\s*/i, "")
         .replace(/^["']|["']$/g, "")
@@ -135,9 +144,7 @@ function regexPlan(command) {
       continue;
     }
 
-    // =====================
     // CLICK
-    // =====================
     if (/^click\b/i.test(line)) {
       let txt =
         line.match(/"([^"]+)"/)?.[1] ||
@@ -145,7 +152,6 @@ function regexPlan(command) {
           .replace(/^click\s*/i, "")
           .replace(/^the\s+tab\s+/i, "")
           .replace(/^tab\s+/i, "")
-          .replace(/^the\s+/i, "")
           .replace(/\bbutton\b$/i, "")
           .trim();
 
@@ -157,9 +163,7 @@ function regexPlan(command) {
       continue;
     }
 
-    // =====================
     // TYPE
-    // =====================
     if (/^type\b/i.test(line)) {
       const m = line.match(/^type\s+(.+?)\s+"([^"]+)"$/i);
 
@@ -172,8 +176,6 @@ function regexPlan(command) {
           },
         });
       }
-
-      continue;
     }
   }
 
