@@ -247,17 +247,25 @@ module.exports.execute = async ({ page }, tool, args = {}) => {
     await waitReady();
 
     const exact = String(args.text).trim();
-
     let clicked = false;
 
     for (const frame of page.frames()) {
       try {
+        await frame.waitForTimeout(4000);
+
         const locators = [
+          // visible text
           frame.getByText(exact, { exact: true }).first(),
           frame.locator(`text="${exact}"`).first(),
-          frame.locator(`span:has-text("${exact}")`).first(),
-          frame.locator(`div:has-text("${exact}")`).first(),
-          frame.locator(`li:has-text("${exact}")`).first(),
+          frame.locator(`*:has-text("${exact}")`).first(),
+
+          // exact id
+          frame.locator(`#${exact}`).first(),
+
+          // partial id
+          frame.locator(`[id*="${exact}"]`).first(),
+          frame.locator(`li[id*="${exact}"]`).first(),
+          frame.locator(`div[id*="${exact}"]`).first(),
         ];
 
         for (const loc of locators) {
@@ -268,11 +276,24 @@ module.exports.execute = async ({ page }, tool, args = {}) => {
             });
 
             await loc.scrollIntoViewIfNeeded().catch(() => {});
+            await frame.waitForTimeout(1500);
 
-            await loc.click({
-              force: true,
-              timeout: 15000,
-            });
+            try {
+              await loc.click({
+                force: true,
+                timeout: 10000,
+              });
+            } catch {
+              await loc.evaluate((el) => {
+                el.dispatchEvent(
+                  new MouseEvent("click", {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window,
+                  }),
+                );
+              });
+            }
 
             clicked = true;
             break;
@@ -280,7 +301,9 @@ module.exports.execute = async ({ page }, tool, args = {}) => {
         }
 
         if (clicked) break;
-      } catch {}
+      } catch (e) {
+        console.log("iframe error:", e.message);
+      }
     }
 
     if (!clicked) {
@@ -288,8 +311,77 @@ module.exports.execute = async ({ page }, tool, args = {}) => {
     }
 
     await waitReady();
-
     return {};
+  }
+  if (tool === "readCanvas") {
+    const data = await page.evaluate((id) => {
+      const lobby = document.getElementById(id);
+
+      if (!lobby) {
+        throw new Error(`Lobby not found: ${id}`);
+      }
+
+      const canvas = lobby.querySelector('[data-role="history-roads"] canvas');
+
+      if (!canvas) {
+        throw new Error("Canvas not found");
+      }
+
+      const ctx = canvas.getContext("2d");
+      const { width, height } = canvas;
+
+      const img = ctx.getImageData(0, 0, width, height).data;
+
+      const cellW = 16;
+      const cellH = 16;
+
+      const rows = Math.floor(height / cellH);
+      const cols = Math.floor(width / cellW);
+
+      const roadmap = [];
+
+      for (let y = 0; y < rows; y++) {
+        const row = [];
+
+        for (let x = 0; x < cols; x++) {
+          const px = ((y * cellH + 8) * width + (x * cellW + 8)) * 4;
+
+          const r = img[px];
+          const g = img[px + 1];
+          const b = img[px + 2];
+
+          let type = "EMPTY";
+
+          if (r > 180 && g < 120 && b < 120) {
+            type = "RED";
+          } else if (b > 180 && r < 120) {
+            type = "BLUE";
+          } else if (r > 180 && g > 180 && b < 140) {
+            type = "YELLOW";
+          }
+
+          row.push(type);
+        }
+
+        roadmap.push(row);
+      }
+
+      return {
+        id,
+        width,
+        height,
+        roadmap,
+        image: canvas.toDataURL("image/png"),
+      };
+    }, args.id);
+
+    console.log("\n========== DECODED CANVAS ==========");
+    console.log(JSON.stringify(data.roadmap, null, 2));
+    console.log("===================================\n");
+
+    return {
+      content: JSON.stringify(data.roadmap, null, 2),
+    };
   }
   throw new Error(`Unknown tool: ${tool}`);
 };

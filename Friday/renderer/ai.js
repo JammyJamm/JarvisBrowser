@@ -91,7 +91,10 @@ form.addEventListener("submit", async (e) => {
 
   createMessageBlock(cmd);
   startShimmer();
-
+  if (cmd === "read canvas") {
+    await testCanvas();
+    return;
+  }
   try {
     const res = await fetch("http://localhost:3001/ai", {
       method: "POST",
@@ -220,6 +223,26 @@ async function mirror(url) {
 }
 
 setInterval(syncMirror, 1500);
+async function testCanvas() {
+  const r = await fetch("http://localhost:3001/canvas", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      id: "lobby",
+    }),
+  });
+
+  const d = await r.json();
+
+  console.log("ELECTRON CANVAS:", d);
+
+  if (d.content) {
+    logResp(d.content);
+  }
+}
+//testCanvas();
 // ==========================
 // UI BLOCK
 // ==========================

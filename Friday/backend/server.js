@@ -27,7 +27,22 @@ app.post("/init", async (req, res) => {
       });
 
       page = await context.newPage();
+      page.on("console", async (msg) => {
+        try {
+          const vals = await Promise.all(
+            msg.args().map((a) => a.jsonValue().catch(() => null)),
+          );
 
+          console.log("\n=== PLAYWRIGHT BROWSER LOG ===");
+          console.log(msg.text());
+
+          if (vals.length) {
+            console.dir(vals, { depth: null });
+          }
+
+          console.log("=============================\n");
+        } catch {}
+      });
       fetch("http://localhost:11434/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -313,6 +328,21 @@ app.post("/step", async (req, res) => {
       ...result,
       url: page.url(),
       html: await getHTML(),
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err.message,
+    });
+  }
+});
+app.post("/canvas", async (req, res) => {
+  try {
+    const result = await MCP.execute({ page }, "readCanvas", req.body);
+
+    res.json({
+      success: true,
+      ...result,
     });
   } catch (err) {
     res.status(500).json({
