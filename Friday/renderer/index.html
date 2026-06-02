@@ -31,6 +31,11 @@
     <!-- LAYOUT -->
     <div id="layout">
       <div id="browser">
+        <webview
+          id="browser-view"
+          src="https://example.com"
+          style="width: 100%; height: 100%; display: block; border: none"
+        ></webview>
         <div class="animation">
           <div class="animationLayerColor"></div>
           <div class="animationLayer"></div>
@@ -63,35 +68,12 @@
         return url;
       }
 
-      function renderBrowser() {
-        if (document.getElementById("webview")) return;
-
-        const webview = document.createElement("webview");
-
-        webview.id = "webview";
-        webview.src = formatURL(document.getElementById("url").value);
-
-        // ✅ DOM READY
-        webview.addEventListener("dom-ready", () => {
-          console.log("✅ Page loaded");
-
-          window.aiState.ready = true;
-        });
-
-        // ✅ URL SYNC
-        webview.addEventListener("did-navigate", (e) => {
-          document.getElementById("url").value = e.url;
-        });
-
-        webview.addEventListener("did-navigate-in-page", (e) => {
-          document.getElementById("url").value = e.url;
-        });
-
-        document.getElementById("browser").appendChild(webview);
-      }
-
       async function navigate() {
         const url = formatURL(document.getElementById("url").value);
+
+        const webview = document.getElementById("browser-view");
+
+        webview.loadURL(url);
 
         await fetch("http://localhost:3001/navigate", {
           method: "POST",
@@ -100,50 +82,50 @@
           },
           body: JSON.stringify({ url }),
         });
-
-        document.getElementById("webview").loadURL(url);
-      }
-
-      function getWebview() {
-        return document.getElementById("webview");
       }
 
       // 🔙 BACK
       function goBack() {
-        const webview = getWebview();
-
-        if (!webview) return log("❌ No webview");
+        const webview = document.getElementById("browser-view");
 
         if (webview.canGoBack()) {
-          window.aiState.ready = false;
           webview.goBack();
-        } else {
-          log("⚠️ No back history");
         }
       }
+      window.onload = async () => {
+        const frame = document.getElementById("browser-view");
 
-      // 🔜 FORWARD
+        const url = formatURL(document.getElementById("url").value);
+
+        frame.src = url;
+
+        try {
+          const res = await fetch("http://localhost:3001/init", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ url }),
+          });
+
+          const data = await res.json();
+
+          console.log(data);
+        } catch (err) {
+          console.error(err);
+        }
+      };
       function goForward() {
-        const webview = getWebview();
-
-        if (!webview) return log("❌ No webview");
+        const webview = document.getElementById("browser-view");
 
         if (webview.canGoForward()) {
-          window.aiState.ready = false;
           webview.goForward();
-        } else {
-          log("⚠️ No forward history");
         }
       }
 
       // 🔄 RELOAD
       function reloadPage() {
-        const webview = getWebview();
-
-        if (!webview) return log("❌ No webview");
-
-        window.aiState.ready = false;
-        webview.reload();
+        document.getElementById("browser-view").reload();
       }
 
       function log(msg) {
@@ -155,34 +137,6 @@
       }
 
       // INIT
-      window.onload = async () => {
-        renderBrowser();
-
-        const url = document.getElementById("url").value;
-
-        try {
-          const res = await fetch("http://localhost:3001/init", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              url,
-            }),
-          });
-
-          if (!res.ok) {
-            throw new Error(`Init failed: HTTP ${res.status}`);
-          }
-
-          const data = await res.json();
-          if (!data.success) {
-            console.error("Backend init error:", data.error);
-          }
-        } catch (err) {
-          console.error("Failed to initialize backend:", err.message);
-        }
-      };
     </script>
 
     <script src="ai.js"></script>

@@ -2,73 +2,6 @@ const form = document.getElementById("ai-form");
 const input = document.getElementById("cmd");
 
 let currentTextNode;
-let currentSteps = [];
-let currentStepIndex = 0;
-
-// ==========================
-// PLANNER STATE
-// ==========================
-function initializePlanner(steps) {
-  currentSteps = steps;
-  currentStepIndex = 0;
-
-  // Create planner message block
-  const logs = document.getElementById("logs");
-  const block = document.createElement("div");
-  block.classList.add("msg-block");
-
-  const header = document.createElement("div");
-  header.classList.add("ai-msg");
-  header.innerHTML = `<strong>🔄 Executing ${steps.length} Steps...</strong>`;
-  block.appendChild(header);
-
-  // Add step list
-  const stepListDiv = document.createElement("div");
-  stepListDiv.id = "step-list-container";
-  stepListDiv.classList.add("planner-steps");
-
-  steps.forEach((step, idx) => {
-    const stepDiv = document.createElement("div");
-    stepDiv.classList.add("step-item");
-    stepDiv.id = `step-${idx}`;
-    stepDiv.innerHTML = `
-      <div class="step-number">${idx + 1}</div>
-      <div class="step-content">
-        <div class="step-action">${step.tool.toUpperCase()}</div>
-        <div class="step-details">${JSON.stringify(step.args)}</div>
-      </div>
-      <div class="step-status"></div>
-    `;
-    stepListDiv.appendChild(stepDiv);
-  });
-
-  block.appendChild(stepListDiv);
-  logs.appendChild(block);
-  logs.scrollTop = logs.scrollHeight;
-}
-
-function updateStepStatus(stepIdx, status, message) {
-  const stepEl = document.getElementById(`step-${stepIdx}`);
-  if (!stepEl) return;
-
-  stepEl.classList.remove("active", "success", "error");
-  stepEl.classList.add(status);
-
-  let statusText = "";
-  if (status === "active") statusText = "Executing...";
-  else if (status === "success") statusText = "✓ Complete";
-  else if (status === "error") statusText = `✕ ${message}`;
-
-  const existingStatus = stepEl.querySelector(".step-status");
-  if (existingStatus) existingStatus.remove();
-
-  if (statusText) {
-    const statusDiv = document.createElement("div");
-    statusDiv.className = "step-status";
-    statusDiv.textContent = statusText;
-    stepEl.querySelector(".step-content").appendChild(statusDiv);
-  }
-}
 
 // ==========================
 // ENTER SUBMIT
@@ -91,10 +24,7 @@ form.addEventListener("submit", async (e) => {
 
   createMessageBlock(cmd);
   startShimmer();
-  if (cmd === "read canvas") {
-    await testCanvas();
-    return;
-  }
+
   try {
     const res = await fetch("http://localhost:3001/ai", {
       method: "POST",
@@ -105,15 +35,10 @@ form.addEventListener("submit", async (e) => {
         command: cmd,
       }),
     });
-
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-    }
-
     const data = await res.json();
 
     if (!data.success) {
-      logResp(data.error || "Unknown error occurred");
+      logResp(data.error);
       stopShimmer();
       return;
     }
@@ -126,40 +51,27 @@ form.addEventListener("submit", async (e) => {
       return;
     }
 
-    // ACTION MODE - PLANNER
-    if (data.steps && data.steps.length > 0) {
-      initializePlanner(data.steps);
-
-      for (let i = 0; i < data.steps.length; i++) {
-        currentStepIndex = i;
-        const step = data.steps[i];
-
-        updateStepStatus(i, "active");
-
-        try {
-          await runStep(step, i);
-          updateStepStatus(i, "success");
-        } catch (err) {
-          updateStepStatus(i, "error", err.message);
-          logResp(`Step ${i + 1} failed: ${err.message}`);
-          throw err;
-        }
-      }
+    // ACTION MODE
+    for (const step of data.steps) {
+      await runStep(step);
     }
 
     input.value = "";
     stopShimmer();
+
+    input.value = "";
   } catch (err) {
-    logResp(`Error: ${err.message}`);
-    stopShimmer();
+    logResp(err.message);
   }
+
+  stopShimmer();
 });
 
 // ==========================
 // RUN STEP
 // ==========================
-async function runStep(step, stepIdx) {
-  logResp(`[Step ${stepIdx + 1}] Executing: ${step.tool}`);
+async function runStep(step) {
+  logResp("STEP:\n" + JSON.stringify(step, null, 2));
 
   const r = await fetch("http://localhost:3001/step", {
     method: "POST",
@@ -172,77 +84,35 @@ async function runStep(step, stepIdx) {
   const d = await r.json();
 
   if (!d.success) {
-    logResp(`[Step ${stepIdx + 1}] ERROR: ${d.error}`);
+    logResp("ERROR:\n" + d.error);
     throw new Error(d.error);
   }
 
   await mirror(d.url);
 
   if (d.content) {
-    logResp(`[Step ${stepIdx + 1}] READ:\n\n${d.content}`);
+    logResp("READ:\n\n" + d.content);
   }
-
-  logResp(`[Step ${stepIdx + 1}] Completed ✓`);
 }
 
 // ==========================
 // MIRROR PLAYWRIGHT → WEBVIEW
 // ==========================
 async function mirror(url) {
-  const webview = document.getElementById("webview");
-
-  const r = await fetch("http://localhost:3001/cookies");
-  const d = await r.json();
+  const webview = document.getElementById("browser-view");
 
   return new Promise((resolve) => {
-    const done = async () => {
+    const done = () => {
       webview.removeEventListener("did-finish-load", done);
-
-      if (d.success) {
-        for (const c of d.cookies) {
-          try {
-            await webview.executeJavaScript(`
-              document.cookie =
-                "${c.name}=${c.value}; path=${c.path}; domain=${c.domain}";
-            `);
-          } catch {}
-        }
-      }
 
       resolve();
     };
 
     webview.addEventListener("did-finish-load", done);
 
-    if (webview.src !== url) {
-      webview.src = url;
-    } else {
-      resolve();
-    }
+    webview.loadURL(url);
   });
 }
-
-setInterval(syncMirror, 1500);
-async function testCanvas() {
-  const r = await fetch("http://localhost:3001/canvas", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      id: "lobby",
-    }),
-  });
-
-  const d = await r.json();
-
-  console.log("ELECTRON CANVAS:", d);
-
-  if (d.content) {
-    logResp(d.content);
-  }
-}
-//testCanvas();
 // ==========================
 // UI BLOCK
 // ==========================

@@ -1,21 +1,21 @@
-const { app, BrowserWindow, Menu } = require("electron");
+const { app, BrowserWindow } = require("electron");
+
+// IMPORTANT
+app.commandLine.appendSwitch("remote-debugging-port", "9222");
 
 let win;
 
 function createWindow() {
   win = new BrowserWindow({
-    width: 1400,
+    width: 1600,
     height: 900,
-    autoHideMenuBar: true,
     webPreferences: {
       preload: __dirname + "/preload.js",
       webviewTag: true,
       contextIsolation: true,
+      nodeIntegration: false,
     },
   });
-
-  // remove top menu
-  Menu.setApplicationMenu(null);
 
   win.loadFile("renderer/index.html");
 
@@ -26,14 +26,6 @@ function createWindow() {
 
 app.whenReady().then(createWindow);
 
-app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow();
-  }
-});
-
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
-  }
+  app.quit();
 });
