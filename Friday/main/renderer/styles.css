@@ -13,7 +13,7 @@ body {
   color: initial;
   font-weight: 500;
   font-size: 14px;
-  background-color: #22282e;
+
   color: #434c55;
   overflow: hidden;
 }
@@ -444,4 +444,32 @@ webview {
   background-color: rgb(67 76 85 / 3%);
   border-radius: 8px;
   margin-top: 6px;
+}
+
+/* /// Code Try - Wants to remove  /// */
+#layout {
+  display: flex;
+  width: 100%;
+  height: calc(100vh - 10px);
+}
+
+#browser {
+  flex: 1;
+  min-width: 800px;
+}
+
+#ai {
+  display: none;
+}
+
+#aiForm {
+  width: 400px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column-reverse;
+  padding: 0px 10px;
+}
+#ai-form {
+  display: flex;
+  flex-direction: column;
 }

@@ -11,8 +11,29 @@ app.use(express.json());
 const MODEL = "qwen3:8b";
 
 let browser = null;
-let context = null;
 let page = null;
+
+async function connectCDP() {
+  let lastError;
+
+  for (let i = 0; i < 30; i++) {
+    try {
+      const browser = await chromium.connectOverCDP("http://127.0.0.1:9222");
+
+      console.log("✅ Connected to Electron CDP");
+
+      return browser;
+    } catch (err) {
+      lastError = err;
+
+      console.log(`Waiting for Electron CDP... ${i + 1}/30`);
+
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+
+  throw lastError;
+}
 
 app.post("/init", async (req, res) => {
   try {
@@ -55,25 +76,43 @@ async function getDOM() {
   }));
 }
 async function connectCDP() {
-  let lastError;
+  console.log("Connecting to Electron CDP...");
 
-  for (let i = 0; i < 30; i++) {
-    try {
-      const browser = await chromium.connectOverCDP("http://127.0.0.1:9222");
+  const browser = await chromium.connectOverCDP("http://127.0.0.1:9222");
 
-      console.log("✅ Connected to Electron CDP");
+  return browser;
+}
 
-      return browser;
-    } catch (err) {
-      lastError = err;
-
-      console.log(`Waiting for Electron CDP... (${i + 1}/30)`);
-
-      await new Promise((r) => setTimeout(r, 1000));
-    }
+async function getActivePage() {
+  if (!browser) {
+    browser = await connectCDP();
   }
 
-  throw lastError;
+  for (let i = 0; i < 30; i++) {
+    const contexts = browser.contexts();
+
+    if (contexts.length) {
+      const ctx = contexts[0];
+
+      const pages = ctx.pages();
+
+      const page = pages.find(
+        (p) =>
+          !p.url().startsWith("devtools://") &&
+          !p.url().startsWith("chrome://"),
+      );
+
+      if (page) {
+        return page;
+      }
+    }
+
+    console.log(`Waiting for Electron page... (${i + 1}/30)`);
+
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+
+  throw new Error("Electron page not found");
 }
 async function getActivePage() {
   if (!browser) {
@@ -107,13 +146,7 @@ async function getActivePage() {
 async function ensurePage() {
   return await getActivePage();
 }
-async function ensurePage() {
-  if (!page) {
-    throw new Error("Playwright page not initialized");
-  }
 
-  return page;
-}
 // =====================
 // REGEX FAST PATH
 // =====================
