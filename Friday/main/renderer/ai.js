@@ -26,7 +26,7 @@ form.addEventListener("submit", async (e) => {
   startShimmer();
 
   try {
-    const res = await fetch("http://localhost:3001/ai", {
+    const res = await fetch("http://localhost:3001/run", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -73,12 +73,12 @@ form.addEventListener("submit", async (e) => {
 async function runStep(step) {
   logResp("STEP:\n" + JSON.stringify(step, null, 2));
 
-  const r = await fetch("http://localhost:3001/step", {
+  const r = await fetch("http://localhost:3001/tool", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(step),
+    body: JSON.stringify(step), // {tool, args}
   });
 
   const d = await r.json();
@@ -87,9 +87,7 @@ async function runStep(step) {
     throw new Error(d.error);
   }
 
-  if (d.content) {
-    logResp(d.content);
-  }
+  logResp(JSON.stringify(d.result, null, 2));
 }
 
 // ==========================

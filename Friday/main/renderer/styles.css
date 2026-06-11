@@ -177,7 +177,7 @@ button:hover {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 10px;
+  padding: 0px 10px;
   overflow-y: auto;
 }
 
@@ -450,7 +450,7 @@ webview {
 #layout {
   display: flex;
   width: 100%;
-  height: calc(100vh - 10px);
+  height: calc(100vh - 0px);
 }
 
 #browser {
@@ -467,7 +467,7 @@ webview {
   flex-shrink: 0;
   display: flex;
   flex-direction: column-reverse;
-  padding: 0px 10px;
+  padding: 10px;
 }
 #ai-form {
   display: flex;

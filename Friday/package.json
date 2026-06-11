@@ -5,7 +5,8 @@
   "scripts": {
     "start": "electron .",
     "backend": "node backend/server.js",
-    "dev": "concurrently \"npm run backend\" \"npm start\""
+    "ollama": "ollama serve",
+    "dev": "concurrently \"npm run backend\" \"npm start\" \"ollama\""
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -15,7 +16,8 @@
     "express": "^4.22.1",
     "node-fetch": "^2.7.0",
     "openai": "^6.32.0",
-    "playwright": "^1.60.0"
+    "playwright": "^1.60.0",
+    "type": "module"
   },
   "devDependencies": {
     "concurrently": "^8.0.0"

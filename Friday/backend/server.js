@@ -1,63 +1,47 @@
-const express = require("express");
-const cors = require("cors");
-const { chromium } = require("playwright");
-const MCP = require("./mcp");
+import express from "express";
+import cors from "cors";
 
+import PlaywrightMCPClient from "./mcp-client.js";
+import Planner from "./planner.js";
+import Resolver from "./resolver.js";
+import ToolMap from "./tool-map.js";
 const app = express();
-
 app.use(cors());
 app.use(express.json());
+app.use((req, res, next) => {
+  console.log("➡️", req.method, req.url);
+  next();
+});
+// =====================================================
+// CORE INSTANCES
+// =====================================================
 
-const MODEL = "qwen3:8b";
+const mcp = new PlaywrightMCPClient("http://localhost:8931/mcp");
+const resolver = new Resolver(mcp);
+const toolMap = new ToolMap(resolver);
 
-let browser = null;
-let page = null;
+const planner = new Planner({
+  model: "qwen3:8b",
+  endpoint: "http://localhost:11434/api/generate",
+});
 
-async function connectCDP() {
-  let lastError;
-
-  for (let i = 0; i < 30; i++) {
-    try {
-      const browser = await chromium.connectOverCDP("http://127.0.0.1:9222");
-
-      console.log("✅ Connected to Electron CDP");
-
-      return browser;
-    } catch (err) {
-      lastError = err;
-
-      console.log(`Waiting for Electron CDP... ${i + 1}/30`);
-
-      await new Promise((r) => setTimeout(r, 1000));
-    }
-  }
-
-  throw lastError;
-}
+// =====================================================
+// MCP INIT
+// =====================================================
 
 app.post("/init", async (req, res) => {
   try {
-    const p = await getActivePage();
+    await mcp.connect();
 
-    fetch("http://localhost:11434/api/generate", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        prompt: "hi",
-        stream: false,
-      }),
-    }).catch(() => {});
+    const tools = await mcp.listTools();
 
     res.json({
       success: true,
-      url: p.url(),
+      message: "MCP connected",
+      tools,
     });
   } catch (err) {
-    console.error(err);
-
+    console.error("INIT ERROR:", err);
     res.status(500).json({
       success: false,
       error: err.message,
@@ -65,224 +49,135 @@ app.post("/init", async (req, res) => {
   }
 });
 
-// =====================
-// DOM
-// =====================
-async function getDOM() {
-  const p = await ensurePage();
+// =====================================================
+// SNAPSHOT (debug helper)
+// =====================================================
 
-  return await p.evaluate(() => ({
-    text: document.body.innerText.slice(0, 3000),
-  }));
-}
-async function connectCDP() {
-  console.log("Connecting to Electron CDP...");
+app.get("/snapshot", async (req, res) => {
+  try {
+    const snapshot = await mcp.snapshot();
 
-  const browser = await chromium.connectOverCDP("http://127.0.0.1:9222");
-
-  return browser;
-}
-
-async function getActivePage() {
-  if (!browser) {
-    browser = await connectCDP();
+    res.json({
+      success: true,
+      snapshot,
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err.message,
+    });
   }
+});
 
-  for (let i = 0; i < 30; i++) {
-    const contexts = browser.contexts();
+// =====================================================
+// MAIN AI EXECUTOR
+// =====================================================
 
-    if (contexts.length) {
-      const ctx = contexts[0];
+app.post("/run", async (req, res) => {
+  try {
+    const { command } = req.body;
 
-      const pages = ctx.pages();
-
-      const page = pages.find(
-        (p) =>
-          !p.url().startsWith("devtools://") &&
-          !p.url().startsWith("chrome://"),
-      );
-
-      if (page) {
-        return page;
-      }
-    }
-
-    console.log(`Waiting for Electron page... (${i + 1}/30)`);
-
-    await new Promise((r) => setTimeout(r, 1000));
-  }
-
-  throw new Error("Electron page not found");
-}
-async function getActivePage() {
-  if (!browser) {
-    browser = await connectCDP();
-  }
-
-  const contexts = browser.contexts();
-
-  if (!contexts.length) {
-    throw new Error("No Electron context found");
-  }
-
-  context = contexts[0];
-
-  const pages = context.pages();
-
-  const active =
-    pages.find(
-      (p) =>
-        !p.url().startsWith("devtools://") && !p.url().startsWith("chrome://"),
-    ) || pages[0];
-
-  if (!active) {
-    throw new Error("No active page found");
-  }
-
-  page = active;
-
-  return page;
-}
-async function ensurePage() {
-  return await getActivePage();
-}
-
-// =====================
-// REGEX FAST PATH
-// =====================
-function regexPlan(command) {
-  const steps = [];
-
-  const parts = String(command)
-    .split(/\d+\)/)
-    .map((x) => x.trim())
-    .filter(Boolean);
-
-  for (const p of parts) {
-    const lower = p.toLowerCase();
-
-    if (lower.startsWith("click")) {
-      steps.push({
-        tool: "click",
-        args: { text: p.replace(/click/i, "").trim() },
+    if (!command) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing command",
       });
-    } else if (lower.startsWith("type")) {
-      const m = p.match(/type\s+(.+?)\s+as\s+(.+)/i);
+    }
 
-      if (m) {
-        steps.push({
-          tool: "type",
-          args: {
-            field: m[1],
-            value: m[2],
-          },
+    let pageText = "";
+
+    try {
+      const snap = await mcp.snapshot();
+      pageText =
+        typeof snap === "string"
+          ? snap
+          : snap?.content?.map((x) => x.text).join("\n") || "";
+    } catch (e) {
+      console.warn("Snapshot failed:", e.message);
+    }
+
+    const plan = await planner.plan(command, pageText);
+
+    if (plan.mode === "chat") {
+      return res.json({
+        success: true,
+        mode: "chat",
+        reply: plan.reply,
+      });
+    }
+
+    const results = [];
+
+    for (const step of plan.steps) {
+      try {
+        const result = await toolMap.execute(step);
+
+        results.push({
+          tool: step.tool,
+          args: step.args,
+          result,
+          success: true,
         });
-      }
-    } else if (lower.startsWith("read") || lower.startsWith("get")) {
-      const m = p.match(/"(.*?)"/) || p.match(/read\s+(.+?)\s+passage/i);
-
-      if (m) {
-        steps.push({
-          tool: "read",
-          args: { title: m[1] },
+      } catch (err) {
+        results.push({
+          tool: step.tool,
+          args: step.args,
+          success: false,
+          error: err.message,
         });
       }
     }
-  }
 
-  return steps.length ? steps : null;
-}
-
-// =====================
-// SAFE PARSE
-// =====================
-function safeParse(raw) {
-  raw = raw.replace(/```json|```/g, "").trim();
-
-  const m = raw.match(/\{[\s\S]*\}/);
-
-  if (!m) return null;
-
-  try {
-    return JSON.parse(m[0]);
-  } catch {
-    return null;
-  }
-}
-
-// =====================
-// QWEN ROUTER
-// =====================
-async function aiRouter(command) {
-  const fast = regexPlan(command);
-
-  if (fast) {
-    return {
+    return res.json({
+      success: true,
       mode: "action",
-      steps: fast,
-    };
+      steps: results,
+    });
+  } catch (err) {
+    console.error("RUN ERROR:", err);
+
+    return res.status(500).json({
+      success: false,
+      error: err.message,
+    });
   }
+});
+// app.post("/step", async (req, res) => {
+//   try {
+//     const step = req.body;
 
-  const dom = await getDOM();
+//     // ❌ WRONG: raw MCP call
+//     // const result = await toolMap.execute(step);
 
-  const prompt = `
-Return ONLY valid JSON.
+//     // ✅ FIX: resolve text → real target first
+//     const result = await toolMap.execute(step);
 
-CHAT:
-{"mode":"chat","reply":"..."}
+//     res.json({
+//       success: true,
+//       result,
+//     });
+//   } catch (err) {
+//     res.status(500).json({
+//       success: false,
+//       error: err.message,
+//     });
+//   }
+// });
+// =====================================================
+// DIRECT TOOL EXECUTION (debug/manual control)
+// =====================================================
 
-ACTION:
-{
-"mode":"action",
-"steps":[
-{"tool":"click","args":{"text":"..."}},
-{"tool":"type","args":{"field":"...","value":"..."}},
-{"tool":"read","args":{"title":"..."}}
-]
-}
+// =====================================================
+// MCP TOOL LIST
+// =====================================================
 
-PAGE:
-${dom.text}
-
-USER:
-${command}
-`;
-
-  const r = await fetch("http://localhost:11434/api/generate", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      prompt,
-      stream: false,
-      options: {
-        temperature: 0,
-      },
-    }),
-  });
-
-  const json = await r.json();
-
-  return (
-    safeParse(json.response) || {
-      mode: "chat",
-      reply: json.response,
-    }
-  );
-}
-
-// =====================
-// AI
-// =====================
-app.post("/ai", async (req, res) => {
+app.get("/tools", async (req, res) => {
   try {
-    const result = await aiRouter(req.body.command);
+    const tools = await mcp.listTools();
 
     res.json({
       success: true,
-      ...result,
+      tools,
     });
   } catch (err) {
     res.status(500).json({
@@ -292,43 +187,19 @@ app.post("/ai", async (req, res) => {
   }
 });
 
-// =====================
-// NAVIGAtion
-// =====================
-app.post("/navigate", async (req, res) => {
-  res.json({
-    success: true,
-  });
-});
+// =====================================================
+// SERVER START
+// =====================================================
 
-// =====================
-// STEP
-// =====================
-app.post("/step", async (req, res) => {
+const PORT = 3001;
+
+app.listen(PORT, async () => {
+  console.log(`🚀 Server running on http://localhost:${PORT}`);
+
   try {
-    const p = await ensurePage();
-
-    const result = await MCP.execute({ page: p }, req.body.tool, req.body.args);
-
-    await p
-      .waitForLoadState("domcontentloaded", {
-        timeout: 3000,
-      })
-      .catch(() => {});
-
-    res.json({
-      success: true,
-      ...result,
-      url: p.url(),
-    });
+    await mcp.connect();
+    console.log("✅ MCP auto-connected on startup");
   } catch (err) {
-    console.error(err);
-
-    res.status(500).json({
-      success: false,
-      error: err.message,
-    });
+    console.warn("⚠️ MCP auto-connect failed:", err.message);
   }
 });
-
-app.listen(3001, () => console.log("Jarvis ready :3001"));
