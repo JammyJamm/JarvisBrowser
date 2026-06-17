@@ -66,21 +66,55 @@ class PlaywrightClient {
   }
   async getPage() {
     await this.connect();
-    return this.page;
-  }
 
+    for (const context of this.browser.contexts()) {
+      for (const page of context.pages()) {
+        const url = page.url();
+
+        if (
+          url.startsWith("http") &&
+          !url.includes("localhost") &&
+          !url.includes("renderer")
+        ) {
+          this.page = page;
+          return page;
+        }
+      }
+    }
+
+    throw new Error("No BrowserView page found");
+  }
+  async ensureConnected() {
+    try {
+      const page = await this.getPage();
+
+      await page.title();
+
+      return page;
+    } catch (err) {
+      console.log("Reconnecting Playwright...");
+
+      this.browser = null;
+      this.context = null;
+      this.page = null;
+
+      await this.connect();
+
+      return await this.getPage();
+    }
+  }
   // ==========================================
   // DEBUG
   // ==========================================
 
   async html() {
-    const page = await this.getPage();
+    const page = await this.ensureConnected();
 
     return await page.content();
   }
 
   async snapshot() {
-    const page = await this.getPage();
+    const page = await this.ensureConnected();
 
     return {
       html: await page.content(),
@@ -95,7 +129,7 @@ class PlaywrightClient {
   // ==========================================
 
   async clickByText(text) {
-    const page = await this.getPage();
+    const page = await this.ensureConnected();
 
     console.log("=================================");
     console.log("Current URL:", page.url());
@@ -127,7 +161,7 @@ class PlaywrightClient {
   // ==========================================
 
   async type(selector, value) {
-    const page = await this.getPage();
+    const page = await this.ensureConnected();
 
     const locator = page.locator(selector).first();
 
@@ -146,7 +180,7 @@ class PlaywrightClient {
   }
 
   async typeByLabel(label, value) {
-    const page = await this.getPage();
+    const page = await this.ensureConnected();
 
     const locator = page
       .getByLabel(label, {
@@ -169,7 +203,7 @@ class PlaywrightClient {
   // ==========================================
 
   async hoverByText(text) {
-    const page = await this.getPage();
+    const page = await this.ensureConnected();
 
     await page
       .getByText(text, {
@@ -190,7 +224,7 @@ class PlaywrightClient {
   // ==========================================
 
   async selectOption(selector, value) {
-    const page = await this.getPage();
+    const page = await this.ensureConnected();
 
     await page.locator(selector).first().selectOption(value);
 
@@ -207,7 +241,7 @@ class PlaywrightClient {
   // ==========================================
 
   async press(key) {
-    const page = await this.getPage();
+    const page = await this.ensureConnected();
 
     await page.keyboard.press(key);
 
@@ -240,8 +274,11 @@ class PlaywrightClient {
     const page = await this.getPage();
 
     await page.goto(url, {
-      waitUntil: "domcontentloaded",
+      waitUntil: "networkidle",
+      timeout: 60000,
     });
+
+    await page.waitForTimeout(3000);
 
     return {
       success: true,
@@ -251,7 +288,7 @@ class PlaywrightClient {
   }
 
   async reload() {
-    const page = await this.getPage();
+    const page = await this.ensureConnected();
 
     await page.reload({
       waitUntil: "domcontentloaded",
@@ -264,7 +301,7 @@ class PlaywrightClient {
   }
 
   async back() {
-    const page = await this.getPage();
+    const page = await this.ensureConnected();
 
     await page.goBack();
 
@@ -295,7 +332,7 @@ class PlaywrightClient {
     console.log("=====================================\n");
   }
   async forward() {
-    const page = await this.getPage();
+    const page = await this.ensureConnected();
 
     await page.goForward();
 

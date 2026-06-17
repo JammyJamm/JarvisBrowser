@@ -3,7 +3,7 @@ const path = require("path");
 
 let win;
 let browserView;
-
+let htmlLoggerStarted = false;
 // Enable Chrome DevTools Protocol
 app.commandLine.appendSwitch("remote-debugging-port", "9222");
 
@@ -46,7 +46,27 @@ async function updateBounds() {
     console.error("updateBounds:", err);
   }
 }
+function startHtmlLogger() {
+  if (htmlLoggerStarted) {
+    return;
+  }
 
+  htmlLoggerStarted = true;
+
+  // setInterval(async () => {
+  //   try {
+  //     const html = await browserView.webContents.executeJavaScript(
+  //       "document.documentElement.outerHTML",
+  //     );
+
+  //     console.log("========== ELECTRON HTML ==========");
+  //     console.log(html.substring(0, 2000));
+  //     console.log("===================================");
+  //   } catch (err) {
+  //     console.error(err);
+  //   }
+  // }, 5000);
+}
 /* ---------------------------------------------------- */
 /* Get Current HTML                                     */
 /* ---------------------------------------------------- */
@@ -92,6 +112,8 @@ async function createWindow() {
 
   await win.loadFile(path.join(__dirname, "renderer", "index.html"));
 
+  startHtmlLogger();
+
   win.maximize();
 
   win.webContents.openDevTools();
@@ -118,17 +140,17 @@ async function createWindow() {
   // Single HTML logger
   // -----------------------------
 
-  htmlLogger = setInterval(async () => {
-    try {
-      const html = await getCurrentHTML();
+  // htmlLogger = setInterval(async () => {
+  //   try {
+  //     const html = await getCurrentHTML();
 
-      console.log("\n========== ELECTRON HTML ==========");
-      console.log(html.substring(0, 5000));
-      console.log("===================================\n");
-    } catch (e) {
-      console.error(e);
-    }
-  }, 5000);
+  //     console.log("\n========== ELECTRON HTML ==========");
+  //     console.log(html.substring(0, 5000));
+  //     console.log("===================================\n");
+  //   } catch (e) {
+  //     console.error(e);
+  //   }
+  // }, 5000);
 }
 
 /* ---------------------------------------------------- */

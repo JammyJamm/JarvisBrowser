@@ -1,11 +1,13 @@
 import express from "express";
 import cors from "cors";
-
+import CredentialManager from "./auth/credential-manager.js";
+import ProfileManager from "./auth/profile-manager.js";
 import PlaywrightMCPClient from "./mcp-client.js";
 import Planner from "./planner.js";
 import Resolver from "./resolver.js";
 import ToolMap from "./tool-map.js";
 
+import crypto from "crypto";
 const app = express();
 
 app.use(cors());
@@ -111,18 +113,18 @@ app.post("/run", async (req, res) => {
       });
     }
 
-    console.log("\n==================================");
-    console.log("USER COMMAND:", command);
-    console.log("==================================");
+    // console.log("\n==================================");
+    // console.log("USER COMMAND:", command);
+    // console.log("==================================");
 
     let pageText = "";
 
     try {
       const html = await mcp.html();
 
-      console.log("========== HTML ==========");
-      console.log(html.substring(0, 3000));
-      console.log("==========================");
+      // console.log("========== HTML ==========");
+      // console.log(html.substring(0, 3000));
+      // console.log("==========================");
     } catch (e) {
       console.warn("HTML unavailable:", e.message);
     }
@@ -130,24 +132,24 @@ app.post("/run", async (req, res) => {
     try {
       const snap = await mcp.snapshot();
 
-      console.log("========== SNAPSHOT ==========");
-      console.dir(snap, { depth: null });
-      console.log("==============================");
+      // console.log("========== SNAPSHOT ==========");
+      // console.dir(snap, { depth: null });
+      // console.log("==============================");
 
-      pageText = snap?.text || "";
+      pageText = (snap?.text || "").substring(0, 5000);
 
-      console.log("========== PAGE TEXT ==========");
-      console.log(pageText.substring(0, 5000));
-      console.log("===============================");
+      // console.log("========== PAGE TEXT ==========");
+      // console.log(pageText.substring(0, 5000));
+      // console.log("===============================");
     } catch (e) {
       console.warn("Snapshot failed:", e.message);
     }
 
     const plan = await planner.plan(command, pageText);
 
-    console.log("========== PLAN ==========");
-    console.dir(plan, { depth: null });
-    console.log("==========================");
+    // console.log("========== PLAN ==========");
+    // console.dir(plan, { depth: null });
+    // console.log("==========================");
 
     if (plan.mode === "chat") {
       return res.json({
@@ -164,7 +166,15 @@ app.post("/run", async (req, res) => {
         console.log("Executing Step:");
         console.dir(step, { depth: null });
 
-        const result = await toolMap.execute(step);
+        let result;
+
+        try {
+          result = await toolMap.execute(step);
+        } catch (err) {
+          console.log("Primary failed. Self-healing...");
+
+          result = await resolver.selfHeal(step);
+        }
 
         results.push({
           tool: step.tool,
@@ -205,8 +215,8 @@ app.post("/run", async (req, res) => {
 
 app.post("/tool", async (req, res) => {
   try {
-    console.log("========== TOOL ==========");
-    console.dir(req.body, { depth: null });
+    // console.log("========== TOOL ==========");
+    // console.dir(req.body, { depth: null });
 
     const result = await toolMap.execute({
       tool: req.body.tool,
@@ -289,7 +299,30 @@ app.get("/test-click", async (req, res) => {
 // =====================================================
 // START
 // =====================================================
+// =====================================================
+// SESSION MANAGEMENT
+// =====================================================
+const credentialManager = new CredentialManager();
 
+const profileManager = new ProfileManager();
+app.post("/credentials/save", async (req, res) => {
+  const { site, username, password } = req.body;
+
+  credentialManager.save(site, username, password);
+
+  res.json({
+    success: true,
+  });
+});
+app.get("/credentials/:site", async (req, res) => {
+  res.json({
+    success: true,
+    credential: credentialManager.get(req.params.site),
+  });
+});
+// =====================================================
+// SESSION MANAGEMENT Ends
+// =====================================================
 const PORT = 3001;
 
 app.listen(PORT, async () => {

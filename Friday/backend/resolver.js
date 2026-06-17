@@ -179,7 +179,255 @@ export default class Resolver {
 
     throw lastError;
   }
+  // ---------------------------------------
+  // SELF HEALING
+  // ---------------------------------------
+  async clickSmart(text) {
+    const page = await this.mcp.getPage();
 
+    const strategies = [
+      () => page.getByText(text, { exact: false }).first().click(),
+
+      () => page.locator(`text=${text}`).first().click(),
+
+      () => page.locator("button").filter({ hasText: text }).first().click(),
+
+      () => page.locator("a").filter({ hasText: text }).first().click(),
+
+      () =>
+        page
+          .getByRole("button", {
+            name: new RegExp(text, "i"),
+          })
+          .click(),
+
+      () =>
+        page
+          .getByRole("link", {
+            name: new RegExp(text, "i"),
+          })
+          .click(),
+    ];
+
+    for (const strategy of strategies) {
+      try {
+        await strategy();
+
+        console.log("CLICK SUCCESS");
+        return true;
+      } catch {}
+    }
+
+    throw new Error(`Cannot click ${text}`);
+  }
+  async typeSmart(field, value) {
+    const page = await this.mcp.getPage();
+
+    const candidates = [
+      `input[name*="${field}" i]`,
+      `input[id*="${field}" i]`,
+      `textarea[name*="${field}" i]`,
+      `textarea[id*="${field}" i]`,
+    ];
+    const strategies = [
+      () =>
+        page
+          .getByPlaceholder(/search/i)
+          .first()
+          .fill(value),
+
+      () => page.getByRole("textbox").first().fill(value),
+
+      () => page.locator('input[type="text"]').first().fill(value),
+
+      () => page.locator('input[title*="Search"]').first().fill(value),
+    ];
+    for (const selector of candidates) {
+      try {
+        const el = page.locator(selector).first();
+
+        if (await el.count()) {
+          await el.fill(value);
+
+          console.log("TYPE SUCCESS", selector);
+
+          return true;
+        }
+      } catch {}
+    }
+
+    throw new Error(`Cannot find field ${field}`);
+  }
+  async selfHeal(step) {
+    const page = await this.mcp.getPage();
+
+    const html = await page.content();
+
+    console.log("========== SELF HEAL ==========");
+    console.log(step);
+    console.log("===============================");
+    if (
+      step.tool === "type" &&
+      step.args.field.toLowerCase().includes("search")
+    ) {
+      return await this.searchSmart(step.args.value);
+    }
+    if (step.tool === "type") {
+      const inputs = await page.locator("input").evaluateAll((els) =>
+        els.map((e) => ({
+          id: e.id,
+          name: e.name,
+          placeholder: e.placeholder,
+        })),
+      );
+
+      console.log(inputs);
+
+      const field = step.args.field.toLowerCase();
+
+      const match = inputs.find(
+        (i) =>
+          i.id?.toLowerCase().includes(field) ||
+          i.name?.toLowerCase().includes(field) ||
+          i.placeholder?.toLowerCase().includes(field),
+      );
+
+      if (match) {
+        const selector = match.id ? `#${match.id}` : `[name="${match.name}"]`;
+
+        await page.locator(selector).fill(step.args.value);
+
+        return {
+          healed: true,
+          selector,
+        };
+      }
+    }
+
+    throw new Error("Self healing failed");
+  }
+  async searchSmart(query) {
+    const page = await this.mcp.getPage();
+
+    console.log("SEARCH SMART:", query);
+
+    // ==========================
+    // Find Search Input
+    // ==========================
+
+    const inputSelectors = [
+      'input[type="search"]',
+      'input[name*="search" i]',
+      'input[id*="search" i]',
+      'input[placeholder*="search" i]',
+      'input[aria-label*="search" i]',
+      'input[type="text"]',
+    ];
+
+    let input = null;
+
+    for (const selector of inputSelectors) {
+      try {
+        const el = page.locator(selector).first();
+
+        if (await el.count()) {
+          input = el;
+          break;
+        }
+      } catch {}
+    }
+
+    if (!input) {
+      throw new Error("Search box not found");
+    }
+
+    await input.click();
+    await input.fill(query);
+
+    console.log("Typed:", query);
+
+    // ==========================
+    // Try Enter First
+    // ==========================
+
+    try {
+      await input.press("Enter");
+
+      await page.waitForLoadState("networkidle", {
+        timeout: 5000,
+      });
+
+      console.log("Search via Enter");
+
+      return true;
+    } catch {}
+
+    // ==========================
+    // Search Buttons
+    // ==========================
+
+    const searchButtons = [
+      'button[type="submit"]',
+      'button[aria-label*="search" i]',
+      '[data-testid*="search" i]',
+      ".search-button",
+      ".search-btn",
+      "button",
+    ];
+
+    for (const selector of searchButtons) {
+      try {
+        const buttons = page.locator(selector);
+
+        const count = await buttons.count();
+
+        for (let i = 0; i < count; i++) {
+          const btn = buttons.nth(i);
+
+          const txt = ((await btn.textContent()) || "").toLowerCase();
+
+          if (
+            txt.includes("search") ||
+            txt.includes("find") ||
+            txt.includes("go")
+          ) {
+            await btn.click();
+
+            console.log("Search button clicked");
+
+            return true;
+          }
+        }
+      } catch {}
+    }
+
+    // ==========================
+    // SVG Search Icon
+    // ==========================
+
+    try {
+      const icons = [
+        "svg",
+        '[aria-label*="search" i]',
+        ".search-icon",
+        ".icon-search",
+      ];
+
+      for (const selector of icons) {
+        const icon = page.locator(selector).first();
+
+        if (await icon.count()) {
+          await icon.click();
+
+          console.log("Search icon clicked");
+
+          return true;
+        }
+      }
+    } catch {}
+
+    throw new Error("Search trigger not found");
+  }
   // ---------------------------------------
   // GENERIC EXECUTE
   // ---------------------------------------

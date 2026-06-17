@@ -209,7 +209,18 @@ export default class Planner {
       // ----------------------------------
       // WAIT
       // ----------------------------------
+      m = p.match(/^search\s+(.+)$/i);
 
+      if (m) {
+        steps.push({
+          tool: "search",
+          args: {
+            query: m[1].trim(),
+          },
+        });
+
+        continue;
+      }
       m = p.match(/^wait\s+([0-9]+)(ms|s)?$/i);
 
       if (m) {
@@ -352,34 +363,53 @@ User:
 
 ${command}
 `;
+    const controller = new AbortController();
 
-    const r = await fetch(this.ollama, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: this.model,
-        prompt,
-        stream: false,
-        options: {
-          temperature: 0,
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, 120000);
+
+    try {
+      const r = await fetch(this.ollama, {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          "Content-Type": "application/json",
         },
-      }),
-    });
+        body: JSON.stringify({
+          model: this.model,
+          prompt,
+          stream: false,
+          options: {
+            temperature: 0,
+          },
+        }),
+      });
 
-    const json = await r.json();
+      clearTimeout(timeout);
 
-    const parsed = this.safeParse(json.response);
+      const json = await r.json();
 
-    if (parsed) {
-      return parsed;
+      const parsed = this.safeParse(json.response);
+
+      if (parsed) {
+        return parsed;
+      }
+
+      return {
+        mode: "chat",
+        reply: json.response || "Unable to understand request.",
+      };
+    } catch (err) {
+      clearTimeout(timeout);
+
+      console.error("OLLAMA ERROR:", err.message);
+
+      return {
+        mode: "chat",
+        reply: `Planner failed: ${err.message}`,
+      };
     }
-
-    return {
-      mode: "chat",
-      reply: json.response || "Unable to understand request.",
-    };
   }
 
   // ====================================================

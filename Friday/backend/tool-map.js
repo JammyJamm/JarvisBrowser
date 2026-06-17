@@ -19,13 +19,13 @@ export default class ToolMap {
       // ---------------------------------
       case "click":
         return await this.resolver.click(args.text);
-
+      case "search":
+        return await this.resolver.searchSmart(args.query);
       // ---------------------------------
       // TYPE
       // ---------------------------------
       case "type":
-        return await this.resolver.type(args.field, args.value);
-
+        return await this.resolver.typeSmart(args.field, args.value);
       // ---------------------------------
       // SELECT OPTION
       // ---------------------------------
