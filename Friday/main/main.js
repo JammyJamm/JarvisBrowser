@@ -1,34 +1,72 @@
 const { app, BrowserWindow, WebContentsView, ipcMain } = require("electron");
-
 const path = require("path");
 
 let win;
 let browserView;
 
+// Enable Chrome DevTools Protocol
 app.commandLine.appendSwitch("remote-debugging-port", "9222");
 
+let htmlLogger = null;
+
+/* ---------------------------------------------------- */
+/* Resize BrowserView                                   */
+/* ---------------------------------------------------- */
+
 async function updateBounds() {
-  const bounds = await win.webContents.executeJavaScript(`
-    (() => {
-      const el = document.getElementById('browser');
+  if (!win || !browserView) return;
 
-      const r = el.getBoundingClientRect();
+  try {
+    const bounds = await win.webContents.executeJavaScript(`
+      (() => {
+        const el = document.getElementById("browser");
 
-      console.log('BROWSER DIV', r.width, r.height);
+        if (!el) {
+          return {
+            x: 0,
+            y: 0,
+            width: 1200,
+            height: 800
+          };
+        }
 
-      return {
-        x: Math.round(r.left),
-        y: Math.round(r.top),
-        width: Math.round(r.width),
-        height: Math.round(r.height)
-      };
-    })()
-  `);
+        const r = el.getBoundingClientRect();
 
-  console.log("VIEW BOUNDS:", bounds);
+        return {
+          x: Math.round(r.left),
+          y: Math.round(r.top),
+          width: Math.round(r.width),
+          height: Math.round(r.height)
+        };
+      })();
+    `);
 
-  browserView.setBounds(bounds);
+    browserView.setBounds(bounds);
+  } catch (err) {
+    console.error("updateBounds:", err);
+  }
 }
+
+/* ---------------------------------------------------- */
+/* Get Current HTML                                     */
+/* ---------------------------------------------------- */
+
+async function getCurrentHTML() {
+  if (!browserView) return "";
+
+  try {
+    return await browserView.webContents.executeJavaScript(`
+      document.documentElement.outerHTML
+    `);
+  } catch (e) {
+    console.error(e);
+    return "";
+  }
+}
+
+/* ---------------------------------------------------- */
+/* Window                                               */
+/* ---------------------------------------------------- */
 
 async function createWindow() {
   win = new BrowserWindow({
@@ -50,7 +88,7 @@ async function createWindow() {
 
   win.contentView.addChildView(browserView);
 
-  browserView.webContents.loadURL("https://example.com");
+  await browserView.webContents.loadURL("https://example.com");
 
   await win.loadFile(path.join(__dirname, "renderer", "index.html"));
 
@@ -65,15 +103,37 @@ async function createWindow() {
   browserView.webContents.on("did-navigate-in-page", (_, url) => {
     win.webContents.send("url-changed", url);
   });
+  browserView.webContents.on("did-finish-load", () => {
+    console.log("WEBVIEW URL:", browserView.webContents.getURL());
+  });
   win.webContents.on("did-finish-load", () => {
-    setTimeout(updateBounds, 500);
+    setTimeout(updateBounds, 300);
   });
-  win.on("resize", () => {
-    updateBounds();
-  });
-  ipcMain.handle("resize-browser", updateBounds);
+
+  win.on("resize", updateBounds);
+
   console.log("Electron Ready");
+
+  // -----------------------------
+  // Single HTML logger
+  // -----------------------------
+
+  htmlLogger = setInterval(async () => {
+    try {
+      const html = await getCurrentHTML();
+
+      console.log("\n========== ELECTRON HTML ==========");
+      console.log(html.substring(0, 5000));
+      console.log("===================================\n");
+    } catch (e) {
+      console.error(e);
+    }
+  }, 5000);
 }
+
+/* ---------------------------------------------------- */
+/* Navigation                                           */
+/* ---------------------------------------------------- */
 
 ipcMain.handle("navigate", async (_, url) => {
   await browserView.webContents.loadURL(url);
@@ -81,54 +141,63 @@ ipcMain.handle("navigate", async (_, url) => {
 });
 
 ipcMain.handle("back", async () => {
-  if (browserView?.webContents.canGoBack()) {
+  if (browserView.webContents.canGoBack()) {
     browserView.webContents.goBack();
   }
   return true;
 });
 
 ipcMain.handle("forward", async () => {
-  if (browserView?.webContents.canGoForward()) {
+  if (browserView.webContents.canGoForward()) {
     browserView.webContents.goForward();
   }
   return true;
 });
 
 ipcMain.handle("reload", async () => {
-  browserView?.webContents.reload();
+  browserView.webContents.reload();
   return true;
 });
 
 ipcMain.handle("resize-browser", async () => {
-  console.log("resize-browser called");
   await updateBounds();
   return true;
 });
 
-async function updateBounds() {
-  const bounds = await win.webContents.executeJavaScript(`
-    (() => {
-      const el = document.getElementById('browser');
+/* ---------------------------------------------------- */
+/* NEW: Return live BrowserView HTML                    */
+/* ---------------------------------------------------- */
 
-      const r = el.getBoundingClientRect();
+ipcMain.handle("browser-html", async () => {
+  return await getCurrentHTML();
+});
 
-      console.log('BROWSER DIV', r.width, r.height);
+/* ---------------------------------------------------- */
+/* NEW: Return current URL                              */
+/* ---------------------------------------------------- */
 
-      return {
-        x: Math.round(r.left),
-        y: Math.round(r.top),
-        width: Math.round(r.width),
-        height: Math.round(r.height)
-      };
-    })()
-  `);
+ipcMain.handle("browser-url", async () => {
+  return browserView.webContents.getURL();
+});
 
-  console.log("VIEW BOUNDS:", bounds);
+/* ---------------------------------------------------- */
+/* NEW: Execute JS inside BrowserView                   */
+/* ---------------------------------------------------- */
 
-  browserView.setBounds(bounds);
-}
+ipcMain.handle("browser-execute", async (_, script) => {
+  return await browserView.webContents.executeJavaScript(script);
+});
+
+/* ---------------------------------------------------- */
+/* App                                                  */
+/* ---------------------------------------------------- */
+
 app.whenReady().then(createWindow);
 
 app.on("window-all-closed", () => {
+  if (htmlLogger) {
+    clearInterval(htmlLogger);
+  }
+
   app.quit();
 });

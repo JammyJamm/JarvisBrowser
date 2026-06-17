@@ -53,7 +53,7 @@ form.addEventListener("submit", async (e) => {
 
     // ACTION MODE
     for (const step of data.steps) {
-      await runStep(step);
+      logResp(JSON.stringify(step, null, 2));
     }
 
     input.value = "";

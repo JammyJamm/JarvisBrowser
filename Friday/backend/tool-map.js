@@ -10,22 +10,16 @@ export default class ToolMap {
       throw new Error("Invalid step");
     }
 
-    const tool = step.tool.toLowerCase();
+    const tool = String(step.tool).toLowerCase();
     const args = step.args || {};
 
     switch (tool) {
       // ---------------------------------
       // CLICK
       // ---------------------------------
-      case "click": {
-        const target = await this.resolver.resolveTarget(args.text);
+      case "click":
+        return await this.resolver.click(args.text);
 
-        if (!target) {
-          throw new Error(`Element "${args.text}" not found in snapshot`);
-        }
-
-        return await this.resolver.mcp.click(target);
-      }
       // ---------------------------------
       // TYPE
       // ---------------------------------
@@ -84,13 +78,28 @@ export default class ToolMap {
       // READ
       // ---------------------------------
       case "read":
-        return await this.resolver.read(args.text || args.title);
+        return await this.resolver.read(args.text || args.title || args.field);
 
       // ---------------------------------
       // SNAPSHOT
       // ---------------------------------
       case "snapshot":
         return await this.resolver.snapshot();
+
+      // ---------------------------------
+      // HTML
+      // ---------------------------------
+      case "html":
+        return await this.resolver.html();
+
+      // ---------------------------------
+      // SCROLL
+      // ---------------------------------
+      case "scroll":
+        return await this.resolver.scroll(
+          args.direction || "down",
+          args.amount || 1000,
+        );
 
       default:
         throw new Error(`Unsupported tool: ${tool}`);

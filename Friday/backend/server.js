@@ -5,18 +5,23 @@ import PlaywrightMCPClient from "./mcp-client.js";
 import Planner from "./planner.js";
 import Resolver from "./resolver.js";
 import ToolMap from "./tool-map.js";
+
 const app = express();
+
 app.use(cors());
 app.use(express.json());
+
 app.use((req, res, next) => {
-  console.log("➡️", req.method, req.url);
+  console.log(`➡️ ${req.method} ${req.url}`);
   next();
 });
+
 // =====================================================
-// CORE INSTANCES
+// CORE
 // =====================================================
 
-const mcp = new PlaywrightMCPClient("http://localhost:8931/mcp");
+const mcp = new PlaywrightMCPClient();
+
 const resolver = new Resolver(mcp);
 const toolMap = new ToolMap(resolver);
 
@@ -26,22 +31,20 @@ const planner = new Planner({
 });
 
 // =====================================================
-// MCP INIT
+// INIT
 // =====================================================
 
 app.post("/init", async (req, res) => {
   try {
     await mcp.connect();
 
-    const tools = await mcp.listTools();
-
     res.json({
       success: true,
-      message: "MCP connected",
-      tools,
+      message: "Playwright attached to Electron",
     });
   } catch (err) {
     console.error("INIT ERROR:", err);
+
     res.status(500).json({
       success: false,
       error: err.message,
@@ -50,18 +53,20 @@ app.post("/init", async (req, res) => {
 });
 
 // =====================================================
-// SNAPSHOT (debug helper)
+// SNAPSHOT
 // =====================================================
 
 app.get("/snapshot", async (req, res) => {
   try {
-    const snapshot = await mcp.snapshot();
+    const snap = await mcp.snapshot();
 
     res.json({
       success: true,
-      snapshot,
+      snapshot: snap,
     });
   } catch (err) {
+    console.error(err);
+
     res.status(500).json({
       success: false,
       error: err.message,
@@ -70,7 +75,29 @@ app.get("/snapshot", async (req, res) => {
 });
 
 // =====================================================
-// MAIN AI EXECUTOR
+// HTML
+// =====================================================
+
+app.get("/html", async (req, res) => {
+  try {
+    const html = await mcp.html();
+
+    res.json({
+      success: true,
+      html,
+    });
+  } catch (err) {
+    console.error(err);
+
+    res.status(500).json({
+      success: false,
+      error: err.message,
+    });
+  }
+});
+
+// =====================================================
+// RUN AI
 // =====================================================
 
 app.post("/run", async (req, res) => {
@@ -84,19 +111,43 @@ app.post("/run", async (req, res) => {
       });
     }
 
+    console.log("\n==================================");
+    console.log("USER COMMAND:", command);
+    console.log("==================================");
+
     let pageText = "";
 
     try {
+      const html = await mcp.html();
+
+      console.log("========== HTML ==========");
+      console.log(html.substring(0, 3000));
+      console.log("==========================");
+    } catch (e) {
+      console.warn("HTML unavailable:", e.message);
+    }
+
+    try {
       const snap = await mcp.snapshot();
-      pageText =
-        typeof snap === "string"
-          ? snap
-          : snap?.content?.map((x) => x.text).join("\n") || "";
+
+      console.log("========== SNAPSHOT ==========");
+      console.dir(snap, { depth: null });
+      console.log("==============================");
+
+      pageText = snap?.text || "";
+
+      console.log("========== PAGE TEXT ==========");
+      console.log(pageText.substring(0, 5000));
+      console.log("===============================");
     } catch (e) {
       console.warn("Snapshot failed:", e.message);
     }
 
     const plan = await planner.plan(command, pageText);
+
+    console.log("========== PLAN ==========");
+    console.dir(plan, { depth: null });
+    console.log("==========================");
 
     if (plan.mode === "chat") {
       return res.json({
@@ -108,17 +159,22 @@ app.post("/run", async (req, res) => {
 
     const results = [];
 
-    for (const step of plan.steps) {
+    for (const step of plan.steps || []) {
       try {
+        console.log("Executing Step:");
+        console.dir(step, { depth: null });
+
         const result = await toolMap.execute(step);
 
         results.push({
           tool: step.tool,
           args: step.args,
-          result,
           success: true,
+          result,
         });
       } catch (err) {
+        console.error("STEP FAILED:", err);
+
         results.push({
           tool: step.tool,
           args: step.args,
@@ -142,44 +198,28 @@ app.post("/run", async (req, res) => {
     });
   }
 });
-// app.post("/step", async (req, res) => {
-//   try {
-//     const step = req.body;
-
-//     // ❌ WRONG: raw MCP call
-//     // const result = await toolMap.execute(step);
-
-//     // ✅ FIX: resolve text → real target first
-//     const result = await toolMap.execute(step);
-
-//     res.json({
-//       success: true,
-//       result,
-//     });
-//   } catch (err) {
-//     res.status(500).json({
-//       success: false,
-//       error: err.message,
-//     });
-//   }
-// });
-// =====================================================
-// DIRECT TOOL EXECUTION (debug/manual control)
-// =====================================================
 
 // =====================================================
-// MCP TOOL LIST
+// DIRECT TOOL EXECUTION
 // =====================================================
 
-app.get("/tools", async (req, res) => {
+app.post("/tool", async (req, res) => {
   try {
-    const tools = await mcp.listTools();
+    console.log("========== TOOL ==========");
+    console.dir(req.body, { depth: null });
+
+    const result = await toolMap.execute({
+      tool: req.body.tool,
+      args: req.body.args,
+    });
 
     res.json({
       success: true,
-      tools,
+      result,
     });
   } catch (err) {
+    console.error("TOOL ERROR:", err);
+
     res.status(500).json({
       success: false,
       error: err.message,
@@ -188,18 +228,78 @@ app.get("/tools", async (req, res) => {
 });
 
 // =====================================================
-// SERVER START
+// HEALTH CHECK
+// =====================================================
+
+app.get("/health", async (req, res) => {
+  try {
+    await mcp.connect();
+
+    res.json({
+      success: true,
+      status: "connected",
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      status: "disconnected",
+      error: err.message,
+    });
+  }
+});
+app.get("/debug", async (req, res) => {
+  try {
+    const page = await mcp.getPage();
+
+    const url = page.url();
+    const title = await page.title();
+
+    const links = await page.locator("a").allTextContents();
+    const buttons = await page.locator("button").allTextContents();
+
+    res.json({
+      url,
+      title,
+      links,
+      buttons,
+    });
+  } catch (e) {
+    res.status(500).json({
+      error: e.message,
+    });
+  }
+});
+app.get("/test-click", async (req, res) => {
+  try {
+    const page = await mcp.getPage();
+
+    console.log(await page.content());
+
+    await page.locator("a").first().click();
+
+    res.json({
+      success: true,
+    });
+  } catch (e) {
+    res.status(500).json({
+      error: e.message,
+    });
+  }
+});
+// =====================================================
+// START
 // =====================================================
 
 const PORT = 3001;
 
 app.listen(PORT, async () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
+  console.log(`🚀 Server started: http://localhost:${PORT}`);
 
   try {
     await mcp.connect();
-    console.log("✅ MCP auto-connected on startup");
+
+    console.log("✅ Playwright attached to Electron");
   } catch (err) {
-    console.warn("⚠️ MCP auto-connect failed:", err.message);
+    console.error("❌ Playwright attach failed:", err.message);
   }
 });

@@ -1,372 +1,327 @@
-// mcp-client.js
-//
-// Production-ready Playwright MCP Client
-//
-// Supports:
-// ✅ Persistent connection
-// ✅ Automatic reconnect
-// ✅ browser_snapshot
-// ✅ browser_click
-// ✅ browser_type
-// ✅ browser_hover
-// ✅ browser_press_key
-// ✅ browser_select_option
-// ✅ browser_file_upload
-// ✅ browser_check
-// ✅ browser_uncheck
-// ✅ browser_navigate
-// ✅ browser_wait
-// ✅ browser_wait_for
-// ✅ browser_tab_list
-// ✅ browser_tab_select
-// ✅ browser_tab_close
-// ✅ browser_console_messages
-// ✅ browser_network_requests
-// ✅ Generic callTool()
+import { chromium } from "playwright";
 
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-
-export default class PlaywrightMCPClient {
-  constructor(url = "http://localhost:8931/mcp") {
-    this.url = url;
-
-    this.client = null;
-    this.transport = null;
-
+class PlaywrightClient {
+  constructor() {
+    this.browser = null;
+    this.context = null;
+    this.page = null;
     this.connected = false;
   }
 
-  // ===================================================
-  // CONNECT
-  // ===================================================
+  // ==========================================
+  // CONNECT TO ELECTRON
+  // ==========================================
 
   async connect() {
-    if (this.connected) return;
+    if (this.page) return;
 
-    console.log("Connecting MCP ->", this.url);
+    this.browser = await chromium.connectOverCDP("http://127.0.0.1:9222");
 
-    this.transport = new StreamableHTTPClientTransport(new URL(this.url));
-
-    this.client = new Client(
-      {
-        name: "jarvis-browser",
-        version: "1.0.0",
-      },
-      {
-        capabilities: {},
-      },
-    );
-
-    await this.client.connect(this.transport);
-
-    this.connected = true;
-
-    console.log("✅ Playwright MCP Connected");
-  }
-
-  // ===================================================
-  // DISCONNECT
-  // ===================================================
-
-  async disconnect() {
-    try {
-      if (this.transport) {
-        await this.transport.close();
+    for (const context of this.browser.contexts()) {
+      for (const page of context.pages()) {
+        console.log("PAGE FOUND:", page.url());
       }
-    } catch {}
-
-    this.connected = false;
-  }
-
-  // ===================================================
-  // AUTO CONNECT
-  // ===================================================
-
-  async ensure() {
-    if (!this.connected) {
-      await this.connect();
     }
+
+    const context = this.browser.contexts()[0];
+    const pages = context.pages();
+
+    // const context = this.browser.contexts()[0];
+
+    for (const p of context.pages()) {
+      const url = p.url();
+
+      console.log("FOUND:", url);
+
+      if (!url.includes("renderer/index.html") && !url.startsWith("file://")) {
+        this.page = p;
+        break;
+      }
+    }
+
+    if (!this.page) {
+      throw new Error("Could not find browser page");
+    }
+
+    console.log("ATTACHED TO:", this.page.url());
   }
 
-  // ===================================================
-  // TOOL LIST
-  // ===================================================
+  // ==========================================
+  // PAGE
+  // ==========================================
+  async getRealBrowserPage() {
+    await this.connect();
 
-  async listTools() {
-    await this.ensure();
+    for (const context of this.browser.contexts()) {
+      for (const page of context.pages()) {
+        const url = page.url();
 
-    const res = await this.client.listTools();
+        if (!url.startsWith("file://") && !url.includes("renderer")) {
+          return page;
+        }
+      }
+    }
 
-    return res.tools;
+    throw new Error("No browser page found");
+  }
+  async getPage() {
+    await this.connect();
+    return this.page;
   }
 
-  // ===================================================
-  // GENERIC CALL
-  // ===================================================
+  // ==========================================
+  // DEBUG
+  // ==========================================
 
-  async callTool(name, args = {}) {
-    await this.ensure();
+  async html() {
+    const page = await this.getPage();
 
-    console.log("------------------------------------------------");
-    console.log("MCP TOOL :", name);
-    console.log(args);
-    console.log("------------------------------------------------");
-
-    const result = await this.client.callTool({
-      name,
-      arguments: args,
-    });
-
-    return result;
+    return await page.content();
   }
-
-  // ===================================================
-  // SNAPSHOT
-  // ===================================================
 
   async snapshot() {
-    return this.callTool("browser_snapshot", {});
+    const page = await this.getPage();
+
+    return {
+      html: await page.content(),
+      text: await page.evaluate(() => document.body?.innerText || ""),
+      title: await page.title(),
+      url: page.url(),
+    };
   }
 
-  // ===================================================
-  // NAVIGATE
-  // ===================================================
-
-  async navigate(url) {
-    return this.callTool("browser_navigate", {
-      url,
-    });
-  }
-
-  // ===================================================
+  // ==========================================
   // CLICK
-  // ===================================================
+  // ==========================================
 
-  async click(target) {
-    return this.callTool("browser_click", {
-      target,
-    });
+  async clickByText(text) {
+    const page = await this.getPage();
+
+    console.log("=================================");
+    console.log("Current URL:", page.url());
+
+    const links = await page.locator("a").allTextContents();
+    console.log("LINKS:", links);
+
+    const buttons = await page.locator("button").allTextContents();
+    console.log("BUTTONS:", buttons);
+
+    console.log("Searching for:", text);
+    console.log("=================================");
+
+    return await page.getByText(text, { exact: false }).first().click();
   }
 
-  // ===================================================
-  // HOVER
-  // ===================================================
+  async click(label) {
+    console.log("CLICK REQUEST:", label);
 
-  async hover(target) {
-    return this.callTool("browser_hover", {
-      target,
-    });
+    const page = await this.mcp.getPage();
+
+    console.log("Page URL:", page.url());
+
+    return await this.mcp.clickByText(label);
   }
 
-  // ===================================================
+  // ==========================================
   // TYPE
-  // ===================================================
+  // ==========================================
 
-  async type(target, text) {
-    return this.callTool("browser_type", {
-      target,
-      text,
+  async type(selector, value) {
+    const page = await this.getPage();
+
+    const locator = page.locator(selector).first();
+
+    await locator.waitFor({
+      timeout: 5000,
     });
+
+    await locator.fill(value);
+
+    return {
+      success: true,
+      action: "type",
+      selector,
+      value,
+    };
   }
 
-  // ===================================================
-  // PRESS KEY
-  // ===================================================
+  async typeByLabel(label, value) {
+    const page = await this.getPage();
+
+    const locator = page
+      .getByLabel(label, {
+        exact: false,
+      })
+      .first();
+
+    await locator.fill(value);
+
+    return {
+      success: true,
+      action: "type",
+      label,
+      value,
+    };
+  }
+
+  // ==========================================
+  // HOVER
+  // ==========================================
+
+  async hoverByText(text) {
+    const page = await this.getPage();
+
+    await page
+      .getByText(text, {
+        exact: false,
+      })
+      .first()
+      .hover();
+
+    return {
+      success: true,
+      action: "hover",
+      text,
+    };
+  }
+
+  // ==========================================
+  // SELECT
+  // ==========================================
+
+  async selectOption(selector, value) {
+    const page = await this.getPage();
+
+    await page.locator(selector).first().selectOption(value);
+
+    return {
+      success: true,
+      action: "select",
+      selector,
+      value,
+    };
+  }
+
+  // ==========================================
+  // KEYBOARD
+  // ==========================================
 
   async press(key) {
-    return this.callTool("browser_press_key", {
+    const page = await this.getPage();
+
+    await page.keyboard.press(key);
+
+    return {
+      success: true,
+      action: "press",
       key,
-    });
+    };
   }
 
-  // ===================================================
-  // SELECT OPTION
-  // ===================================================
-
-  async selectOption(target, values) {
-    if (!Array.isArray(values)) {
-      values = [values];
-    }
-
-    return this.callTool("browser_select_option", {
-      target,
-      values,
-    });
-  }
-
-  // ===================================================
-  // CHECK
-  // ===================================================
-
-  async check(target) {
-    return this.callTool("browser_check", {
-      target,
-    });
-  }
-
-  // ===================================================
-  // UNCHECK
-  // ===================================================
-
-  async uncheck(target) {
-    return this.callTool("browser_uncheck", {
-      target,
-    });
-  }
-
-  // ===================================================
-  // FILE UPLOAD
-  // ===================================================
-
-  async upload(target, paths) {
-    if (!Array.isArray(paths)) {
-      paths = [paths];
-    }
-
-    return this.callTool("browser_file_upload", {
-      target,
-      paths,
-    });
-  }
-
-  // ===================================================
+  // ==========================================
   // WAIT
-  // ===================================================
+  // ==========================================
 
-  async wait(time = 1000) {
-    return this.callTool("browser_wait", {
-      time,
+  async wait(ms = 1000) {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+
+    return {
+      success: true,
+      action: "wait",
+      ms,
+    };
+  }
+
+  // ==========================================
+  // NAVIGATION
+  // ==========================================
+
+  async navigate(url) {
+    const page = await this.getPage();
+
+    await page.goto(url, {
+      waitUntil: "domcontentloaded",
     });
+
+    return {
+      success: true,
+      action: "navigate",
+      url,
+    };
   }
 
-  // ===================================================
-  // WAIT FOR TEXT
-  // ===================================================
+  async reload() {
+    const page = await this.getPage();
 
-  async waitFor(text) {
-    return this.callTool("browser_wait_for", {
-      text,
+    await page.reload({
+      waitUntil: "domcontentloaded",
     });
+
+    return {
+      success: true,
+      action: "reload",
+    };
   }
 
-  // ===================================================
-  // TABS
-  // ===================================================
+  async back() {
+    const page = await this.getPage();
 
-  async tabs() {
-    return this.callTool("browser_tab_list", {});
+    await page.goBack();
+
+    return {
+      success: true,
+      action: "back",
+    };
   }
+  async debugPages() {
+    await this.connect();
 
-  async selectTab(index) {
-    return this.callTool("browser_tab_select", {
-      index,
-    });
-  }
+    const pages = this.context.pages();
 
-  async closeTab(index) {
-    return this.callTool("browser_tab_close", {
-      index,
-    });
-  }
+    console.log("\n========== PLAYWRIGHT PAGES ==========");
 
-  // ===================================================
-  // CONSOLE
-  // ===================================================
-
-  async consoleMessages() {
-    return this.callTool("browser_console_messages", {});
-  }
-
-  // ===================================================
-  // NETWORK
-  // ===================================================
-
-  async networkRequests() {
-    return this.callTool("browser_network_requests", {});
-  }
-
-  // ===================================================
-  // TAKE SCREENSHOT
-  // ===================================================
-
-  async screenshot() {
-    return this.callTool("browser_take_screenshot", {});
-  }
-
-  // ===================================================
-  // CLOSE BROWSER
-  // ===================================================
-
-  async closeBrowser() {
-    return this.callTool("browser_close", {});
-  }
-
-  // ===================================================
-  // EXECUTE
-  // ===================================================
-
-  async execute(tool, args = {}) {
-    switch (tool) {
-      case "snapshot":
-        return this.snapshot();
-
-      case "navigate":
-        return this.navigate(args.url);
-
-      case "click":
-        return this.click(args.target);
-
-      case "hover":
-        return this.hover(args.target);
-
-      case "type":
-        return this.type(args.target, args.text);
-
-      case "press":
-        return this.press(args.key);
-
-      case "select":
-        return this.selectOption(args.target, args.values);
-
-      case "check":
-        return this.check(args.target);
-
-      case "uncheck":
-        return this.uncheck(args.target);
-
-      case "upload":
-        return this.upload(args.target, args.paths);
-
-      case "wait":
-        return this.wait(args.time);
-
-      case "waitFor":
-        return this.waitFor(args.text);
-
-      case "tabs":
-        return this.tabs();
-
-      case "selectTab":
-        return this.selectTab(args.index);
-
-      case "closeTab":
-        return this.closeTab(args.index);
-
-      case "console":
-        return this.consoleMessages();
-
-      case "network":
-        return this.networkRequests();
-
-      case "screenshot":
-        return this.screenshot();
-
-      case "close":
-        return this.closeBrowser();
-
-      default:
-        return this.callTool(tool, args);
+    for (const p of pages) {
+      console.log(p.url());
     }
+
+    for (const page of this.context.pages()) {
+      console.log({
+        url: page.url(),
+        title: await page.title().catch(() => ""),
+      });
+    }
+    this.page = pages.find((p) => p.url().startsWith("http")) || pages[0];
+
+    console.log("=====================================\n");
+  }
+  async forward() {
+    const page = await this.getPage();
+
+    await page.goForward();
+
+    return {
+      success: true,
+      action: "forward",
+    };
+  }
+
+  // ==========================================
+  // TOOLS (compatibility with old server.js)
+  // ==========================================
+
+  async listTools() {
+    return [
+      { name: "click" },
+      { name: "type" },
+      { name: "hover" },
+      { name: "select" },
+      { name: "press" },
+      { name: "wait" },
+      { name: "navigate" },
+      { name: "snapshot" },
+      { name: "html" },
+    ];
   }
 }
+
+export default PlaywrightClient;

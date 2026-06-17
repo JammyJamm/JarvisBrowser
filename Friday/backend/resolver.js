@@ -1,56 +1,25 @@
 // resolver.js
 
-import SnapshotParser from "./snapshot-parser.js";
-
 export default class Resolver {
   constructor(mcp) {
     this.mcp = mcp;
   }
 
   // ---------------------------------------
-  // Get latest parser
-  // ---------------------------------------
-
-  async getParser() {
-    const snapshot = await this.mcp.snapshot();
-
-    return new SnapshotParser(snapshot);
-  }
-
-  // ---------------------------------------
-  // Find target by visible text
-  // ---------------------------------------
-
-  async resolveTarget(label) {
-    const parser = await this.getParser();
-
-    const target = parser.getTarget(label);
-
-    if (!target) {
-      throw new Error(`Element "${label}" not found`);
-    }
-
-    return target;
-  }
-
-  // ---------------------------------------
-  // CLICK
+  // CLICK BY VISIBLE TEXT
   // ---------------------------------------
 
   async click(label) {
-    const target = await this.resolveTarget(label);
-
-    return await this.mcp.click(target);
+    return await this.mcp.clickByText(label);
   }
 
   // ---------------------------------------
   // TYPE
+  // field should be a Playwright selector
   // ---------------------------------------
 
   async type(field, value) {
-    const target = await this.resolveTarget(field);
-
-    return await this.mcp.type(target, value);
+    return await this.mcp.type(field, value);
   }
 
   // ---------------------------------------
@@ -58,56 +27,54 @@ export default class Resolver {
   // ---------------------------------------
 
   async select(field, value) {
-    const target = await this.resolveTarget(field);
+    const page = await this.mcp.getPage();
 
-    return await this.mcp.selectOption(target, [value]);
+    return await page.locator(field).selectOption(value);
   }
 
   // ---------------------------------------
   // HOVER
   // ---------------------------------------
 
-  async hover(label) {
-    const target = await this.resolveTarget(label);
+  async hover(text) {
+    const page = await this.mcp.getPage();
 
-    return await this.mcp.hover(target);
+    return await page
+      .getByText(text, {
+        exact: false,
+      })
+      .first()
+      .hover();
   }
 
   // ---------------------------------------
   // CHECK
   // ---------------------------------------
 
-  async check(label) {
-    const target = await this.resolveTarget(label);
+  async check(selector) {
+    const page = await this.mcp.getPage();
 
-    return await this.mcp.callTool("browser_check", {
-      target,
-    });
+    return await page.locator(selector).check();
   }
 
   // ---------------------------------------
   // UNCHECK
   // ---------------------------------------
 
-  async uncheck(label) {
-    const target = await this.resolveTarget(label);
+  async uncheck(selector) {
+    const page = await this.mcp.getPage();
 
-    return await this.mcp.callTool("browser_uncheck", {
-      target,
-    });
+    return await page.locator(selector).uncheck();
   }
 
   // ---------------------------------------
   // FILE UPLOAD
   // ---------------------------------------
 
-  async upload(label, path) {
-    const target = await this.resolveTarget(label);
+  async upload(selector, path) {
+    const page = await this.mcp.getPage();
 
-    return await this.mcp.callTool("browser_file_upload", {
-      target,
-      paths: [path],
-    });
+    return await page.locator(selector).setInputFiles(path);
   }
 
   // ---------------------------------------
@@ -123,7 +90,9 @@ export default class Resolver {
   // ---------------------------------------
 
   async wait(time = 1000) {
-    return await this.mcp.wait(time);
+    return new Promise((resolve) => {
+      setTimeout(resolve, time);
+    });
   }
 
   // ---------------------------------------
@@ -143,24 +112,31 @@ export default class Resolver {
   }
 
   // ---------------------------------------
-  // READ
+  // HTML
   // ---------------------------------------
 
-  async read(label) {
-    const parser = await this.getParser();
+  async html() {
+    return await this.mcp.html();
+  }
 
-    const element = parser.get(label);
+  // ---------------------------------------
+  // READ TEXT
+  // ---------------------------------------
 
-    if (!element) {
-      throw new Error(`Unable to read "${label}"`);
-    }
+  async read(text) {
+    const page = await this.mcp.getPage();
+
+    const locator = page
+      .getByText(text, {
+        exact: false,
+      })
+      .first();
+
+    const value = await locator.textContent();
 
     return {
       success: true,
-      target: element.target,
-      role: element.role,
-      text: element.name,
-      line: element.line,
+      text: value,
     };
   }
 
@@ -169,19 +145,19 @@ export default class Resolver {
   // ---------------------------------------
 
   async clickRetry(label, retries = 3) {
-    let last;
+    let lastError;
 
     for (let i = 0; i < retries; i++) {
       try {
         return await this.click(label);
-      } catch (e) {
-        last = e;
+      } catch (err) {
+        lastError = err;
 
         await this.wait(500);
       }
     }
 
-    throw last;
+    throw lastError;
   }
 
   // ---------------------------------------
@@ -189,62 +165,65 @@ export default class Resolver {
   // ---------------------------------------
 
   async typeRetry(field, value, retries = 3) {
-    let last;
+    let lastError;
 
     for (let i = 0; i < retries; i++) {
       try {
         return await this.type(field, value);
-      } catch (e) {
-        last = e;
+      } catch (err) {
+        lastError = err;
 
         await this.wait(500);
       }
     }
 
-    throw last;
+    throw lastError;
   }
 
   // ---------------------------------------
-  // Generic execute
+  // GENERIC EXECUTE
   // ---------------------------------------
 
   async execute(tool, args = {}) {
     switch (tool) {
       case "click":
-        return this.click(args.text);
+        return await this.click(args.text);
 
       case "type":
-        return this.type(args.field, args.value);
+        return await this.type(args.field, args.value);
 
       case "select":
-        return this.select(args.field, args.value);
+        return await this.select(args.field, args.value);
 
       case "hover":
-        return this.hover(args.text);
+        return await this.hover(args.text);
 
       case "check":
-        return this.check(args.field);
+        return await this.check(args.field);
 
       case "uncheck":
-        return this.uncheck(args.field);
+        return await this.uncheck(args.field);
 
       case "upload":
-        return this.upload(args.field, args.path);
+        return await this.upload(args.field, args.path);
 
       case "navigate":
-        return this.navigate(args.url);
+        return await this.navigate(args.url);
 
       case "press":
-        return this.press(args.key);
+        return await this.press(args.key);
 
       case "wait":
-        return this.wait(args.time);
+        return await this.wait(args.time);
 
       case "read":
-        return this.read(args.text || args.title);
+        return await this.read(args.text || args.title);
 
       case "snapshot":
-        return this.snapshot();
+        return await this.snapshot();
+
+      case "html":
+        return await this.html();
 
       default:
         throw new Error(`Unknown tool: ${tool}`);

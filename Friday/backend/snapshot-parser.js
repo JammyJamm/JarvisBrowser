@@ -7,9 +7,9 @@ export default class SnapshotParser {
     this.elements = this.parse();
   }
 
-  // ----------------------------------------
-  // Extract plain text from MCP response
-  // ----------------------------------------
+  // ------------------------------------------------
+  // Extract snapshot text
+  // ------------------------------------------------
 
   extractText(snapshot) {
     if (!snapshot) return "";
@@ -29,9 +29,34 @@ export default class SnapshotParser {
     return JSON.stringify(snapshot);
   }
 
-  // ----------------------------------------
-  // Parse browser_snapshot output
-  // ----------------------------------------
+  // ------------------------------------------------
+  // Normalize text
+  // ------------------------------------------------
+
+  normalize(text = "") {
+    return (
+      text
+        .toLowerCase()
+
+        // remove common ui words
+        .replace(
+          /\b(button|buttons|link|links|textbox|textboxes|input|inputs|field|fields|checkbox|checkboxes|radio|radios|menu|dropdown|combobox|option|tab|image|img)\b/g,
+          "",
+        )
+
+        // remove punctuation
+        .replace(/[^\w\s]/g, " ")
+
+        // collapse spaces
+        .replace(/\s+/g, " ")
+
+        .trim()
+    );
+  }
+
+  // ------------------------------------------------
+  // Parse snapshot
+  // ------------------------------------------------
 
   parse() {
     const lines = this.text.split("\n");
@@ -49,16 +74,9 @@ export default class SnapshotParser {
     return elements;
   }
 
-  // ----------------------------------------
-  // Parse one snapshot line
-  //
-  // Example:
-  //
-  // button "Learn more" [ref=e42]
-  // textbox "Search" [ref=e15]
-  // link "About" [ref=e77]
-  // checkbox "Remember me" [ref=e18]
-  // ----------------------------------------
+  // ------------------------------------------------
+  // Parse one line
+  // ------------------------------------------------
 
   parseLine(line) {
     if (!line) return null;
@@ -86,103 +104,131 @@ export default class SnapshotParser {
       role,
       name,
       line,
-      searchable: (role + " " + name + " " + line).toLowerCase(),
+
+      searchable: this.normalize(role + " " + name + " " + line),
     };
   }
 
-  // ----------------------------------------
-  // Return every parsed element
-  // ----------------------------------------
+  // ------------------------------------------------
 
   all() {
     return this.elements;
   }
 
-  // ----------------------------------------
-  // Find exact match
-  // ----------------------------------------
+  // ------------------------------------------------
+  // Exact
+  // ------------------------------------------------
 
-  findExact(text) {
-    text = text.toLowerCase();
+  findExact(query) {
+    query = this.normalize(query);
 
-    return this.elements.find((e) => e.name.toLowerCase() === text) || null;
+    return this.elements.find((e) => this.normalize(e.name) === query) || null;
   }
 
-  // ----------------------------------------
-  // Find contains
-  // ----------------------------------------
+  // ------------------------------------------------
+  // Contains
+  // ------------------------------------------------
 
-  findContains(text) {
-    text = text.toLowerCase();
+  findContains(query) {
+    query = this.normalize(query);
 
-    return this.elements.find((e) => e.searchable.includes(text)) || null;
+    return (
+      this.elements.find((e) => {
+        const text = this.normalize(e.searchable);
+
+        return (
+          text.includes(query) ||
+          query.includes(text) ||
+          text.startsWith(query) ||
+          text.endsWith(query) ||
+          query.includes(text)
+        );
+      }) || null
+    );
   }
 
-  // ----------------------------------------
-  // Fuzzy search
-  // ----------------------------------------
+  // ------------------------------------------------
+  // Better scoring
+  // ------------------------------------------------
 
-  score(str, query) {
-    str = str.toLowerCase();
-    query = query.toLowerCase();
+  score(candidate, query) {
+    candidate = this.normalize(candidate);
+    query = this.normalize(query);
 
-    if (str === query) return 100;
+    if (!candidate || !query) return 0;
 
-    if (str.startsWith(query)) return 90;
+    if (candidate === query) return 100;
 
-    if (str.includes(query)) return 80;
+    if (candidate.startsWith(query)) return 95;
 
-    const words = query.split(" ");
+    if (candidate.endsWith(query)) return 90;
+
+    if (candidate.includes(query)) return 85;
+
+    if (query.includes(candidate)) return 80;
 
     let score = 0;
 
+    const words = query.split(" ");
+
     for (const w of words) {
-      if (str.includes(w)) score += 10;
+      if (candidate.includes(w)) {
+        score += 15;
+      }
     }
 
     return score;
   }
 
+  // ------------------------------------------------
+  // Best fuzzy
+  // ------------------------------------------------
+
   findBest(query) {
     let best = null;
-
     let bestScore = 0;
 
     for (const e of this.elements) {
       const s = this.score(e.searchable, query);
 
       if (s > bestScore) {
-        best = e;
         bestScore = s;
+        best = e;
       }
     }
 
     return best;
   }
 
-  // ----------------------------------------
-  // Get target only
-  // ----------------------------------------
+  // ------------------------------------------------
+  // Get target
+  // ------------------------------------------------
 
   getTarget(query) {
-    let e = this.findExact(query);
+    query = this.normalize(query);
 
+    // remove common words
+    query = query
+      .replace(/\blearn more button\b/g, "learn more")
+      .replace(/\bbutton\b/g, "")
+      .replace(/\blink\b/g, "")
+      .trim();
+
+    let e = this.findExact(query);
     if (e) return e.target;
 
     e = this.findContains(query);
-
     if (e) return e.target;
 
     e = this.findBest(query);
-
     if (e) return e.target;
 
     return null;
   }
 
-  // ----------------------------------------
-  // Get element object
-  // ----------------------------------------
+  // ------------------------------------------------
+  // Get element
+  // ------------------------------------------------
 
   get(query) {
     let e = this.findExact(query);
@@ -196,9 +242,7 @@ export default class SnapshotParser {
     return this.findBest(query);
   }
 
-  // ----------------------------------------
-  // Filter by role
-  // ----------------------------------------
+  // ------------------------------------------------
 
   byRole(role) {
     role = role.toLowerCase();
@@ -225,10 +269,6 @@ export default class SnapshotParser {
   comboboxes() {
     return this.byRole("combobox");
   }
-
-  // ----------------------------------------
-  // Pretty print
-  // ----------------------------------------
 
   dump() {
     console.table(this.elements);
