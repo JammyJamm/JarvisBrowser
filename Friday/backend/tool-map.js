@@ -18,7 +18,9 @@ export default class ToolMap {
       // CLICK
       // ---------------------------------
       case "click":
-        return await this.resolver.click(args.text);
+        return await this.resolver.clickSmart(
+          args.text || args.label || args.selector || "",
+        );
       case "search":
         return await this.resolver.searchSmart(args.query);
       // ---------------------------------

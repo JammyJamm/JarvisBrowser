@@ -49,167 +49,101 @@ export default class Resolver {
   async clickSmart(text) {
     const page = await this.mcp.getPage();
 
-    if (!text) throw new Error("clickSmart: empty text");
+    if (!text) throw new Error("clickSmart requires text");
 
-    await page.waitForTimeout(200);
+    text = text.trim();
 
-    let exact = String(text)
-      .trim()
-      .replace(/^click\s+/i, "")
-      .replace(/\s+button$/i, "")
-      .replace(/^["']|["']$/g, "");
-
-    // -----------------------------
-    // NORMALIZATION (IMPORTANT FIX)
-    // -----------------------------
-    const aliases = {
-      login: "Log in",
-      signin: "Sign in",
-      signup: "Sign up",
-    };
-
-    if (aliases[exact.toLowerCase()]) {
-      exact = aliases[exact.toLowerCase()];
-    }
-
-    const candidates = [];
-
-    // =========================
-    // 1. DOM TEXT LAYER (FAST)
-    // =========================
-    try {
-      const dom = await this.getDOMPool(page);
-      candidates.push(...dom.all.filter(Boolean));
-    } catch {}
-
-    // =========================
-    // 2. EXACT + FUZZY MATCH
-    // =========================
-
-    let match = candidates.find(
-      (c) => c && c.toLowerCase() === exact.toLowerCase(),
-    );
-
-    if (!match) {
-      match = candidates.find(
-        (c) => c && c.toLowerCase().includes(exact.toLowerCase()),
-      );
-    }
-
-    if (!match) {
-      let best = null;
-      let bestScore = 0;
-
-      const words = exact.toLowerCase().split(" ");
-
-      for (const c of candidates) {
-        if (!c) continue;
-
-        const t = c.toLowerCase();
-
-        let score = 0;
-
-        for (const w of words) {
-          if (t.includes(w)) score += 10;
-        }
-
-        // TAB BOOST (critical fix)
-        if (
-          t.includes("login") ||
-          t.includes("sign") ||
-          t.includes("tab") ||
-          t.includes("casino") ||
-          t.includes("sports") ||
-          t.includes("live") ||
-          t.includes("slots")
-        ) {
-          score += 15;
-        }
-
-        if (score > bestScore) {
-          best = c;
-          bestScore = score;
-        }
-      }
-
-      match = best;
-    }
-
-    if (!match) {
-      throw new Error(`No DOM match for: ${text}`);
-    }
-
-    // =========================
-    // 3. ROBUST PLAYWRIGHT CLICK
-    // =========================
+    await page.waitForLoadState("domcontentloaded");
 
     const locators = [
-      page.getByText(match, { exact: false }).first(),
-      page.locator(`text="${match}"`).first(),
-      page.locator("button").filter({ hasText: match }).first(),
-      page.locator("a").filter({ hasText: match }).first(),
-      page.locator('[role="tab"]').filter({ hasText: match }).first(),
-      page.getByRole("button", { name: new RegExp(match, "i") }).first(),
-      page.getByRole("link", { name: new RegExp(match, "i") }).first(),
+      page.getByRole("tab", { name: new RegExp(text, "i") }),
+
+      page.getByRole("button", { name: new RegExp(text, "i") }),
+
+      page.getByRole("link", { name: new RegExp(text, "i") }),
+
+      page.getByText(text, { exact: false }),
+
+      page.locator(`text=${text}`),
     ];
 
-    for (const loc of locators) {
+    for (const locator of locators) {
       try {
-        if (await loc.count()) {
-          await loc
-            .waitFor({ state: "visible", timeout: 3000 })
-            .catch(() => {});
-          await loc.scrollIntoViewIfNeeded().catch(() => {});
+        if (!(await locator.count())) continue;
 
-          // TAB FIX: climb clickable parent
-          const btn = loc.locator("xpath=ancestor::button[1]");
-          if (await btn.count()) {
-            await btn.click();
-            console.log("SMART CLICK SUCCESS (ancestor button):", match);
-            return true;
-          }
+        const target = locator.first();
 
-          await loc
-            .waitFor({ state: "visible", timeout: 2000 })
-            .catch(() => {});
+        await target.scrollIntoViewIfNeeded().catch(() => {});
 
-          const isDisabled = await loc.getAttribute("disabled");
-          const isHidden = await loc.isHidden().catch(() => false);
+        await target.waitFor({
+          state: "visible",
+        });
 
-          if (!isHidden && !isDisabled) {
-            await loc.click({ timeout: 3000 });
-            console.log("SMART CLICK SUCCESS:", match);
-            return true;
-          }
-          console.log("SMART CLICK SUCCESS:", match);
+        // climb until clickable parent
+
+        const clickable = target.locator(`
+xpath=
+ancestor-or-self::*[
+self::button
+or self::a
+or @role='button'
+or @role='tab'
+or @onclick
+or contains(@class,'tab')
+or contains(@class,'button')
+][1]
+`);
+
+        if (await clickable.count()) {
+          await clickable.first().click();
+
+          console.log("Clicked parent");
+
+          return true;
+        }
+
+        await target.click();
+
+        return true;
+      } catch {}
+    }
+
+    // DOM fallback
+
+    const all = page.locator("*");
+
+    const total = await all.count();
+
+    for (let i = 0; i < total; i++) {
+      const el = all.nth(i);
+
+      try {
+        const txt = (await el.textContent())?.trim();
+
+        if (!txt) continue;
+
+        if (!txt.toLowerCase().includes(text.toLowerCase())) continue;
+
+        const parent = el.locator(`
+xpath=
+ancestor-or-self::*[
+self::button
+or self::a
+or @role='button'
+or @role='tab'
+or @onclick
+][1]
+`);
+
+        if (await parent.count()) {
+          await parent.click();
+
           return true;
         }
       } catch {}
     }
 
-    // =========================
-    // 4. FINAL FALLBACK (FOR IFRAMES / CUSTOM UI)
-    // =========================
-
-    try {
-      const all = await page
-        .locator("button, a, div, span, li, [role='tab'], [role='button']")
-        .all();
-      for (const el of all) {
-        try {
-          const txt = (await el.textContent())?.trim();
-          if (!txt) continue;
-
-          if (txt.toLowerCase().includes(exact.toLowerCase())) {
-            await el.click({ timeout: 2000 });
-            console.log("SMART CLICK FALLBACK SUCCESS:", txt);
-            return true;
-          }
-        } catch {}
-      }
-    } catch {}
-
-    throw new Error(`clickSmart failed for: ${text}`);
+    throw new Error(`Unable to click '${text}'`);
   }
 
   // =====================================================
@@ -377,12 +311,15 @@ export default class Resolver {
   async execute(tool, args = {}) {
     switch (tool) {
       case "click":
-        return await this.resolver.clickSmart(args.text || args.selector || "");
+        return await this.clickSmart(
+          args.text || args.label || args.selector || "",
+        );
+
       case "type":
         return await this.type(args.field, args.value);
 
       case "select":
-        return await this.resolver.select(args.field, args.value);
+        return await this.select(args.field, args.value);
       case "hover":
         return await this.hover(args.text);
 

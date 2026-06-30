@@ -161,51 +161,40 @@ app.post("/run", async (req, res) => {
 
     const results = [];
 
-    for (const step of plan.steps || []) {
-      try {
-        console.log("Executing Step:");
-        console.dir(step, { depth: null });
+    const page = await mcp.getPage();
 
-        let result;
-        let success = false;
+    for (const step of plan.steps || []) {
+      console.log("Executing Step:");
+      console.dir(step, { depth: null });
+
+      // Execute current step
+      const result = await toolMap.execute(step);
+
+      // If this step navigated, wait until the NEW page is ready
+      if (step.tool === "navigate") {
+        console.log("Waiting for page after navigation...");
 
         try {
-          result = await toolMap.execute(step);
+          await page.waitForLoadState("domcontentloaded");
 
-          success = true;
-        } catch (err) {
-          console.log("Primary failed:", err.message);
+          // wait until network settles if possible
+          await page.waitForLoadState("networkidle").catch(() => {});
 
-          try {
-            result = await resolver.selfHeal(step);
-            success = true;
-          } catch (healErr) {
-            console.error("Self-heal failed:", healErr.message);
+          // wait until document is complete
+          await page.waitForFunction(() => document.readyState === "complete");
 
-            result = {
-              error: healErr.message,
-            };
-
-            success = false;
-          }
+          console.log("Page ready.");
+        } catch (e) {
+          console.log("Page load wait finished:", e.message);
         }
-
-        results.push({
-          tool: step.tool,
-          args: step.args,
-          success: true,
-          result,
-        });
-      } catch (err) {
-        console.error("STEP FAILED:", err);
-
-        results.push({
-          tool: step.tool,
-          args: step.args,
-          success: false,
-          error: err.message,
-        });
       }
+
+      results.push({
+        tool: step.tool,
+        args: step.args,
+        success: true,
+        result,
+      });
     }
 
     return res.json({

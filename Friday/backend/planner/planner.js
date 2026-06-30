@@ -221,8 +221,21 @@ Output format:
   }
 
   _extractClickText(text) {
-    const match = text.match(/click (on )?["']?(.*?)["']?$/i);
-    return match ? match[2] : null;
+    const patterns = [
+      /click\s+"([^"]+)"/i,
+
+      /click\s+'([^']+)'/i,
+
+      /click\s+(?:the\s+)?(.+)/i,
+    ];
+
+    for (const p of patterns) {
+      const m = text.match(p);
+
+      if (m) return m[1].trim();
+    }
+
+    return null;
   }
 
   _extractNumber(text) {
