@@ -1,5 +1,3 @@
-// executor.js
-
 export default class Executor {
   constructor(resolver) {
     this.resolver = resolver;
@@ -9,24 +7,24 @@ export default class Executor {
     const tool = step.tool;
     const args = step.args || {};
 
-    try {
-      switch (tool) {
-        case "click":
-          return await this.resolver.clickSmart(args.text);
+    switch (tool) {
+      case "click":
+        return await this.resolver.clickSmart(args.text || args.selector || "");
 
-        case "type":
-          return await this.resolver.typeSmart(args.field, args.value);
+      case "type":
+        return await this.resolver.type(args.field, args.value);
 
-        case "select":
-          return await this.resolver.selectSmart(args.field, args.value);
+      case "select":
+        return await this.resolver.select(args.field, args.value);
 
-        default:
-          return await this.resolver.execute(tool, args);
-      }
-    } catch (err) {
-      console.log("Primary strategy failed");
+      case "navigate":
+        return await this.resolver.navigate(args.url);
 
-      return await this.resolver.selfHeal(step);
+      case "wait":
+        return await this.resolver.wait(args.time);
+
+      default:
+        return await this.resolver.execute(tool, args);
     }
   }
 }

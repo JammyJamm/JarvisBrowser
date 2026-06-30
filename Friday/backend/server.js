@@ -28,7 +28,7 @@ const resolver = new Resolver(mcp);
 const toolMap = new ToolMap(resolver);
 
 const planner = new Planner({
-  model: "qwen2.5:3b",
+  model: "qwen3:8b",
   endpoint: "http://localhost:11434/api/generate",
 });
 
@@ -167,13 +167,27 @@ app.post("/run", async (req, res) => {
         console.dir(step, { depth: null });
 
         let result;
+        let success = false;
 
         try {
           result = await toolMap.execute(step);
-        } catch (err) {
-          console.log("Primary failed. Self-healing...");
 
-          result = await resolver.selfHeal(step);
+          success = true;
+        } catch (err) {
+          console.log("Primary failed:", err.message);
+
+          try {
+            result = await resolver.selfHeal(step);
+            success = true;
+          } catch (healErr) {
+            console.error("Self-heal failed:", healErr.message);
+
+            result = {
+              error: healErr.message,
+            };
+
+            success = false;
+          }
         }
 
         results.push({

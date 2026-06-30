@@ -468,6 +468,8 @@ webview {
   display: flex;
   flex-direction: column-reverse;
   padding: 10px;
+  background-color: #f1f2f3;
+  border-left: 1px solid #ddd;
 }
 #ai-form {
   display: flex;
