@@ -28,7 +28,7 @@ const resolver = new Resolver(mcp);
 const toolMap = new ToolMap(resolver);
 
 const planner = new Planner({
-  model: "qwen3:8b",
+  model: "qwen2.5:3b",
   endpoint: "http://localhost:11434/api/generate",
 });
 
