@@ -146,10 +146,467 @@ or @onclick
     throw new Error(`Unable to click '${text}'`);
   }
 
-  // =====================================================
-  // TYPE SMART (UNCHANGED BUT SAFE)
-  // =====================================================
+  async typeSmart(field, value) {
+    const page = await this.mcp.getPage();
 
+    field = String(field).trim().toLowerCase();
+
+    //--------------------------------------------------
+    // FIELD ALIASES
+    //--------------------------------------------------
+
+    const aliases = {
+      email: [
+        "email",
+        "e-mail",
+        "mail",
+        "email or id",
+        "e-mail or id",
+        "username",
+        "user name",
+        "user",
+        "login",
+        "login id",
+        "id",
+      ],
+
+      password: ["password", "pass", "pwd"],
+
+      phone: ["phone", "mobile", "telephone", "number"],
+
+      otp: ["otp", "verification code", "code", "pin"],
+
+      search: ["search", "find", "lookup"],
+    };
+
+    const keywords = aliases[field] || [field];
+
+    //--------------------------------------------------
+    // HELPERS
+    //--------------------------------------------------
+
+    const containsKeyword = (text = "") => {
+      text = String(text).toLowerCase();
+
+      return keywords.some((k) => text.includes(k));
+    };
+
+    const normalize = (text = "") =>
+      String(text).replace(/\s+/g, " ").trim().toLowerCase();
+
+    //--------------------------------------------------
+    // SAFE INNER TEXT
+    //--------------------------------------------------
+
+    const safeText = async (locator) => {
+      try {
+        return normalize(await locator.innerText());
+      } catch {
+        return "";
+      }
+    };
+
+    //--------------------------------------------------
+    // SCORE ATTRIBUTES
+    //--------------------------------------------------
+
+    const scoreAttributes = (attrs) => {
+      let score = 0;
+
+      if (containsKeyword(attrs.placeholder)) score += 300;
+
+      if (containsKeyword(attrs.aria)) score += 300;
+
+      if (containsKeyword(attrs.name)) score += 250;
+
+      if (containsKeyword(attrs.id)) score += 250;
+
+      if (containsKeyword(attrs.autocomplete)) score += 250;
+
+      //--------------------------------------------------
+      // EMAIL BONUS
+      //--------------------------------------------------
+
+      if (field === "email") {
+        if (attrs.type === "email") score += 250;
+
+        if (attrs.name === "username") score += 600;
+
+        if (attrs.id === "username") score += 550;
+
+        if (attrs.autocomplete === "username") score += 700;
+
+        if (attrs.placeholder.includes("email")) score += 700;
+
+        if (attrs.placeholder.includes("id")) score += 500;
+      }
+
+      //--------------------------------------------------
+      // PASSWORD BONUS
+      //--------------------------------------------------
+
+      if (field === "password") {
+        if (attrs.type === "password") score += 900;
+
+        if (attrs.autocomplete.includes("current-password")) score += 700;
+
+        if (attrs.autocomplete.includes("new-password")) score += 700;
+      }
+
+      return score;
+    };
+
+    //--------------------------------------------------
+    // SCORE LABEL
+    //--------------------------------------------------
+
+    const scoreLabel = (text, distance = 0) => {
+      if (!containsKeyword(text)) return 0;
+
+      return Math.max(800 - distance * 40, 100);
+    };
+
+    //--------------------------------------------------
+    // GET INPUTS
+    //--------------------------------------------------
+
+    const inputs = page.locator(
+      `
+    input:not([type=hidden]),
+    textarea,
+    [contenteditable='true']
+    `,
+    );
+
+    const total = await inputs.count();
+
+    if (!total) throw new Error("No editable inputs found.");
+
+    let bestInput = null;
+    let bestScore = -999999;
+    //--------------------------------------------------
+    // EVALUATE EVERY INPUT
+    //--------------------------------------------------
+
+    for (let i = 0; i < total; i++) {
+      const input = inputs.nth(i);
+
+      try {
+        if (!(await input.isVisible())) continue;
+
+        let score = 0;
+
+        //--------------------------------------------------
+        // ATTRIBUTES
+        //--------------------------------------------------
+
+        const attrs = {
+          placeholder: normalize(
+            (await input.getAttribute("placeholder")) || "",
+          ),
+
+          aria: normalize((await input.getAttribute("aria-label")) || ""),
+
+          name: normalize((await input.getAttribute("name")) || ""),
+
+          id: normalize((await input.getAttribute("id")) || ""),
+
+          autocomplete: normalize(
+            (await input.getAttribute("autocomplete")) || "",
+          ),
+
+          type: normalize((await input.getAttribute("type")) || ""),
+        };
+
+        score += scoreAttributes(attrs);
+
+        //--------------------------------------------------
+        // LABEL[for=id]
+        //--------------------------------------------------
+
+        try {
+          if (attrs.id) {
+            const lbl = page.locator(`label[for="${attrs.id}"]`).first();
+
+            if (await lbl.count()) {
+              const txt = await safeText(lbl);
+
+              score += scoreLabel(txt);
+            }
+          }
+        } catch {}
+
+        //--------------------------------------------------
+        // aria-labelledby
+        //--------------------------------------------------
+
+        try {
+          const labelledBy = await input.getAttribute("aria-labelledby");
+
+          if (labelledBy) {
+            const ids = labelledBy.split(/\s+/).filter(Boolean);
+
+            for (const id of ids) {
+              const node = page.locator(`#${id}`);
+
+              if (await node.count()) {
+                score += scoreLabel(await safeText(node));
+              }
+            }
+          }
+        } catch {}
+
+        //--------------------------------------------------
+        // WALK PARENTS
+        //--------------------------------------------------
+
+        let current = input;
+
+        for (let level = 0; level < 10; level++) {
+          current = current.locator("xpath=..");
+
+          //------------------------------------------------
+          // Parent text
+          //------------------------------------------------
+
+          try {
+            score += scoreLabel(await safeText(current), level);
+          } catch {}
+
+          //------------------------------------------------
+          // Labels inside current parent
+          //------------------------------------------------
+
+          try {
+            const labels = current.locator(
+              `
+            label,
+            span,
+            p,
+            div,
+            strong,
+            small,
+            legend,
+            h1,
+            h2,
+            h3,
+            h4,
+            h5,
+            h6
+            `,
+            );
+
+            const cnt = await labels.count();
+
+            for (let j = 0; j < cnt; j++) {
+              const txt = await safeText(labels.nth(j));
+
+              score += scoreLabel(txt, level);
+            }
+          } catch {}
+
+          //------------------------------------------------
+          // PREVIOUS siblings
+          //------------------------------------------------
+
+          try {
+            const prev = current.locator("xpath=preceding-sibling::*");
+
+            const cnt = await prev.count();
+
+            for (let j = 0; j < cnt; j++) {
+              score += scoreLabel(await safeText(prev.nth(j)), level + 1);
+            }
+          } catch {}
+
+          //------------------------------------------------
+          // NEXT siblings
+          //------------------------------------------------
+
+          try {
+            const next = current.locator("xpath=following-sibling::*");
+
+            const cnt = await next.count();
+
+            for (let j = 0; j < cnt; j++) {
+              score += scoreLabel(await safeText(next.nth(j)), level + 1);
+            }
+          } catch {}
+
+          //------------------------------------------------
+          // ALL CHILDREN OF PARENT
+          // (critical for Vuetify / Material / Ant)
+          //------------------------------------------------
+
+          try {
+            const neighbours = current.locator("xpath=../*");
+
+            const cnt = await neighbours.count();
+
+            for (let j = 0; j < cnt; j++) {
+              const node = neighbours.nth(j);
+
+              const txt = await safeText(node);
+
+              if (!containsKeyword(txt)) continue;
+
+              const hasInput = await node
+                .locator("input,textarea,[contenteditable]")
+                .count();
+
+              if (hasInput) score += 350;
+              else score += 800;
+            }
+          } catch {}
+        }
+
+        //--------------------------------------------------
+        // Continue with scoring...
+        //--------------------------------------------------
+
+        // =====================================================
+        // TYPE SMART (UNCHANGED BUT SAFE)
+        // =====================================================
+        //--------------------------------------------------
+        // INPUT TYPE BONUS
+        //--------------------------------------------------
+
+        if (await input.isEnabled()) score += 100;
+
+        if (await input.isEditable()) score += 100;
+
+        try {
+          await input.boundingBox();
+          score += 50;
+        } catch {}
+
+        //--------------------------------------------------
+        // PENALTY
+        //--------------------------------------------------
+
+        if (attrs.type === "hidden") score -= 5000;
+
+        if (attrs.type === "submit") score -= 5000;
+
+        if (attrs.type === "button") score -= 5000;
+
+        if (attrs.type === "checkbox") score -= 5000;
+
+        if (attrs.type === "radio") score -= 5000;
+
+        //--------------------------------------------------
+        // DEBUG
+        //--------------------------------------------------
+
+        console.log({
+          field,
+          score,
+          id: attrs.id,
+          name: attrs.name,
+          placeholder: attrs.placeholder,
+          autocomplete: attrs.autocomplete,
+          type: attrs.type,
+        });
+
+        //--------------------------------------------------
+        // BEST MATCH
+        //--------------------------------------------------
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestInput = input;
+        }
+      } catch (err) {
+        console.log("Candidate skipped:", err.message);
+      }
+    }
+
+    //--------------------------------------------------
+    // NOTHING FOUND
+    //--------------------------------------------------
+
+    if (!bestInput) throw new Error(`Unable to locate "${field}" input`);
+
+    console.log(`TYPE SMART -> ${field} (score=${bestScore})`);
+
+    //--------------------------------------------------
+    // FOCUS
+    //--------------------------------------------------
+
+    await bestInput.scrollIntoViewIfNeeded().catch(() => {});
+
+    try {
+      await bestInput.click({
+        timeout: 3000,
+      });
+    } catch {}
+
+    //--------------------------------------------------
+    // CLEAR
+    //--------------------------------------------------
+
+    try {
+      await bestInput.fill("");
+    } catch {
+      try {
+        await bestInput.press("Control+A");
+        await bestInput.press("Backspace");
+      } catch {}
+    }
+
+    //--------------------------------------------------
+    // TYPE
+    //--------------------------------------------------
+
+    try {
+      await bestInput.fill(value);
+    } catch {
+      try {
+        await bestInput.type(value, {
+          delay: 15,
+        });
+      } catch {
+        await page.evaluate(
+          ({ element, value }) => {
+            element.focus();
+            element.value = value;
+            element.dispatchEvent(
+              new Event("input", {
+                bubbles: true,
+              }),
+            );
+            element.dispatchEvent(
+              new Event("change", {
+                bubbles: true,
+              }),
+            );
+          },
+          {
+            element: await bestInput.elementHandle(),
+            value,
+          },
+        );
+      }
+    }
+
+    //--------------------------------------------------
+    // VERIFY
+    //--------------------------------------------------
+
+    try {
+      const finalValue = await bestInput.inputValue();
+
+      if (finalValue.trim() !== String(value).trim()) {
+        throw new Error("Verification failed");
+      }
+    } catch {
+      console.log("Fill verification skipped.");
+    }
+
+    console.log(`TYPE SUCCESS -> ${field}`);
+
+    return true;
+  }
   async type(field, value) {
     const page = await this.mcp.getPage();
     return await page.locator(field).fill(value);

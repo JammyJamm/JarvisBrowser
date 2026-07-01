@@ -147,9 +147,9 @@ app.post("/run", async (req, res) => {
 
     const plan = await planner.plan(command, pageText);
 
-    // console.log("========== PLAN ==========");
-    // console.dir(plan, { depth: null });
-    // console.log("==========================");
+    console.log("========== PLAN ==========");
+    console.dir(plan, { depth: null });
+    console.log("==========================");
 
     if (plan.mode === "chat") {
       return res.json({

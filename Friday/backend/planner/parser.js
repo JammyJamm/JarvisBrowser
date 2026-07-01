@@ -10,7 +10,7 @@
 // 📦 Structured output for planner engine
 //
 
-class IntentParser {
+export default class IntentParser {
   constructor(options = {}) {
     this.options = {
       enableLLMFallback: true,
@@ -49,18 +49,83 @@ class IntentParser {
       return this._empty("Invalid input");
     }
 
-    input = input.trim();
+    // Split numbered instructions into lines
+    const lines = input
+      .split(/\r?\n/)
+      .map((l) => l.replace(/^\s*\d+\)\s*/, "").trim())
+      .filter(Boolean);
 
-    // 1. FAST KEYWORD CHECK
-    const quick = this._quickMatch(input);
-    if (quick) return quick;
+    const steps = [];
 
-    // 2. REGEX INTENT MATCH
-    const intent = this._regexMatch(input);
-    if (intent) return intent;
+    for (const line of lines) {
+      // -------------------------
+      // Navigate
+      // -------------------------
+      let m = line.match(/^navigate\s+to\s+(https?:\/\/\S+)/i);
+      if (m) {
+        steps.push({
+          action: "navigate",
+          url: m[1],
+        });
+        continue;
+      }
 
-    // 3. FALLBACK STRUCTURING
-    return this._fallbackParse(input);
+      // -------------------------
+      // Click
+      // -------------------------
+      m = line.match(/^click\s+(?:the\s+)?["']?(.+?)["']?$/i);
+      if (m) {
+        steps.push({
+          action: "click",
+          text: m[1],
+        });
+        continue;
+      }
+
+      // -------------------------
+      // Type email
+      // -------------------------
+      m = line.match(/^type\s+email\s+["'](.+)["']$/i);
+      if (m) {
+        steps.push({
+          action: "type",
+          field: "email",
+          value: m[1],
+        });
+        continue;
+      }
+
+      // -------------------------
+      // Type password
+      // -------------------------
+      m = line.match(/^type\s+password\s+["'](.+)["']$/i);
+      if (m) {
+        steps.push({
+          action: "type",
+          field: "password",
+          value: m[1],
+        });
+        continue;
+      }
+
+      // -------------------------
+      // Submit
+      // -------------------------
+      if (/submit/i.test(line)) {
+        steps.push({
+          action: "click",
+          text: "Log in",
+        });
+        continue;
+      }
+    }
+
+    return {
+      intent: "action",
+      confidence: 1,
+      raw: input,
+      steps,
+    };
   }
 
   // -------------------------------
@@ -229,5 +294,3 @@ class IntentParser {
     }
   }
 }
-
-module.exports = IntentParser;

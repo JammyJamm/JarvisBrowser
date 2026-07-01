@@ -67,12 +67,165 @@ export default class Planner {
   // ====================================================
 
   _normalizeAdvanced(plan) {
+    const steps = [];
+
+    for (const s of plan.steps || []) {
+      let tool = String(s.tool || s.type || "").toLowerCase();
+
+      const args = { ...(s.args || {}) };
+
+      args.url ??= s.url;
+      args.text ??= s.text;
+      args.field ??= s.field;
+      args.value ??= s.value;
+      args.query ??= s.query;
+      args.key ??= s.key;
+      args.time ??= s.time;
+      args.selector ??= s.selector;
+
+      //--------------------------------------------------
+      // CHAT STEP -> ACTION STEP
+      //--------------------------------------------------
+
+      if (tool === "chat") {
+        const msg = String(
+          args.message || s.message || s.raw || s.text || "",
+        ).trim();
+
+        let m;
+
+        //--------------------------------------------------
+        // Navigate
+        //--------------------------------------------------
+
+        m =
+          msg.match(/(?:navigate|go)\s+to\s+(https?:\/\/\S+)/i) ||
+          msg.match(/open\s+(https?:\/\/\S+)/i);
+
+        if (m) {
+          steps.push({
+            tool: "navigate",
+            args: {
+              url: m[1],
+            },
+          });
+          continue;
+        }
+
+        //--------------------------------------------------
+        // Click
+        //--------------------------------------------------
+
+        m = msg.match(/click\s+(?:the\s+)?["']?(.+?)["']?$/i);
+
+        if (m) {
+          steps.push({
+            tool: "click",
+            args: {
+              text: m[1].trim(),
+            },
+          });
+          continue;
+        }
+
+        //--------------------------------------------------
+        // Generic TYPE
+        //
+        // Supports:
+        //
+        // Type email "abc"
+        // Type username "abc"
+        // Type username-password "abc"
+        // Type password "abc"
+        // Enter email "abc"
+        // Fill username "abc"
+        //--------------------------------------------------
+
+        m = msg.match(/(?:type|enter|fill)\s+([a-z0-9_-]+)\s+["'](.+?)["']/i);
+
+        if (m) {
+          let field = m[1].toLowerCase();
+
+          if (
+            field.includes("password") ||
+            field.includes("passwd") ||
+            field.includes("pwd") ||
+            field.includes("username-password")
+          ) {
+            field = "password";
+          } else if (
+            field.includes("email") ||
+            field.includes("user") ||
+            field.includes("login") ||
+            field.includes("id") ||
+            field.includes("username")
+          ) {
+            field = "email";
+          }
+
+          steps.push({
+            tool: "type",
+            args: {
+              field,
+              value: m[2],
+            },
+          });
+
+          continue;
+        }
+
+        //--------------------------------------------------
+        // Type "value" into field
+        //--------------------------------------------------
+
+        m = msg.match(
+          /(?:type|enter|fill)\s+["'](.+?)["']\s+(?:into|in)\s+(.+)/i,
+        );
+
+        if (m) {
+          steps.push({
+            tool: "type",
+            args: {
+              value: m[1],
+              field: m[2].trim(),
+            },
+          });
+
+          continue;
+        }
+
+        //--------------------------------------------------
+        // Submit
+        //--------------------------------------------------
+
+        if (/submit|login|log\s*in|sign\s*in/i.test(msg)) {
+          steps.push({
+            tool: "click",
+            args: {
+              text: "Log in",
+            },
+          });
+
+          continue;
+        }
+
+        console.warn("Unknown chat step:", msg);
+        continue;
+      }
+
+      //--------------------------------------------------
+      // Already executable
+      //--------------------------------------------------
+
+      steps.push({
+        tool,
+        args,
+      });
+    }
+
     return {
       mode: plan.mode || "action",
-      steps: (plan.steps || []).map((s) => ({
-        tool: s.type || s.tool,
-        args: s.args || s,
-      })),
+      steps,
       source: plan.source || "core-planner",
     };
   }
