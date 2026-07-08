@@ -1,5 +1,5 @@
 // resolver.js
-
+import { clickInsideEvolutionFrame } from "./utils/iframeContent.js";
 export default class Resolver {
   constructor(mcp) {
     this.mcp = mcp;
@@ -52,95 +52,236 @@ export default class Resolver {
     if (!text) throw new Error("clickSmart requires text");
 
     text = text.trim();
+    const lower = text.toLowerCase();
+    await clickInsideEvolutionFrame(page, text);
+    await page.waitForLoadState("domcontentloaded").catch(() => {});
+    await page.waitForLoadState("networkidle").catch(() => {});
 
-    await page.waitForLoadState("domcontentloaded");
+    //--------------------------------------------------
+    // Search main page + ALL iframes
+    //--------------------------------------------------
 
-    const locators = [
-      page.getByRole("tab", { name: new RegExp(text, "i") }),
+    const contexts = [page, ...page.frames()];
 
-      page.getByRole("button", { name: new RegExp(text, "i") }),
+    console.log(`Searching ${contexts.length} frame(s)...`);
 
-      page.getByRole("link", { name: new RegExp(text, "i") }),
+    //--------------------------------------------------
+    // Submit keywords
+    //--------------------------------------------------
 
-      page.getByText(text, { exact: false }),
-
-      page.locator(`text=${text}`),
+    const submitWords = [
+      "submit",
+      "login",
+      "log in",
+      "signin",
+      "sign in",
+      "continue",
+      "next",
+      "register",
+      "save",
     ];
 
-    for (const locator of locators) {
+    //--------------------------------------------------
+    // Search every frame
+    //--------------------------------------------------
+
+    for (const ctx of contexts) {
       try {
-        if (!(await locator.count())) continue;
+        console.log("Searching:", ctx.url());
 
-        const target = locator.first();
+        //------------------------------------------------
+        // FAST PATH : submit buttons
+        //------------------------------------------------
 
-        await target.scrollIntoViewIfNeeded().catch(() => {});
+        if (submitWords.includes(lower)) {
+          const submits = ctx.locator(`
+          button[type=submit],
+          input[type=submit]
+        `);
 
-        await target.waitFor({
-          state: "visible",
-        });
+          const count = await submits.count();
 
-        // climb until clickable parent
+          for (let i = 0; i < count; i++) {
+            const btn = submits.nth(i);
 
-        const clickable = target.locator(`
-xpath=
-ancestor-or-self::*[
-self::button
-or self::a
-or @role='button'
-or @role='tab'
-or @onclick
-or contains(@class,'tab')
-or contains(@class,'button')
-][1]
-`);
+            try {
+              if (!(await btn.isVisible())) continue;
+              if (!(await btn.isEnabled())) continue;
 
-        if (await clickable.count()) {
-          await clickable.first().click();
+              const label = (
+                (await btn.innerText().catch(() => "")) ||
+                (await btn.getAttribute("value").catch(() => "")) ||
+                ""
+              )
+                .trim()
+                .toLowerCase();
 
-          console.log("Clicked parent");
+              if (!label || label.includes(lower)) {
+                await btn.scrollIntoViewIfNeeded().catch(() => {});
+                await btn.click();
 
-          return true;
+                console.log("Clicked submit button");
+
+                return true;
+              }
+            } catch {}
+          }
         }
 
-        await target.click();
+        //------------------------------------------------
+        // Playwright locators
+        //------------------------------------------------
 
-        return true;
-      } catch {}
-    }
+        const locators = [
+          ctx.getByRole("button", {
+            name: new RegExp(text, "i"),
+          }),
 
-    // DOM fallback
+          ctx.getByRole("tab", {
+            name: new RegExp(text, "i"),
+          }),
 
-    const all = page.locator("*");
+          ctx.getByRole("link", {
+            name: new RegExp(text, "i"),
+          }),
 
-    const total = await all.count();
+          ctx.getByText(text, {
+            exact: false,
+          }),
 
-    for (let i = 0; i < total; i++) {
-      const el = all.nth(i);
+          ctx.locator(`text=${text}`),
+        ];
 
-      try {
-        const txt = (await el.textContent())?.trim();
+        for (const locator of locators) {
+          try {
+            if (!(await locator.count())) continue;
 
-        if (!txt) continue;
+            const target = locator.first();
 
-        if (!txt.toLowerCase().includes(text.toLowerCase())) continue;
+            await target.waitFor({
+              state: "visible",
+              timeout: 1000,
+            });
 
-        const parent = el.locator(`
-xpath=
-ancestor-or-self::*[
-self::button
-or self::a
-or @role='button'
-or @role='tab'
-or @onclick
-][1]
-`);
+            await target.scrollIntoViewIfNeeded().catch(() => {});
 
-        if (await parent.count()) {
-          await parent.click();
+            //------------------------------------------------
+            // Click enclosing BUTTON first
+            //------------------------------------------------
 
-          return true;
+            const button = target.locator("xpath=ancestor-or-self::button[1]");
+
+            if (await button.count()) {
+              await button.first().click();
+
+              console.log("Clicked button");
+
+              return true;
+            }
+
+            //------------------------------------------------
+            // Click enclosing LINK
+            //------------------------------------------------
+
+            const link = target.locator("xpath=ancestor-or-self::a[1]");
+
+            if (await link.count()) {
+              await link.first().click();
+
+              console.log("Clicked link");
+
+              return true;
+            }
+
+            //------------------------------------------------
+            // Direct click
+            //------------------------------------------------
+
+            try {
+              await target.click();
+
+              console.log("Clicked target");
+
+              return true;
+            } catch {}
+
+            //------------------------------------------------
+            // Generic clickable parent
+            //------------------------------------------------
+
+            const clickable = target.locator(`
+            xpath=
+            ancestor-or-self::*[
+              @role='button'
+              or @role='tab'
+              or @onclick
+              or contains(@class,'button')
+              or contains(@class,'btn')
+              or contains(@class,'tab')
+            ][1]
+          `);
+
+            if (await clickable.count()) {
+              await clickable.first().click();
+
+              console.log("Clicked clickable parent");
+
+              return true;
+            }
+          } catch {}
         }
-      } catch {}
+
+        //------------------------------------------------
+        // DOM fallback
+        //------------------------------------------------
+
+        const all = ctx.locator("*");
+
+        const total = await all.count();
+
+        for (let i = 0; i < total; i++) {
+          const el = all.nth(i);
+
+          try {
+            if (!(await el.isVisible())) continue;
+
+            const txt = ((await el.textContent()) || "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .toLowerCase();
+
+            if (!txt.includes(lower)) continue;
+
+            const button = el.locator("xpath=ancestor-or-self::button[1]");
+
+            if (await button.count()) {
+              await button.first().click();
+
+              console.log("Clicked fallback button");
+
+              return true;
+            }
+
+            const link = el.locator("xpath=ancestor-or-self::a[1]");
+
+            if (await link.count()) {
+              await link.first().click();
+
+              console.log("Clicked fallback link");
+
+              return true;
+            }
+
+            await el.click().catch(() => {});
+
+            console.log("Clicked fallback element");
+
+            return true;
+          } catch {}
+        }
+      } catch (err) {
+        console.log("Frame skipped:", err.message);
+      }
     }
 
     throw new Error(`Unable to click '${text}'`);
@@ -149,461 +290,129 @@ or @onclick
   async typeSmart(field, value) {
     const page = await this.mcp.getPage();
 
+    // Normalize field names
     field = String(field).trim().toLowerCase();
 
-    //--------------------------------------------------
-    // FIELD ALIASES
-    //--------------------------------------------------
+    const fieldMap = {
+      email: "username",
+      "e-mail": "username",
+      mail: "username",
+      login: "username",
+      userid: "username",
+      "user id": "username",
+      id: "username",
+      username: "username",
+
+      password: "password",
+      pass: "password",
+      pwd: "password",
+
+      phone: "phone",
+      mobile: "phone",
+
+      otp: "otp",
+      code: "otp",
+    };
+
+    const target = fieldMap[field] || field;
 
     const aliases = {
-      email: [
+      username: [
+        "username",
+        "user",
         "email",
         "e-mail",
-        "mail",
         "email or id",
-        "e-mail or id",
-        "username",
-        "user name",
-        "user",
         "login",
         "login id",
         "id",
       ],
-
-      password: ["password", "pass", "pwd"],
-
-      phone: ["phone", "mobile", "telephone", "number"],
-
-      otp: ["otp", "verification code", "code", "pin"],
-
-      search: ["search", "find", "lookup"],
+      password: ["password", "pass", "pwd", "current-password", "new-password"],
+      phone: ["phone", "mobile", "telephone"],
+      otp: ["otp", "verification", "code"],
     };
 
-    const keywords = aliases[field] || [field];
+    const words = aliases[target] || [target];
 
-    //--------------------------------------------------
-    // HELPERS
-    //--------------------------------------------------
-
-    const containsKeyword = (text = "") => {
-      text = String(text).toLowerCase();
-
-      return keywords.some((k) => text.includes(k));
-    };
-
-    const normalize = (text = "") =>
-      String(text).replace(/\s+/g, " ").trim().toLowerCase();
-
-    //--------------------------------------------------
-    // SAFE INNER TEXT
-    //--------------------------------------------------
-
-    const safeText = async (locator) => {
-      try {
-        return normalize(await locator.innerText());
-      } catch {
-        return "";
-      }
-    };
-
-    //--------------------------------------------------
-    // SCORE ATTRIBUTES
-    //--------------------------------------------------
-
-    const scoreAttributes = (attrs) => {
-      let score = 0;
-
-      if (containsKeyword(attrs.placeholder)) score += 300;
-
-      if (containsKeyword(attrs.aria)) score += 300;
-
-      if (containsKeyword(attrs.name)) score += 250;
-
-      if (containsKeyword(attrs.id)) score += 250;
-
-      if (containsKeyword(attrs.autocomplete)) score += 250;
-
-      //--------------------------------------------------
-      // EMAIL BONUS
-      //--------------------------------------------------
-
-      if (field === "email") {
-        if (attrs.type === "email") score += 250;
-
-        if (attrs.name === "username") score += 600;
-
-        if (attrs.id === "username") score += 550;
-
-        if (attrs.autocomplete === "username") score += 700;
-
-        if (attrs.placeholder.includes("email")) score += 700;
-
-        if (attrs.placeholder.includes("id")) score += 500;
-      }
-
-      //--------------------------------------------------
-      // PASSWORD BONUS
-      //--------------------------------------------------
-
-      if (field === "password") {
-        if (attrs.type === "password") score += 900;
-
-        if (attrs.autocomplete.includes("current-password")) score += 700;
-
-        if (attrs.autocomplete.includes("new-password")) score += 700;
-      }
-
-      return score;
-    };
-
-    //--------------------------------------------------
-    // SCORE LABEL
-    //--------------------------------------------------
-
-    const scoreLabel = (text, distance = 0) => {
-      if (!containsKeyword(text)) return 0;
-
-      return Math.max(800 - distance * 40, 100);
-    };
-
-    //--------------------------------------------------
-    // GET INPUTS
-    //--------------------------------------------------
-
-    const inputs = page.locator(
-      `
-    input:not([type=hidden]),
+    const inputs = page.locator(`
+    input:not(
+      [type=hidden],
+      [type=radio],
+      [type=checkbox],
+      [type=submit],
+      [type=button]
+    ),
     textarea,
-    [contenteditable='true']
-    `,
-    );
+    [contenteditable]
+  `);
 
-    const total = await inputs.count();
+    let best = null;
+    let bestScore = -1;
 
-    if (!total) throw new Error("No editable inputs found.");
+    const count = await inputs.count();
 
-    let bestInput = null;
-    let bestScore = -999999;
-    //--------------------------------------------------
-    // EVALUATE EVERY INPUT
-    //--------------------------------------------------
-
-    for (let i = 0; i < total; i++) {
+    for (let i = 0; i < count; i++) {
       const input = inputs.nth(i);
 
-      try {
-        if (!(await input.isVisible())) continue;
+      if (!(await input.isVisible())) continue;
 
-        let score = 0;
+      let score = 0;
 
-        //--------------------------------------------------
-        // ATTRIBUTES
-        //--------------------------------------------------
+      const attrs = [
+        await input.getAttribute("id"),
+        await input.getAttribute("name"),
+        await input.getAttribute("placeholder"),
+        await input.getAttribute("autocomplete"),
+        await input.getAttribute("aria-label"),
+        await input.getAttribute("type"),
+      ]
+        .join(" ")
+        .toLowerCase();
 
-        const attrs = {
-          placeholder: normalize(
-            (await input.getAttribute("placeholder")) || "",
-          ),
+      // Attribute matching
+      for (const w of words) if (attrs.includes(w)) score += 500;
 
-          aria: normalize((await input.getAttribute("aria-label")) || ""),
+      // Semantic bonuses
+      if (target === "username") {
+        if (attrs.includes('autocomplete="username"')) score += 5000;
+        if (attrs.includes("username")) score += 3000;
+        if (attrs.includes("email")) score += 2500;
+        if (attrs.includes("login")) score += 2000;
+      }
 
-          name: normalize((await input.getAttribute("name")) || ""),
+      if (target === "password") {
+        if (attrs.includes("password")) score += 5000;
+        if (attrs.includes("current-password")) score += 4000;
+        if (attrs.includes("type password")) score += 3000;
+      }
 
-          id: normalize((await input.getAttribute("id")) || ""),
+      // Parent text
+      let parent = input;
 
-          autocomplete: normalize(
-            (await input.getAttribute("autocomplete")) || "",
-          ),
-
-          type: normalize((await input.getAttribute("type")) || ""),
-        };
-
-        score += scoreAttributes(attrs);
-
-        //--------------------------------------------------
-        // LABEL[for=id]
-        //--------------------------------------------------
-
-        try {
-          if (attrs.id) {
-            const lbl = page.locator(`label[for="${attrs.id}"]`).first();
-
-            if (await lbl.count()) {
-              const txt = await safeText(lbl);
-
-              score += scoreLabel(txt);
-            }
-          }
-        } catch {}
-
-        //--------------------------------------------------
-        // aria-labelledby
-        //--------------------------------------------------
+      for (let l = 0; l < 6; l++) {
+        parent = parent.locator("xpath=..");
 
         try {
-          const labelledBy = await input.getAttribute("aria-labelledby");
+          const txt = (await parent.innerText()).toLowerCase();
 
-          if (labelledBy) {
-            const ids = labelledBy.split(/\s+/).filter(Boolean);
-
-            for (const id of ids) {
-              const node = page.locator(`#${id}`);
-
-              if (await node.count()) {
-                score += scoreLabel(await safeText(node));
-              }
-            }
-          }
+          for (const w of words) if (txt.includes(w)) score += 800 - l * 100;
         } catch {}
+      }
 
-        //--------------------------------------------------
-        // WALK PARENTS
-        //--------------------------------------------------
-
-        let current = input;
-
-        for (let level = 0; level < 10; level++) {
-          current = current.locator("xpath=..");
-
-          //------------------------------------------------
-          // Parent text
-          //------------------------------------------------
-
-          try {
-            score += scoreLabel(await safeText(current), level);
-          } catch {}
-
-          //------------------------------------------------
-          // Labels inside current parent
-          //------------------------------------------------
-
-          try {
-            const labels = current.locator(
-              `
-            label,
-            span,
-            p,
-            div,
-            strong,
-            small,
-            legend,
-            h1,
-            h2,
-            h3,
-            h4,
-            h5,
-            h6
-            `,
-            );
-
-            const cnt = await labels.count();
-
-            for (let j = 0; j < cnt; j++) {
-              const txt = await safeText(labels.nth(j));
-
-              score += scoreLabel(txt, level);
-            }
-          } catch {}
-
-          //------------------------------------------------
-          // PREVIOUS siblings
-          //------------------------------------------------
-
-          try {
-            const prev = current.locator("xpath=preceding-sibling::*");
-
-            const cnt = await prev.count();
-
-            for (let j = 0; j < cnt; j++) {
-              score += scoreLabel(await safeText(prev.nth(j)), level + 1);
-            }
-          } catch {}
-
-          //------------------------------------------------
-          // NEXT siblings
-          //------------------------------------------------
-
-          try {
-            const next = current.locator("xpath=following-sibling::*");
-
-            const cnt = await next.count();
-
-            for (let j = 0; j < cnt; j++) {
-              score += scoreLabel(await safeText(next.nth(j)), level + 1);
-            }
-          } catch {}
-
-          //------------------------------------------------
-          // ALL CHILDREN OF PARENT
-          // (critical for Vuetify / Material / Ant)
-          //------------------------------------------------
-
-          try {
-            const neighbours = current.locator("xpath=../*");
-
-            const cnt = await neighbours.count();
-
-            for (let j = 0; j < cnt; j++) {
-              const node = neighbours.nth(j);
-
-              const txt = await safeText(node);
-
-              if (!containsKeyword(txt)) continue;
-
-              const hasInput = await node
-                .locator("input,textarea,[contenteditable]")
-                .count();
-
-              if (hasInput) score += 350;
-              else score += 800;
-            }
-          } catch {}
-        }
-
-        //--------------------------------------------------
-        // Continue with scoring...
-        //--------------------------------------------------
-
-        // =====================================================
-        // TYPE SMART (UNCHANGED BUT SAFE)
-        // =====================================================
-        //--------------------------------------------------
-        // INPUT TYPE BONUS
-        //--------------------------------------------------
-
-        if (await input.isEnabled()) score += 100;
-
-        if (await input.isEditable()) score += 100;
-
-        try {
-          await input.boundingBox();
-          score += 50;
-        } catch {}
-
-        //--------------------------------------------------
-        // PENALTY
-        //--------------------------------------------------
-
-        if (attrs.type === "hidden") score -= 5000;
-
-        if (attrs.type === "submit") score -= 5000;
-
-        if (attrs.type === "button") score -= 5000;
-
-        if (attrs.type === "checkbox") score -= 5000;
-
-        if (attrs.type === "radio") score -= 5000;
-
-        //--------------------------------------------------
-        // DEBUG
-        //--------------------------------------------------
-
-        console.log({
-          field,
-          score,
-          id: attrs.id,
-          name: attrs.name,
-          placeholder: attrs.placeholder,
-          autocomplete: attrs.autocomplete,
-          type: attrs.type,
-        });
-
-        //--------------------------------------------------
-        // BEST MATCH
-        //--------------------------------------------------
-
-        if (score > bestScore) {
-          bestScore = score;
-          bestInput = input;
-        }
-      } catch (err) {
-        console.log("Candidate skipped:", err.message);
+      if (score > bestScore) {
+        bestScore = score;
+        best = input;
       }
     }
 
-    //--------------------------------------------------
-    // NOTHING FOUND
-    //--------------------------------------------------
+    if (!best) throw new Error(`Unable to locate ${field}`);
 
-    if (!bestInput) throw new Error(`Unable to locate "${field}" input`);
+    console.log(`TYPE SMART -> ${field} => ${target} (${bestScore})`);
 
-    console.log(`TYPE SMART -> ${field} (score=${bestScore})`);
-
-    //--------------------------------------------------
-    // FOCUS
-    //--------------------------------------------------
-
-    await bestInput.scrollIntoViewIfNeeded().catch(() => {});
-
-    try {
-      await bestInput.click({
-        timeout: 3000,
-      });
-    } catch {}
-
-    //--------------------------------------------------
-    // CLEAR
-    //--------------------------------------------------
-
-    try {
-      await bestInput.fill("");
-    } catch {
-      try {
-        await bestInput.press("Control+A");
-        await bestInput.press("Backspace");
-      } catch {}
-    }
-
-    //--------------------------------------------------
-    // TYPE
-    //--------------------------------------------------
-
-    try {
-      await bestInput.fill(value);
-    } catch {
-      try {
-        await bestInput.type(value, {
-          delay: 15,
-        });
-      } catch {
-        await page.evaluate(
-          ({ element, value }) => {
-            element.focus();
-            element.value = value;
-            element.dispatchEvent(
-              new Event("input", {
-                bubbles: true,
-              }),
-            );
-            element.dispatchEvent(
-              new Event("change", {
-                bubbles: true,
-              }),
-            );
-          },
-          {
-            element: await bestInput.elementHandle(),
-            value,
-          },
-        );
-      }
-    }
-
-    //--------------------------------------------------
-    // VERIFY
-    //--------------------------------------------------
-
-    try {
-      const finalValue = await bestInput.inputValue();
-
-      if (finalValue.trim() !== String(value).trim()) {
-        throw new Error("Verification failed");
-      }
-    } catch {
-      console.log("Fill verification skipped.");
-    }
-
-    console.log(`TYPE SUCCESS -> ${field}`);
+    await best.scrollIntoViewIfNeeded().catch(() => {});
+    await best.click().catch(() => {});
+    await best.fill("").catch(() => {});
+    await best.fill(value);
 
     return true;
   }

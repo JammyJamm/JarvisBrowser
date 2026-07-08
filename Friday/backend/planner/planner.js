@@ -54,66 +54,158 @@ export default class Planner {
   // FAST PARSER
   // =====================================================
 
-  _fastParse(text, context) {
-    const lower = text.toLowerCase();
-
+  _fastParse(text) {
     const steps = [];
 
-    // NAVIGATION INTENT
-    if (this._match(lower, this.rules.navigate)) {
-      steps.push({
-        type: "navigate",
-        url: this._extractUrl(text) || this._extractDomain(text),
-        raw: text,
-      });
-    }
+    // Split numbered / bulleted commands
+    const lines = text
+      .split(/\r?\n/)
+      .map((l) =>
+        l
+          .replace(/^\s*\d+[.)]\s*/, "")
+          .replace(/^[-*]\s*/, "")
+          .trim(),
+      )
+      .filter(Boolean);
 
-    // SEARCH INTENT
-    if (this._match(lower, this.rules.search)) {
-      steps.push({
-        type: "search",
-        query: this._extractQuery(text),
-        raw: text,
-      });
-    }
+    // If user entered a single sentence
+    if (!lines.length) lines.push(text);
 
-    // CLICK INTENT
-    if (this._match(lower, this.rules.click)) {
-      steps.push({
-        type: "click",
-        selector: this._extractSelector(text),
-        text: this._extractClickText(text),
-        raw: text,
-      });
-    }
+    for (const line of lines) {
+      const lower = line.toLowerCase();
 
-    // SCROLL
-    if (this._match(lower, this.rules.scroll)) {
-      steps.push({
-        type: "scroll",
-        direction: lower.includes("up") ? "up" : "down",
-        amount: this._extractNumber(text) || 800,
-      });
-    }
+      //------------------------------------------------
+      // Navigate
+      //------------------------------------------------
 
-    // WAIT
-    if (this._match(lower, this.rules.wait)) {
-      steps.push({
-        type: "wait",
-        ms: this._extractNumber(text) || 2000,
-      });
-    }
+      if (this._match(lower, this.rules.navigate)) {
+        steps.push({
+          type: "navigate",
+          url: this._extractUrl(line) || this._extractDomain(line),
+        });
+        continue;
+      }
 
-    // DEFAULT fallback intent
-    if (steps.length === 0) {
+      //------------------------------------------------
+      // Click
+      //------------------------------------------------
+
+      if (this._match(lower, this.rules.click)) {
+        steps.push({
+          type: "click",
+          text: this._extractClickText(line),
+        });
+        continue;
+      }
+
+      //------------------------------------------------
+      // Type
+      //------------------------------------------------
+
+      let m;
+
+      m = line.match(
+        /(?:type|enter|fill)\s+(email|username|password|username-password)\s+"([^"]+)"/i,
+      );
+
+      if (m) {
+        let field = m[1].toLowerCase();
+
+        if (field === "username") field = "email";
+
+        if (field === "username-password") field = "password";
+
+        steps.push({
+          type: "type",
+          field,
+          value: m[2],
+        });
+
+        continue;
+      }
+
+      //------------------------------------------------
+      // Type "... " into ...
+      //------------------------------------------------
+
+      m = line.match(/(?:type|enter|fill)\s+"([^"]+)"\s+(?:into|in)\s+(.+)/i);
+
+      if (m) {
+        steps.push({
+          type: "type",
+          field: m[2].trim(),
+          value: m[1],
+        });
+
+        continue;
+      }
+
+      //------------------------------------------------
+      // Search
+      //------------------------------------------------
+
+      if (this._match(lower, this.rules.search)) {
+        steps.push({
+          type: "search",
+          query: this._extractQuery(line),
+        });
+
+        continue;
+      }
+
+      //------------------------------------------------
+      // Scroll
+      //------------------------------------------------
+
+      if (this._match(lower, this.rules.scroll)) {
+        steps.push({
+          type: "scroll",
+          direction: lower.includes("up") ? "up" : "down",
+          amount: this._extractNumber(line) || 800,
+        });
+
+        continue;
+      }
+
+      //------------------------------------------------
+      // Wait
+      //------------------------------------------------
+
+      if (this._match(lower, this.rules.wait)) {
+        steps.push({
+          type: "wait",
+          time: this._extractNumber(line) || 2000,
+        });
+
+        continue;
+      }
+
+      //------------------------------------------------
+      // Submit
+      //------------------------------------------------
+
+      if (/submit|log\s*in|sign\s*in/i.test(lower)) {
+        steps.push({
+          type: "click",
+          text: "Log in",
+        });
+
+        continue;
+      }
+
+      //------------------------------------------------
+      // Unknown
+      //------------------------------------------------
+
       steps.push({
         type: "chat",
-        message: text,
+        message: line,
       });
     }
 
     return {
       source: "fast-parser",
+      mode: "action",
       steps,
     };
   }
@@ -186,8 +278,10 @@ Output format:
       navigate: ["open", "go to", "visit", "navigate", "launch"],
       search: ["search", "look for", "find", "google"],
       click: ["click", "press", "tap"],
+      type: ["type", "enter", "fill"],
       scroll: ["scroll"],
       wait: ["wait", "pause", "delay"],
+      submit: ["submit", "login", "log in", "sign in"],
     };
   }
 
