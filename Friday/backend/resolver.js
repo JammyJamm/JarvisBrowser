@@ -1,623 +1,1253 @@
-// resolver.js
+//==========================================================
+//
+// backend/resolver.js
+//
+// Ultra Intelligent Resolver
+//
+// Architecture
+//
+// User Input
+//      │
+//      ▼
+// Intent Parser
+//      │
+//      ▼
+// Scoring Engine
+//      │
+//      ▼
+// Resolver
+//      │
+//      ▼
+// Playwright
+//      │
+//      ▼
+// Self Healing
+//
+//==========================================================
+
 import { clickInsideEvolutionFrame } from "./utils/iframeContent.js";
+
+import IntentParser from "./planner/intent-parser.js";
+import Planner from "./planner/planner.js";
+import ScoringEngine from "./planner/scoring-engine.js";
+import SelfHealingEngine from "./planner/self-healing.js";
+
 export default class Resolver {
-  constructor(mcp) {
+  constructor(mcp, options = {}) {
+    //--------------------------------------------------
+    // Core
+    //--------------------------------------------------
+
     this.mcp = mcp;
-  }
 
-  // =====================================================
-  // SMART DOM FETCHER (NEW)
-  // =====================================================
+    this.options = {
+      domCacheTTL: 5000,
 
-  async getDOMPool(page) {
-    const [buttons, links, tabs, roles] = await Promise.all([
-      page
-        .locator("button")
-        .evaluateAll((els) =>
-          els.map((e) => e.textContent?.trim()).filter(Boolean),
-        ),
-      page
-        .locator("a")
-        .evaluateAll((els) =>
-          els.map((e) => e.textContent?.trim()).filter(Boolean),
-        ),
-      page
-        .locator('[role="tab"]')
-        .evaluateAll((els) =>
-          els.map((e) => e.textContent?.trim()).filter(Boolean),
-        ),
-      page
-        .locator('[role="button"]')
-        .evaluateAll((els) =>
-          els.map((e) => e.textContent?.trim()).filter(Boolean),
-        ),
-    ]);
+      frameCacheTTL: 5000,
 
-    return {
-      buttons,
-      links,
-      tabs,
-      roles,
-      all: [...buttons, ...links, ...tabs, ...roles],
+      autoRefreshDOM: true,
+
+      enableLearning: true,
+
+      debug: false,
+
+      ...options,
     };
+
+    //--------------------------------------------------
+    // AI Components
+    //--------------------------------------------------
+
+    this.intentParser =
+      options.intentParser ||
+      new IntentParser({
+        debug: this.options.debug,
+      });
+
+    this.scoringEngine = options.scoringEngine || new ScoringEngine();
+
+    this.planner =
+      options.planner ||
+      new Planner({
+        useLLM: true,
+      });
+
+    this.selfHealing = options.selfHealing || new SelfHealingEngine();
+
+    //--------------------------------------------------
+    // DOM Cache
+    //--------------------------------------------------
+
+    this.domCache = {
+      page: null,
+
+      frames: [],
+
+      timestamp: 0,
+    };
+
+    //--------------------------------------------------
+    // Frame Cache
+    //--------------------------------------------------
+
+    this.frameCache = new Map();
+
+    //--------------------------------------------------
+    // Learned Selectors
+    //--------------------------------------------------
+
+    this.selectorCache = new Map();
+
+    //--------------------------------------------------
+    // Previous Successful Matches
+    //--------------------------------------------------
+
+    this.learningCache = new Map();
+
+    //--------------------------------------------------
+    // Performance Statistics
+    //--------------------------------------------------
+
+    this.stats = {
+      clicks: 0,
+
+      types: 0,
+
+      searches: 0,
+
+      plannerCalls: 0,
+
+      healedExecutions: 0,
+
+      cacheHits: 0,
+
+      cacheMisses: 0,
+
+      averageResolveTime: 0,
+
+      lastResolveTime: 0,
+    };
+
+    //--------------------------------------------------
+    // Runtime State
+    //--------------------------------------------------
+
+    this.isBuildingIndex = false;
+
+    this.lastSnapshot = null;
+
+    this.lastURL = "";
   }
 
+  //======================================================
+  // DEBUG LOGGER
+  //======================================================
+
+  log(...args) {
+    if (this.options.debug) {
+      console.log("[Resolver]", ...args);
+    }
+  }
+
+  warn(...args) {
+    console.warn("[Resolver]", ...args);
+  }
+
+  error(...args) {
+    console.error("[Resolver]", ...args);
+  }
+
+  //======================================================
+  // PERFORMANCE TIMER
+  //======================================================
+
+  startTimer() {
+    return performance.now();
+  }
+
+  stopTimer(start) {
+    const elapsed = performance.now() - start;
+
+    this.stats.lastResolveTime = elapsed;
+
+    this.stats.averageResolveTime =
+      this.stats.averageResolveTime === 0
+        ? elapsed
+        : this.stats.averageResolveTime * 0.9 + elapsed * 0.1;
+
+    return elapsed;
+  }
+
+  //======================================================
+  // CACHE MANAGEMENT
+  //======================================================
+
+  clearCaches() {
+    this.domCache = {
+      page: null,
+
+      frames: [],
+
+      timestamp: 0,
+    };
+
+    this.frameCache.clear();
+  }
+
+  invalidateDOMCache() {
+    this.domCache.timestamp = 0;
+  }
+
+  isDOMCacheValid() {
+    return Date.now() - this.domCache.timestamp < this.options.domCacheTTL;
+  }
+
+  remember(query, candidate) {
+    if (!this.options.enableLearning) return;
+
+    this.learningCache.set(
+      query,
+
+      candidate,
+    );
+
+    if (this.scoringEngine?.remember) {
+      this.scoringEngine.remember(
+        query,
+
+        candidate,
+      );
+    }
+  }
+
+  getRemembered(query) {
+    return this.learningCache.get(query);
+  }
+
+  //======================================================
+  // Remaining methods continue in Part 2
+  //======================================================
+
   // =====================================================
-  // SMART CLICK (TAB-AWARE FIX)
+  // DOM CACHE
   // =====================================================
 
-  async clickSmart(text) {
+  clearDOMCache() {
+    this.domCache = null;
+
+    this.frameCache = [];
+  }
+
+  //=====================================================
+  // BUILD DOM INDEX
+  //=====================================================
+
+  async buildDOMIndex(force = false) {
+    if (
+      !force &&
+      this.domCache &&
+      Date.now() - this.domCache.timestamp < this.cacheTTL
+    ) {
+      return this.domCache;
+    }
+
     const page = await this.mcp.getPage();
 
-    if (!text) throw new Error("clickSmart requires text");
-
-    text = text.trim();
-    const lower = text.toLowerCase();
-    await clickInsideEvolutionFrame(page, text);
     await page.waitForLoadState("domcontentloaded").catch(() => {});
-    await page.waitForLoadState("networkidle").catch(() => {});
+
+    const frames = [page, ...page.frames()];
+
+    const allElements = [];
+
+    const frameIndex = [];
 
     //--------------------------------------------------
-    // Search main page + ALL iframes
+    // Scan every frame
     //--------------------------------------------------
 
-    const contexts = [page, ...page.frames()];
-
-    console.log(`Searching ${contexts.length} frame(s)...`);
-
-    //--------------------------------------------------
-    // Submit keywords
-    //--------------------------------------------------
-
-    const submitWords = [
-      "submit",
-      "login",
-      "log in",
-      "signin",
-      "sign in",
-      "continue",
-      "next",
-      "register",
-      "save",
-    ];
-
-    //--------------------------------------------------
-    // Search every frame
-    //--------------------------------------------------
-
-    for (const ctx of contexts) {
+    for (const frame of frames) {
       try {
-        console.log("Searching:", ctx.url());
+        const elements = await this.extractFrameElements(frame);
 
-        //------------------------------------------------
-        // FAST PATH : submit buttons
-        //------------------------------------------------
+        frameIndex.push({
+          frame,
 
-        if (submitWords.includes(lower)) {
-          const submits = ctx.locator(`
-          button[type=submit],
-          input[type=submit]
-        `);
+          url: frame.url(),
 
-          const count = await submits.count();
+          count: elements.length,
+        });
 
-          for (let i = 0; i < count; i++) {
-            const btn = submits.nth(i);
-
-            try {
-              if (!(await btn.isVisible())) continue;
-              if (!(await btn.isEnabled())) continue;
-
-              const label = (
-                (await btn.innerText().catch(() => "")) ||
-                (await btn.getAttribute("value").catch(() => "")) ||
-                ""
-              )
-                .trim()
-                .toLowerCase();
-
-              if (!label || label.includes(lower)) {
-                await btn.scrollIntoViewIfNeeded().catch(() => {});
-                await btn.click();
-
-                console.log("Clicked submit button");
-
-                return true;
-              }
-            } catch {}
-          }
-        }
-
-        //------------------------------------------------
-        // Playwright locators
-        //------------------------------------------------
-
-        const locators = [
-          ctx.getByRole("button", {
-            name: new RegExp(text, "i"),
-          }),
-
-          ctx.getByRole("tab", {
-            name: new RegExp(text, "i"),
-          }),
-
-          ctx.getByRole("link", {
-            name: new RegExp(text, "i"),
-          }),
-
-          ctx.getByText(text, {
-            exact: false,
-          }),
-
-          ctx.locator(`text=${text}`),
-        ];
-
-        for (const locator of locators) {
-          try {
-            if (!(await locator.count())) continue;
-
-            const target = locator.first();
-
-            await target.waitFor({
-              state: "visible",
-              timeout: 1000,
-            });
-
-            await target.scrollIntoViewIfNeeded().catch(() => {});
-
-            //------------------------------------------------
-            // Click enclosing BUTTON first
-            //------------------------------------------------
-
-            const button = target.locator("xpath=ancestor-or-self::button[1]");
-
-            if (await button.count()) {
-              await button.first().click();
-
-              console.log("Clicked button");
-
-              return true;
-            }
-
-            //------------------------------------------------
-            // Click enclosing LINK
-            //------------------------------------------------
-
-            const link = target.locator("xpath=ancestor-or-self::a[1]");
-
-            if (await link.count()) {
-              await link.first().click();
-
-              console.log("Clicked link");
-
-              return true;
-            }
-
-            //------------------------------------------------
-            // Direct click
-            //------------------------------------------------
-
-            try {
-              await target.click();
-
-              console.log("Clicked target");
-
-              return true;
-            } catch {}
-
-            //------------------------------------------------
-            // Generic clickable parent
-            //------------------------------------------------
-
-            const clickable = target.locator(`
-            xpath=
-            ancestor-or-self::*[
-              @role='button'
-              or @role='tab'
-              or @onclick
-              or contains(@class,'button')
-              or contains(@class,'btn')
-              or contains(@class,'tab')
-            ][1]
-          `);
-
-            if (await clickable.count()) {
-              await clickable.first().click();
-
-              console.log("Clicked clickable parent");
-
-              return true;
-            }
-          } catch {}
-        }
-
-        //------------------------------------------------
-        // DOM fallback
-        //------------------------------------------------
-
-        const all = ctx.locator("*");
-
-        const total = await all.count();
-
-        for (let i = 0; i < total; i++) {
-          const el = all.nth(i);
-
-          try {
-            if (!(await el.isVisible())) continue;
-
-            const txt = ((await el.textContent()) || "")
-              .replace(/\s+/g, " ")
-              .trim()
-              .toLowerCase();
-
-            if (!txt.includes(lower)) continue;
-
-            const button = el.locator("xpath=ancestor-or-self::button[1]");
-
-            if (await button.count()) {
-              await button.first().click();
-
-              console.log("Clicked fallback button");
-
-              return true;
-            }
-
-            const link = el.locator("xpath=ancestor-or-self::a[1]");
-
-            if (await link.count()) {
-              await link.first().click();
-
-              console.log("Clicked fallback link");
-
-              return true;
-            }
-
-            await el.click().catch(() => {});
-
-            console.log("Clicked fallback element");
-
-            return true;
-          } catch {}
-        }
+        allElements.push(...elements);
       } catch (err) {
-        console.log("Frame skipped:", err.message);
+        console.log("[Resolver] Frame skipped:", err.message);
       }
     }
 
-    throw new Error(`Unable to click '${text}'`);
+    //--------------------------------------------------
+    // Build ScoringEngine index
+    //--------------------------------------------------
+
+    this.scoringEngine.buildIndex(allElements);
+
+    this.frameCache = frameIndex;
+
+    this.domCache = {
+      timestamp: Date.now(),
+
+      elements: allElements,
+
+      count: allElements.length,
+    };
+
+    console.log(
+      `[Resolver] Indexed ${allElements.length} interactive elements across ${frameIndex.length} frame(s).`,
+    );
+
+    return this.domCache;
   }
 
-  async typeSmart(field, value) {
-    const page = await this.mcp.getPage();
+  //=====================================================
+  // EXTRACT INTERACTIVE ELEMENTS
+  //=====================================================
 
-    // Normalize field names
-    field = String(field).trim().toLowerCase();
+  async extractFrameElements(frame) {
+    return await frame.evaluate(() => {
+      const selectors = [
+        "button",
 
-    const fieldMap = {
-      email: "username",
-      "e-mail": "username",
-      mail: "username",
-      login: "username",
-      userid: "username",
-      "user id": "username",
-      id: "username",
-      username: "username",
+        "a",
 
-      password: "password",
-      pass: "password",
-      pwd: "password",
+        "input",
 
-      phone: "phone",
-      mobile: "phone",
+        "textarea",
 
-      otp: "otp",
-      code: "otp",
-    };
+        "select",
 
-    const target = fieldMap[field] || field;
+        "[role='button']",
 
-    const aliases = {
-      username: [
-        "username",
-        "user",
-        "email",
-        "e-mail",
-        "email or id",
-        "login",
-        "login id",
-        "id",
-      ],
-      password: ["password", "pass", "pwd", "current-password", "new-password"],
-      phone: ["phone", "mobile", "telephone"],
-      otp: ["otp", "verification", "code"],
-    };
+        "[role='tab']",
 
-    const words = aliases[target] || [target];
+        "[role='link']",
 
-    const inputs = page.locator(`
-    input:not(
-      [type=hidden],
-      [type=radio],
-      [type=checkbox],
-      [type=submit],
-      [type=button]
-    ),
-    textarea,
-    [contenteditable]
-  `);
+        "[role='menuitem']",
 
-    let best = null;
-    let bestScore = -1;
+        "[role='checkbox']",
 
-    const count = await inputs.count();
+        "[role='radio']",
 
-    for (let i = 0; i < count; i++) {
-      const input = inputs.nth(i);
+        "[role='option']",
 
-      if (!(await input.isVisible())) continue;
+        "[contenteditable]",
 
-      let score = 0;
+        "[onclick]",
 
-      const attrs = [
-        await input.getAttribute("id"),
-        await input.getAttribute("name"),
-        await input.getAttribute("placeholder"),
-        await input.getAttribute("autocomplete"),
-        await input.getAttribute("aria-label"),
-        await input.getAttribute("type"),
-      ]
-        .join(" ")
-        .toLowerCase();
+        "[data-testid]",
 
-      // Attribute matching
-      for (const w of words) if (attrs.includes(w)) score += 500;
+        "[aria-label]",
+      ];
 
-      // Semantic bonuses
-      if (target === "username") {
-        if (attrs.includes('autocomplete="username"')) score += 5000;
-        if (attrs.includes("username")) score += 3000;
-        if (attrs.includes("email")) score += 2500;
-        if (attrs.includes("login")) score += 2000;
+      const elements = [];
+
+      const seen = new WeakSet();
+
+      document
+        .querySelectorAll(selectors.join(","))
+
+        .forEach((el) => {
+          if (seen.has(el)) return;
+
+          seen.add(el);
+
+          const rect = el.getBoundingClientRect();
+
+          const style = window.getComputedStyle(el);
+
+          elements.push({
+            tagName: el.tagName.toLowerCase(),
+
+            id: el.id || "",
+
+            role: el.getAttribute("role") || "",
+
+            text: (el.innerText || el.textContent || "").trim(),
+
+            ariaLabel: el.getAttribute("aria-label") || "",
+
+            placeholder: el.getAttribute("placeholder") || "",
+
+            title: el.getAttribute("title") || "",
+
+            alt: el.getAttribute("alt") || "",
+
+            testid: el.getAttribute("data-testid") || "",
+
+            name: el.getAttribute("name") || "",
+
+            type: el.getAttribute("type") || "",
+
+            value: el.value || "",
+
+            visible:
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.visibility !== "hidden" &&
+              style.display !== "none",
+
+            enabled: !el.disabled,
+
+            x: rect.x,
+
+            y: rect.y,
+
+            width: rect.width,
+
+            height: rect.height,
+          });
+        });
+
+      return elements;
+    });
+  }
+
+  //=====================================================
+  // GET DOM POOL
+  //=====================================================
+
+  async getDOMPool(force = false) {
+    const cache = await this.buildDOMIndex(force);
+
+    return cache.elements;
+  }
+
+  //=====================================================
+  // REFRESH DOM
+  //=====================================================
+
+  async refreshDOM() {
+    this.clearDOMCache();
+
+    return await this.buildDOMIndex(true);
+  }
+
+  //=====================================================
+  // GET FRAME INFO
+  //=====================================================
+
+  getFramePool() {
+    return this.frameCache;
+  }
+
+  //=====================================================
+  // DEBUG
+  //=====================================================
+
+  printDOMSummary() {
+    if (!this.domCache) {
+      console.log("DOM not indexed.");
+
+      return;
+    }
+
+    console.table({
+      Elements: this.domCache.count,
+
+      Frames: this.frameCache.length,
+
+      Cached: new Date(this.domCache.timestamp).toLocaleTimeString(),
+    });
+  }
+  //=====================================================
+  // CLICK SMART
+  // Uses:
+  //  IntentParser
+  //      ↓
+  //  ScoringEngine
+  //      ↓
+  //  Playwright
+  //      ↓
+  //  SelfHealing
+  //=====================================================
+
+  async clickSmart(input) {
+    const started = this.startTimer();
+
+    return await this.selfHealing.execute(async () => {
+      //--------------------------------------------------
+      // Validate
+      //--------------------------------------------------
+
+      if (!input) throw new Error("clickSmart requires text");
+
+      //--------------------------------------------------
+      // Parse Intent
+      //--------------------------------------------------
+
+      const parsed = this.intentParser.parse(input);
+
+      const step = parsed.steps?.[0];
+
+      if (!step) throw new Error("Unable to parse action");
+
+      if (step.action !== "click")
+        throw new Error(`Expected click action but received '${step.action}'`);
+
+      const query = step.target || step.value || input;
+
+      //--------------------------------------------------
+      // Reuse learned selector
+      //--------------------------------------------------
+
+      const learned = this.getRemembered(query);
+
+      if (learned) {
+        this.log("Using learned selector:", learned.text);
       }
 
-      if (target === "password") {
-        if (attrs.includes("password")) score += 5000;
-        if (attrs.includes("current-password")) score += 4000;
-        if (attrs.includes("type password")) score += 3000;
+      //--------------------------------------------------
+      // Build DOM Index
+      //--------------------------------------------------
+
+      await this.buildDOMIndex();
+
+      //--------------------------------------------------
+      // Rank Elements
+      //--------------------------------------------------
+
+      const ranked = this.scoringEngine.rankCandidates(query);
+
+      if (!ranked.length) throw new Error(`Unable to locate '${query}'`);
+
+      const best = ranked[0];
+
+      this.log("Top Candidate:", best.text, best.score);
+
+      //--------------------------------------------------
+      // Planner only when confidence is low
+      //--------------------------------------------------
+
+      let finalCandidate = best;
+
+      if (best.score < this.scoringEngine.options.plannerThreshold) {
+        this.stats.plannerCalls++;
+
+        this.log("Low confidence. Asking planner...");
+
+        const plan = await this.planner.plan(input, {
+          ranked,
+
+          query,
+        });
+
+        if (plan?.steps?.length && plan.steps[0].target) {
+          const rescored = this.scoringEngine.rankCandidates(
+            plan.steps[0].target,
+          );
+
+          if (rescored.length) finalCandidate = rescored[0];
+        }
       }
 
-      // Parent text
-      let parent = input;
+      //--------------------------------------------------
+      // Confidence Check
+      //--------------------------------------------------
 
-      for (let l = 0; l < 6; l++) {
-        parent = parent.locator("xpath=..");
+      if (!finalCandidate)
+        throw new Error(`No candidate resolved for '${query}'`);
 
+      if (finalCandidate.score < 60) {
+        throw new Error(`Low confidence (${finalCandidate.score.toFixed(1)}%)`);
+      }
+
+      //--------------------------------------------------
+      // Click using Playwright
+      //--------------------------------------------------
+
+      const page = await this.mcp.getPage();
+
+      let clicked = false;
+
+      //--------------------------------------------------
+      // Current Page
+      //--------------------------------------------------
+
+      clicked = await this.clickCandidate(page, finalCandidate);
+
+      //--------------------------------------------------
+      // Frames
+      //--------------------------------------------------
+
+      if (!clicked) {
+        for (const frame of page.frames()) {
+          clicked = await this.clickCandidate(frame, finalCandidate);
+
+          if (clicked) break;
+        }
+      }
+
+      //--------------------------------------------------
+      // Evolution helper
+      //--------------------------------------------------
+
+      if (!clicked) {
         try {
-          const txt = (await parent.innerText()).toLowerCase();
+          clicked = await clickInsideEvolutionFrame(
+            page,
 
-          for (const w of words) if (txt.includes(w)) score += 800 - l * 100;
+            finalCandidate.text,
+          );
         } catch {}
       }
 
-      if (score > bestScore) {
-        bestScore = score;
-        best = input;
+      //--------------------------------------------------
+      // Failure
+      //--------------------------------------------------
+
+      if (!clicked) {
+        throw new Error(`Unable to click '${query}'`);
       }
-    }
 
-    if (!best) throw new Error(`Unable to locate ${field}`);
+      //--------------------------------------------------
+      // Learn successful click
+      //--------------------------------------------------
 
-    console.log(`TYPE SMART -> ${field} => ${target} (${bestScore})`);
+      this.remember(query, finalCandidate);
 
-    await best.scrollIntoViewIfNeeded().catch(() => {});
-    await best.click().catch(() => {});
-    await best.fill("").catch(() => {});
-    await best.fill(value);
+      this.stats.clicks++;
 
-    return true;
+      //--------------------------------------------------
+      // Timing
+      //--------------------------------------------------
+
+      this.stopTimer(started);
+
+      //--------------------------------------------------
+      // Return
+      //--------------------------------------------------
+
+      return {
+        success: true,
+
+        action: "click",
+
+        confidence: Number(finalCandidate.score.toFixed(2)),
+
+        candidate: {
+          text: finalCandidate.text,
+
+          role: finalCandidate.role,
+
+          tag: finalCandidate.tag,
+
+          score: finalCandidate.score,
+        },
+      };
+    });
   }
-  async type(field, value) {
-    const page = await this.mcp.getPage();
-    return await page.locator(field).fill(value);
+  //=====================================================
+  // TYPE SMART
+  //
+  // IntentParser
+  //      ↓
+  // ScoringEngine
+  //      ↓
+  // Playwright
+  //      ↓
+  // SelfHealing
+  //=====================================================
+
+  async typeSmart(input, explicitValue = null) {
+    const started = this.startTimer();
+
+    return await this.selfHealing.execute(async () => {
+      //--------------------------------------------------
+      // Validate
+      //--------------------------------------------------
+
+      if (!input) throw new Error("typeSmart requires input");
+
+      //--------------------------------------------------
+      // Parse Intent
+      //--------------------------------------------------
+
+      const parsed = this.intentParser.parse(input);
+
+      const step = parsed.steps?.[0];
+
+      if (!step) throw new Error("Unable to parse type action");
+
+      if (step.action !== "type")
+        throw new Error(`Expected type action but received '${step.action}'`);
+
+      //--------------------------------------------------
+      // Resolve Target + Value
+      //--------------------------------------------------
+
+      const query = step.target || input;
+
+      const value = explicitValue ?? step.value;
+
+      if (value === undefined || value === null) {
+        throw new Error("No typing value provided");
+      }
+
+      //--------------------------------------------------
+      // Build DOM Index
+      //--------------------------------------------------
+
+      await this.buildDOMIndex();
+
+      //--------------------------------------------------
+      // Rank Candidate Inputs
+      //--------------------------------------------------
+
+      const ranked = this.scoringEngine
+        .rankCandidates(query)
+        .filter((candidate) => {
+          const tag = (candidate.tag || "").toLowerCase();
+
+          return (
+            tag === "input" ||
+            tag === "textarea" ||
+            candidate.role === "textbox" ||
+            candidate.placeholder ||
+            candidate.aria ||
+            candidate.element?.type === "text"
+          );
+        });
+
+      if (!ranked.length) {
+        throw new Error(`Unable to locate input '${query}'`);
+      }
+
+      //--------------------------------------------------
+      // Best Candidate
+      //--------------------------------------------------
+
+      let finalCandidate = ranked[0];
+
+      //--------------------------------------------------
+      // Planner fallback
+      //--------------------------------------------------
+
+      if (finalCandidate.score < this.scoringEngine.options.plannerThreshold) {
+        this.stats.plannerCalls++;
+
+        const plan = await this.planner.plan(input, {
+          ranked,
+
+          query,
+        });
+
+        if (plan?.steps?.length && plan.steps[0].target) {
+          const rescored = this.scoringEngine
+            .rankCandidates(plan.steps[0].target)
+            .filter((candidate) => {
+              const tag = (candidate.tag || "").toLowerCase();
+
+              return (
+                tag === "input" ||
+                tag === "textarea" ||
+                candidate.role === "textbox"
+              );
+            });
+
+          if (rescored.length) finalCandidate = rescored[0];
+        }
+      }
+
+      //--------------------------------------------------
+      // Confidence Check
+      //--------------------------------------------------
+
+      if (!finalCandidate || finalCandidate.score < 60) {
+        throw new Error(`Low confidence (${finalCandidate?.score ?? 0}%)`);
+      }
+
+      //--------------------------------------------------
+      // Locate Element
+      //--------------------------------------------------
+
+      const page = await this.mcp.getPage();
+
+      let typed = false;
+
+      //--------------------------------------------------
+      // Current Page
+      //--------------------------------------------------
+
+      typed = await this.typeCandidate(
+        page,
+
+        finalCandidate,
+
+        value,
+      );
+
+      //--------------------------------------------------
+      // Search Frames
+      //--------------------------------------------------
+
+      if (!typed) {
+        for (const frame of page.frames()) {
+          typed = await this.typeCandidate(
+            frame,
+
+            finalCandidate,
+
+            value,
+          );
+
+          if (typed) break;
+        }
+      }
+
+      //--------------------------------------------------
+      // Failure
+      //--------------------------------------------------
+
+      if (!typed) {
+        throw new Error(`Unable to type into '${query}'`);
+      }
+
+      //--------------------------------------------------
+      // Learn Successful Match
+      //--------------------------------------------------
+
+      this.remember(
+        query,
+
+        finalCandidate,
+      );
+
+      this.stats.types++;
+
+      //--------------------------------------------------
+      // Timing
+      //--------------------------------------------------
+
+      this.stopTimer(started);
+
+      //--------------------------------------------------
+      // Success
+      //--------------------------------------------------
+
+      return {
+        success: true,
+
+        action: "type",
+
+        value,
+
+        confidence: Number(finalCandidate.score.toFixed(2)),
+
+        candidate: {
+          text: finalCandidate.text,
+
+          role: finalCandidate.role,
+
+          tag: finalCandidate.tag,
+
+          score: finalCandidate.score,
+        },
+      };
+    });
   }
+  //=====================================================
+  // SELF HEALING
+  //=====================================================
 
-  async select(field, value) {
-    const page = await this.mcp.getPage();
-    return await page.locator(field).selectOption(value);
-  }
-
-  async hover(text) {
-    const page = await this.mcp.getPage();
-    return await page.getByText(text, { exact: false }).first().hover();
-  }
-
-  async check(selector) {
-    const page = await this.mcp.getPage();
-    return await page.locator(selector).check();
-  }
-
-  async uncheck(selector) {
-    const page = await this.mcp.getPage();
-    return await page.locator(selector).uncheck();
-  }
-
-  async upload(selector, path) {
-    const page = await this.mcp.getPage();
-    return await page.locator(selector).setInputFiles(path);
-  }
-
-  async press(key) {
-    return await this.mcp.press(key);
-  }
-
-  async wait(time = 1000) {
-    return new Promise((r) => setTimeout(r, time));
-  }
-
-  async navigate(url) {
-    return await this.mcp.navigate(url);
-  }
-
-  async snapshot() {
-    return await this.mcp.snapshot();
-  }
-
-  async html() {
-    return await this.mcp.html();
-  }
-
-  async read(text) {
-    const page = await this.mcp.getPage();
-
-    const value = await page
-      .getByText(text, { exact: false })
-      .first()
-      .textContent();
-
+  createHealingContext(action, query, candidate = null) {
     return {
-      success: true,
-      text: value,
+      action,
+
+      query,
+
+      candidate,
+
+      resolver: this,
+
+      timestamp: Date.now(),
+
+      validate(result) {
+        return !!result?.success;
+      },
+
+      patch: async (error, ctx) => {
+        ctx.retry = (ctx.retry || 0) + 1;
+
+        //--------------------------------------------------
+        // Refresh DOM
+        //--------------------------------------------------
+
+        if (/timeout|not found|detached|stale/i.test(error.message)) {
+          await ctx.resolver.refreshDOM();
+        }
+
+        //--------------------------------------------------
+        // Clear learned selector if stale
+        //--------------------------------------------------
+
+        if (/not found|unable/i.test(error.message)) {
+          ctx.resolver.learningCache.delete(ctx.query);
+        }
+
+        //--------------------------------------------------
+        // Force rebuild after repeated failures
+        //--------------------------------------------------
+
+        if (ctx.retry >= 2) {
+          await ctx.resolver.buildDOMIndex(true);
+        }
+
+        return ctx;
+      },
     };
   }
 
-  // =====================================================
-  // SELF HEAL (FIXED - NO LOOPING SAME STRATEGY)
-  // =====================================================
+  //=====================================================
+  // GENERIC HEALING WRAPPER
+  //=====================================================
 
-  async selfHeal(step) {
+  async executeWithHealing(action, query, executor, candidate = null) {
+    return await this.selfHealing.execute(
+      executor,
+
+      this.createHealingContext(
+        action,
+
+        query,
+
+        candidate,
+      ),
+    );
+  }
+
+  //=====================================================
+  // RECOVER LOW CONFIDENCE
+  //=====================================================
+
+  async recoverCandidate(query, ranked = []) {
+    //--------------------------------------------------
+    // Planner
+    //--------------------------------------------------
+
+    this.stats.plannerCalls++;
+
+    const plan = await this.planner.plan(query, {
+      ranked,
+
+      query,
+    });
+
+    if (!plan?.steps?.length) {
+      return ranked[0] || null;
+    }
+
+    const target = plan.steps[0].target || query;
+
+    const rescored = this.scoringEngine.rankCandidates(target);
+
+    if (!rescored.length) return ranked[0] || null;
+
+    return rescored[0];
+  }
+
+  //=====================================================
+  // AUTO REFRESH IF PAGE CHANGED
+  //=====================================================
+
+  async ensureFreshDOM() {
     const page = await this.mcp.getPage();
 
-    console.log("========== SELF HEAL ==========");
-    console.log(step);
-    console.log("===============================");
+    const url = page.url();
 
+    if (this.lastURL !== url) {
+      this.lastURL = url;
+
+      this.invalidateDOMCache();
+    }
+
+    if (!this.isDOMCacheValid()) {
+      await this.buildDOMIndex(true);
+    }
+  }
+
+  //=====================================================
+  // SAFE EXECUTION
+  //=====================================================
+
+  async safeExecute(fn) {
     try {
-      // TYPE FIX
-      if (step.tool === "type") {
-        const inputs = await page
-          .locator("input, textarea")
-          .evaluateAll((els) =>
-            els.map((e) => ({
-              id: e.id,
-              name: e.name,
-              placeholder: e.placeholder,
-            })),
-          );
-
-        const field = step.args.field.toLowerCase();
-
-        const match = inputs.find(
-          (i) =>
-            i.id?.toLowerCase().includes(field) ||
-            i.name?.toLowerCase().includes(field) ||
-            i.placeholder?.toLowerCase().includes(field),
-        );
-
-        if (match) {
-          const selector =
-            (match.id && `#${match.id}`) ||
-            (match.name && `[name="${match.name}"]`);
-
-          await page.locator(selector).fill(step.args.value);
-
-          return {
-            healed: true,
-            selector,
-          };
-        }
-      }
-
-      // CLICK FIX (NEW TAB-AWARE HEAL)
-      if (step.tool === "click") {
-        const text = step.args.text || step.args.selector;
-
-        if (text) {
-          await this.clickSmart(text);
-
-          return {
-            healed: true,
-            method: "clickSmart",
-          };
-        }
-      }
-
-      throw new Error("Self healing failed");
+      return await fn();
     } catch (err) {
-      throw new Error("Self healing failed: " + err.message);
+      this.error(err);
+
+      return {
+        success: false,
+
+        error: err.message,
+      };
     }
   }
 
-  // =====================================================
-  // SEARCH SMART (UNCHANGED)
-  // =====================================================
+  //=====================================================
+  // SELF-HEALING METRICS
+  //=====================================================
 
-  async searchSmart(query) {
-    const page = await this.mcp.getPage();
-
-    const input = page
-      .locator(
-        'input[type="search"], input[name*="search" i], input[placeholder*="search" i], input[type="text"]',
-      )
-      .first();
-
-    if (!(await input.count())) {
-      throw new Error("Search box not found");
-    }
-
-    await input.fill(query);
-    await input.press("Enter");
-
-    return true;
+  recordHealing() {
+    this.stats.healedExecutions++;
   }
 
-  // =====================================================
+  getStatistics() {
+    return {
+      ...this.stats,
+
+      cacheEntries: this.learningCache.size,
+
+      selectorCache: this.selectorCache.size,
+
+      domCached: this.isDOMCacheValid(),
+    };
+  }
+  //======================================================
+  // PLAYWRIGHT EXECUTION HELPERS
+  //======================================================
+
+  async clickCandidate(scope, candidate) {
+    const selectors = this.buildCandidateSelectors(candidate);
+
+    for (const selector of selectors) {
+      try {
+        const locator = scope.locator(selector).first();
+
+        if (!(await locator.count())) continue;
+
+        await locator.scrollIntoViewIfNeeded().catch(() => {});
+
+        await locator
+          .waitFor({
+            state: "visible",
+            timeout: 2000,
+          })
+          .catch(() => {});
+
+        await locator.click({
+          timeout: 3000,
+        });
+
+        return true;
+      } catch {
+        // try next selector
+      }
+    }
+
+    return false;
+  }
+
+  async typeCandidate(scope, candidate, value) {
+    const selectors = this.buildCandidateSelectors(candidate);
+
+    for (const selector of selectors) {
+      try {
+        const locator = scope.locator(selector).first();
+
+        if (!(await locator.count())) continue;
+
+        await locator.scrollIntoViewIfNeeded().catch(() => {});
+
+        await locator
+          .waitFor({
+            state: "visible",
+            timeout: 2000,
+          })
+          .catch(() => {});
+
+        await locator.fill("");
+
+        await locator.fill(String(value));
+
+        return true;
+      } catch {
+        // continue
+      }
+    }
+
+    return false;
+  }
+
+  //======================================================
+  // SELECTOR GENERATOR
+  //======================================================
+
+  buildCandidateSelectors(candidate) {
+    const selectors = [];
+
+    const escape = (value) => String(value).replace(/"/g, '\\"').trim();
+
+    if (candidate.testid)
+      selectors.push(`[data-testid="${escape(candidate.testid)}"]`);
+
+    if (candidate.id) selectors.push(`#${escape(candidate.id)}`);
+
+    if (candidate.aria)
+      selectors.push(`[aria-label="${escape(candidate.aria)}"]`);
+
+    if (candidate.placeholder)
+      selectors.push(`[placeholder="${escape(candidate.placeholder)}"]`);
+
+    if (candidate.title) selectors.push(`[title="${escape(candidate.title)}"]`);
+
+    if (candidate.alt) selectors.push(`[alt="${escape(candidate.alt)}"]`);
+
+    if (candidate.role && candidate.text) {
+      selectors.push(
+        `[role="${escape(candidate.role)}"]:has-text("${escape(candidate.text)}")`,
+      );
+    }
+
+    if (candidate.text) {
+      selectors.push(`text="${escape(candidate.text)}"`);
+
+      selectors.push(`:text("${escape(candidate.text)}")`);
+    }
+
+    if (candidate.tag && candidate.text) {
+      selectors.push(`${candidate.tag}:has-text("${escape(candidate.text)}")`);
+    }
+
+    return [...new Set(selectors)];
+  }
+
+  //======================================================
   // EXECUTOR
-  // =====================================================
+  //======================================================
 
-  async execute(tool, args = {}) {
-    switch (tool) {
-      case "click":
-        return await this.clickSmart(
-          args.text || args.label || args.selector || "",
-        );
-
-      case "type":
-        return await this.type(args.field, args.value);
-
-      case "select":
-        return await this.select(args.field, args.value);
-      case "hover":
-        return await this.hover(args.text);
-
-      case "check":
-        return await this.check(args.field);
-
-      case "uncheck":
-        return await this.uncheck(args.field);
-
-      case "upload":
-        return await this.upload(args.field, args.path);
-
-      case "navigate":
-        return await this.navigate(args.url);
-
-      case "press":
-        return await this.press(args.key);
-
-      case "wait":
-        return await this.wait(args.time);
-
-      case "read":
-        return await this.read(args.text || args.title);
-
-      case "snapshot":
-        return await this.snapshot();
-
-      case "html":
-        return await this.html();
-
-      default:
-        throw new Error(`Unknown tool: ${tool}`);
+  async execute(plan) {
+    if (!plan?.steps?.length) {
+      return {
+        success: false,
+        error: "Empty execution plan",
+      };
     }
+
+    const results = [];
+
+    for (const step of plan.steps) {
+      switch (step.action || step.type) {
+        case "click":
+          results.push(await this.clickSmart(step.target || step.text));
+
+          break;
+
+        case "type":
+          results.push(await this.typeSmart(step.target, step.value));
+
+          break;
+
+        case "navigate": {
+          const page = await this.mcp.getPage();
+
+          await page.goto(step.url, {
+            waitUntil: "domcontentloaded",
+          });
+
+          this.invalidateDOMCache();
+
+          results.push({
+            success: true,
+            action: "navigate",
+            url: step.url,
+          });
+
+          break;
+        }
+
+        case "wait": {
+          const page = await this.mcp.getPage();
+
+          await page.waitForTimeout(step.value || step.time || 1000);
+
+          results.push({
+            success: true,
+            action: "wait",
+          });
+
+          break;
+        }
+
+        default:
+          results.push({
+            success: false,
+            action: step.action || step.type,
+            error: "Unsupported action",
+          });
+      }
+    }
+
+    return {
+      success: results.every((r) => r.success),
+
+      results,
+    };
+  }
+
+  //======================================================
+  // RESOLVE ENTRY POINT
+  //======================================================
+
+  async resolve(input) {
+    return this.safeExecute(async () => {
+      await this.ensureFreshDOM();
+
+      const plan = await this.planner.plan(input);
+
+      return await this.execute(plan);
+    });
+  }
+
+  //======================================================
+  // METRICS
+  //======================================================
+
+  resetStatistics() {
+    this.stats = {
+      clicks: 0,
+      types: 0,
+      searches: 0,
+      plannerCalls: 0,
+      healedExecutions: 0,
+      cacheHits: 0,
+      cacheMisses: 0,
+      averageResolveTime: 0,
+      lastResolveTime: 0,
+    };
+  }
+
+  dumpStatistics() {
+    console.table(this.getStatistics());
+  }
+
+  //======================================================
+  // DEBUG
+  //======================================================
+
+  printTopCandidates(query, limit = 10) {
+    const ranked = this.scoringEngine.rankCandidates(query);
+
+    console.table(
+      ranked
+
+        .slice(0, limit)
+
+        .map((x) => ({
+          text: x.text,
+
+          role: x.role,
+
+          tag: x.tag,
+
+          score: x.score.toFixed(2),
+        })),
+    );
   }
 }

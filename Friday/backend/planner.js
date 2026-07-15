@@ -1,206 +1,452 @@
-// planner.js
+//==========================================================
 //
-// Production-ready planner for Jarvis Browser
+// backend/planner.js
 //
-// Now integrated with planner/index.js pipeline
+// Ultra Intelligent Planner
 //
+// Architecture
+//
+// User Command
+//       │
+// Intent Parser
+//       │
+// Core Planner Pipeline
+//       │
+// Fast Regex Planner
+//       │
+// LLM Planner (Qwen/Ollama)
+//       │
+// ToolMap
+//
+// Features
+// --------
+// ✔ Multi-stage planning pipeline
+// ✔ Ultra-fast regex planner
+// ✔ Core planner integration
+// ✔ Intelligent normalization
+// ✔ Multi-step planning
+// ✔ Tool alias support
+// ✔ Context-aware planning
+// ✔ Automatic fallback hierarchy
+// ✔ JSON repair
+// ✔ Performance statistics
+//
+//==========================================================
 
 import CorePlanner from "./planner/planner.js";
 
 export default class Planner {
   constructor(options = {}) {
-    this.model = options.model || "qwen3:8b";
-    this.ollama = options.endpoint || "http://localhost:11434/api/generate";
+    //--------------------------------------------------
+    // Configuration
+    //--------------------------------------------------
 
-    // NEW: internal advanced planner pipeline
-    this.core = new CorePlanner(options);
+    this.options = {
+      model: options.model || "qwen3:8b",
+
+      endpoint: options.endpoint || "http://localhost:11434/api/generate",
+
+      regexFirst: options.regexFirst ?? false,
+
+      enableCore: options.enableCore ?? true,
+
+      enableLLM: options.enableLLM ?? true,
+
+      debug: options.debug ?? false,
+
+      timeout: options.timeout ?? 120000,
+
+      temperature: options.temperature ?? 0,
+
+      ...options,
+    };
+
+    //--------------------------------------------------
+    // Runtime
+    //--------------------------------------------------
+
+    this.model = this.options.model;
+
+    this.ollama = this.options.endpoint;
+
+    //--------------------------------------------------
+    // Statistics
+    //--------------------------------------------------
+
+    this.stats = {
+      requests: 0,
+
+      corePlannerHits: 0,
+
+      regexPlannerHits: 0,
+
+      llmPlannerHits: 0,
+
+      chatResponses: 0,
+
+      actionResponses: 0,
+
+      parseFailures: 0,
+
+      llmFailures: 0,
+    };
+
+    //--------------------------------------------------
+    // Core Planner
+    //--------------------------------------------------
+
+    this.core = new CorePlanner(this.options);
   }
 
-  // ====================================================
-  // PUBLIC
-  // ====================================================
+  //==================================================
+  // LOGGING
+  //==================================================
+
+  log(...args) {
+    if (this.options.debug) {
+      console.log("[Planner]", ...args);
+    }
+  }
+
+  warn(...args) {
+    console.warn("[Planner]", ...args);
+  }
+
+  error(...args) {
+    console.error("[Planner]", ...args);
+  }
+
+  //==================================================
+  // PUBLIC PLAN
+  //==================================================
 
   async plan(command, pageText = "", context = {}) {
+    this.stats.requests++;
+
     if (!command) {
-      return this._empty();
+      return this.empty();
     }
 
-    // ====================================================
-    // 1. TRY ADVANCED PLANNER FIRST (NEW INTEGRATION)
-    // ====================================================
+    command = String(command).trim();
 
-    try {
-      const advanced = await this.core.plan(command, {
-        ...context,
-        pageText,
-      });
+    //--------------------------------------------------
+    // Fast Regex First (Optional)
+    //--------------------------------------------------
 
-      if (advanced?.steps?.length) {
-        return this._normalizeAdvanced(advanced);
+    if (this.options.regexFirst) {
+      const fast = this.regexPlan(command);
+
+      if (fast?.length) {
+        this.stats.regexPlannerHits++;
+        this.stats.actionResponses++;
+
+        return {
+          mode: "action",
+
+          source: "regex",
+
+          steps: fast,
+        };
       }
-    } catch (err) {
-      console.warn("[Planner] Core pipeline failed, fallback:", err.message);
     }
 
-    // ====================================================
-    // 2. FALLBACK: REGEX PLANNER (YOUR ORIGINAL)
-    // ====================================================
+    //--------------------------------------------------
+    // Core Planner Pipeline
+    //--------------------------------------------------
 
-    const fast = this.regexPlan(command);
+    if (this.options.enableCore) {
+      try {
+        const advanced = await this.core.plan(command, {
+          ...context,
+          pageText,
+        });
 
-    if (fast && fast.length) {
+        if (advanced?.steps?.length) {
+          this.stats.corePlannerHits++;
+          this.stats.actionResponses++;
+
+          return this.normalizeAdvanced(advanced);
+        }
+      } catch (err) {
+        this.warn("Core planner failed:", err.message);
+      }
+    }
+
+    //--------------------------------------------------
+    // Regex Planner Fallback
+    //--------------------------------------------------
+
+    const regex = this.regexPlan(command);
+
+    if (regex?.length) {
+      this.stats.regexPlannerHits++;
+      this.stats.actionResponses++;
+
       return {
         mode: "action",
-        steps: fast,
+
+        source: "regex",
+
+        steps: regex,
       };
     }
 
-    // ====================================================
-    // 3. FALLBACK: LLM PLANNER
-    // ====================================================
+    //--------------------------------------------------
+    // LLM Planner
+    //--------------------------------------------------
 
-    return await this.llmPlan(command, pageText);
+    if (this.options.enableLLM) {
+      this.stats.llmPlannerHits++;
+
+      return await this.llmPlan(command, pageText);
+    }
+
+    //--------------------------------------------------
+    // Nothing matched
+    //--------------------------------------------------
+
+    return {
+      mode: "chat",
+
+      reply: "I couldn't determine the requested action.",
+    };
   }
 
-  // ====================================================
-  // NORMALIZER (CORE INTEGRATION BRIDGE)
-  // ====================================================
+  //==================================================
+  // PART 2
+  // normalizeAdvanced()
+  // Chat → Action conversion
+  // Tool normalization
+  //==================================================
+  //==================================================
+  // NORMALIZE ADVANCED PLAN
+  //==================================================
 
-  _normalizeAdvanced(plan) {
+  normalizeAdvanced(plan) {
     const steps = [];
 
-    for (const s of plan.steps || []) {
-      let tool = String(s.tool || s.type || "").toLowerCase();
+    for (const step of plan.steps || []) {
+      let tool = String(step.tool ?? step.type ?? "")
+        .toLowerCase()
+        .trim();
 
-      const args = { ...(s.args || {}) };
-
-      args.url ??= s.url;
-      args.text ??= s.text;
-      args.field ??= s.field;
-      args.value ??= s.value;
-      args.query ??= s.query;
-      args.key ??= s.key;
-      args.time ??= s.time;
-      args.selector ??= s.selector;
+      const args = {
+        ...(step.args || {}),
+      };
 
       //--------------------------------------------------
-      // CHAT STEP -> ACTION STEP
+      // Flatten common fields
+      //--------------------------------------------------
+
+      args.url ??= step.url;
+      args.text ??= step.text;
+      args.field ??= step.field;
+      args.value ??= step.value;
+      args.query ??= step.query;
+      args.selector ??= step.selector;
+      args.key ??= step.key;
+      args.time ??= step.time;
+      args.role ??= step.role;
+
+      //--------------------------------------------------
+      // Tool aliases
+      //--------------------------------------------------
+
+      switch (tool) {
+        case "tap":
+        case "open":
+        case "choose":
+          tool = "click";
+          break;
+
+        case "fill":
+        case "enter":
+        case "input":
+          tool = "type";
+          break;
+
+        case "goto":
+        case "visit":
+        case "go":
+          tool = "navigate";
+          break;
+
+        case "sleep":
+        case "pause":
+          tool = "wait";
+          break;
+
+        case "tick":
+          tool = "check";
+          break;
+
+        case "untick":
+          tool = "uncheck";
+          break;
+      }
+
+      //--------------------------------------------------
+      // CHAT STEP
       //--------------------------------------------------
 
       if (tool === "chat") {
-        const msg = String(
-          args.message || s.message || s.raw || s.text || "",
+        const message = String(
+          args.message ?? step.message ?? step.raw ?? step.text ?? "",
         ).trim();
 
-        let m;
+        if (!message) continue;
 
-        //--------------------------------------------------
+        let match;
+
+        //----------------------------------------------
         // Navigate
-        //--------------------------------------------------
+        //----------------------------------------------
 
-        m =
-          msg.match(/(?:navigate|go)\s+to\s+(https?:\/\/\S+)/i) ||
-          msg.match(/open\s+(https?:\/\/\S+)/i);
+        match =
+          message.match(/(?:navigate|go)\s+to\s+(https?:\/\/\S+)/i) ||
+          message.match(/open\s+(https?:\/\/\S+)/i);
 
-        if (m) {
+        if (match) {
           steps.push({
             tool: "navigate",
+
             args: {
-              url: m[1],
+              url: match[1],
             },
           });
+
           continue;
         }
 
-        //--------------------------------------------------
+        //----------------------------------------------
         // Click
-        //--------------------------------------------------
+        //----------------------------------------------
 
-        m = msg.match(/click\s+(?:the\s+)?["']?(.+?)["']?$/i);
+        match = message.match(
+          /(?:click|tap|press)\s+(?:the\s+)?["']?(.+?)["']?$/i,
+        );
 
-        if (m) {
+        if (match) {
           steps.push({
             tool: "click",
+
             args: {
-              text: m[1].trim(),
+              text: match[1].trim(),
             },
           });
+
           continue;
         }
 
-        //--------------------------------------------------
-        // Generic TYPE
-        //
-        // Supports:
+        //----------------------------------------------
+        // Search
+        //----------------------------------------------
+
+        match = message.match(/search\s+(?:for\s+)?["']?(.+?)["']?$/i);
+
+        if (match) {
+          steps.push({
+            tool: "search",
+
+            args: {
+              query: match[1].trim(),
+            },
+          });
+
+          continue;
+        }
+
+        //----------------------------------------------
+        // Wait
+        //----------------------------------------------
+
+        match = message.match(
+          /wait\s+([0-9]+)\s*(ms|milliseconds|s|sec|seconds)?/i,
+        );
+
+        if (match) {
+          let time = Number(match[1]);
+
+          const unit = (match[2] || "").toLowerCase();
+
+          if (unit.startsWith("s")) {
+            time *= 1000;
+          }
+
+          steps.push({
+            tool: "wait",
+
+            args: {
+              time,
+            },
+          });
+
+          continue;
+        }
+
+        //----------------------------------------------
+        // Type:
         //
         // Type email "abc"
-        // Type username "abc"
-        // Type username-password "abc"
-        // Type password "abc"
-        // Enter email "abc"
-        // Fill username "abc"
-        //--------------------------------------------------
+        // Fill password "123"
+        //----------------------------------------------
 
-        m = msg.match(/(?:type|enter|fill)\s+([a-z0-9_-]+)\s+["'](.+?)["']/i);
+        match = message.match(
+          /(?:type|fill|enter)\s+([a-z0-9_\- ]+)\s+["'](.+?)["']/i,
+        );
 
-        if (m) {
-          let field = m[1].toLowerCase();
+        if (match) {
+          let field = match[1].trim().toLowerCase();
 
-          if (
-            field.includes("password") ||
-            field.includes("passwd") ||
-            field.includes("pwd") ||
-            field.includes("username-password")
-          ) {
+          if (/(password|passwd|pwd)/i.test(field)) {
             field = "password";
-          } else if (
-            field.includes("email") ||
-            field.includes("user") ||
-            field.includes("login") ||
-            field.includes("id") ||
-            field.includes("username")
-          ) {
+          } else if (/(email|user|login|username|id)/i.test(field)) {
             field = "email";
           }
 
           steps.push({
             tool: "type",
+
             args: {
               field,
-              value: m[2],
+
+              value: match[2],
             },
           });
 
           continue;
         }
 
-        //--------------------------------------------------
+        //----------------------------------------------
         // Type "value" into field
-        //--------------------------------------------------
+        //----------------------------------------------
 
-        m = msg.match(
-          /(?:type|enter|fill)\s+["'](.+?)["']\s+(?:into|in)\s+(.+)/i,
+        match = message.match(
+          /(?:type|fill|enter)\s+["'](.+?)["']\s+(?:into|in)\s+(.+)/i,
         );
 
-        if (m) {
+        if (match) {
           steps.push({
             tool: "type",
+
             args: {
-              value: m[1],
-              field: m[2].trim(),
+              value: match[1],
+
+              field: match[2].trim(),
             },
           });
 
           continue;
         }
 
-        //--------------------------------------------------
-        // Submit
-        //--------------------------------------------------
+        //----------------------------------------------
+        // Submit/Login
+        //----------------------------------------------
 
-        if (/submit|login|log\s*in|sign\s*in/i.test(msg)) {
+        if (/(submit|login|log\s*in|sign\s*in)/i.test(message)) {
           steps.push({
             tool: "click",
+
             args: {
               text: "Log in",
             },
@@ -209,7 +455,12 @@ export default class Planner {
           continue;
         }
 
-        console.warn("Unknown chat step:", msg);
+        //----------------------------------------------
+        // Unknown chat instruction
+        //----------------------------------------------
+
+        this.warn("Unknown chat step:", message);
+
         continue;
       }
 
@@ -219,146 +470,295 @@ export default class Planner {
 
       steps.push({
         tool,
+
         args,
       });
     }
 
     return {
       mode: plan.mode || "action",
-      steps,
+
       source: plan.source || "core-planner",
+
+      steps,
     };
   }
 
-  // ====================================================
-  // REGEX PLANNER (UNCHANGED - YOUR ORIGINAL LOGIC)
-  // ====================================================
+  //==================================================
+  // PART 3
+  // Fast Regex Planner
+  // Multi-step parsing
+  // Command splitting
+  //==================================================
+  //==================================================
+  // FAST REGEX PLANNER
+  //==================================================
 
   regexPlan(command) {
     if (!command) return null;
 
     const steps = [];
 
-    const pieces = command
-      .split(/(?:\band\b|,|then)/i)
-      .map((x) => x.trim())
+    //--------------------------------------------------
+    // Split multi-step commands
+    //--------------------------------------------------
+
+    const commands = String(command)
+      .replace(/\s+/g, " ")
+
+      .split(/\b(?:and then|then|after that|afterwards|next|and|,)\b/i)
+
+      .map((part) => part.trim())
+
       .filter(Boolean);
 
-    for (const p of pieces) {
-      const lower = p.toLowerCase();
+    //--------------------------------------------------
+    // Parse every instruction
+    //--------------------------------------------------
 
-      let m;
+    for (const cmd of commands) {
+      let match;
 
+      const lower = cmd.toLowerCase();
+
+      //----------------------------------------------
       // CLICK
-      m = p.match(/^click\s+(.+)$/i);
-      if (m) {
+      //----------------------------------------------
+
+      match = cmd.match(/^(?:click|tap|press|open|choose)\s+(.+)$/i);
+
+      if (match) {
         steps.push({
           tool: "click",
-          args: { text: m[1].trim() },
+
+          args: {
+            text: match[1].trim(),
+          },
         });
+
         continue;
       }
 
+      //----------------------------------------------
       // TYPE
-      m = p.match(/^type\s+(.+?)\s+(?:in|into|as)\s+(.+)$/i);
-      if (m) {
+      //
+      // Type abc into email
+      // Fill password with 123
+      //----------------------------------------------
+
+      match = cmd.match(
+        /^(?:type|fill|enter|input)\s+(.+?)\s+(?:into|in|as|to|with)\s+(.+)$/i,
+      );
+
+      if (match) {
         steps.push({
           tool: "type",
-          args: { value: m[1].trim(), field: m[2].trim() },
+
+          args: {
+            value: match[1].trim(),
+
+            field: match[2].trim(),
+          },
         });
+
         continue;
       }
 
-      // SELECT
-      m = p.match(/^select\s+(.+?)\s+(?:in|from)\s+(.+)$/i);
-      if (m) {
+      //----------------------------------------------
+      // TYPE field value
+      //
+      // type email test@test.com
+      //----------------------------------------------
+
+      match = cmd.match(
+        /^(?:type|fill|enter)\s+([a-z0-9_\- ]+)\s+["']?(.+?)["']?$/i,
+      );
+
+      if (match) {
         steps.push({
-          tool: "select",
-          args: { value: m[1].trim(), field: m[2].trim() },
+          tool: "type",
+
+          args: {
+            field: match[1].trim(),
+
+            value: match[2].trim(),
+          },
         });
+
         continue;
       }
 
-      // CHECK
-      m = p.match(/^check\s+(.+)$/i);
-      if (m) {
-        steps.push({
-          tool: "check",
-          args: { field: m[1].trim() },
-        });
-        continue;
-      }
-
-      // UNCHECK
-      m = p.match(/^uncheck\s+(.+)$/i);
-      if (m) {
-        steps.push({
-          tool: "uncheck",
-          args: { field: m[1].trim() },
-        });
-        continue;
-      }
-
-      // HOVER
-      m = p.match(/^hover\s+(.+)$/i);
-      if (m) {
-        steps.push({
-          tool: "hover",
-          args: { text: m[1].trim() },
-        });
-        continue;
-      }
-
-      // PRESS
-      m = p.match(/^press\s+(.+)$/i);
-      if (m) {
-        steps.push({
-          tool: "press",
-          args: { key: m[1].trim() },
-        });
-        continue;
-      }
-
+      //----------------------------------------------
       // SEARCH
-      m = p.match(/^search\s+(.+)$/i);
-      if (m) {
+      //----------------------------------------------
+
+      match = cmd.match(/^(?:search|find|lookup)\s+(.+)$/i);
+
+      if (match) {
         steps.push({
           tool: "search",
-          args: { query: m[1].trim() },
+
+          args: {
+            query: match[1].trim(),
+          },
         });
+
         continue;
       }
 
+      //----------------------------------------------
+      // SELECT
+      //----------------------------------------------
+
+      match = cmd.match(/^(?:select|choose)\s+(.+?)\s+(?:from|in)\s+(.+)$/i);
+
+      if (match) {
+        steps.push({
+          tool: "select",
+
+          args: {
+            value: match[1].trim(),
+
+            field: match[2].trim(),
+          },
+        });
+
+        continue;
+      }
+
+      //----------------------------------------------
+      // CHECK
+      //----------------------------------------------
+
+      match = cmd.match(/^(?:check|tick)\s+(.+)$/i);
+
+      if (match) {
+        steps.push({
+          tool: "check",
+
+          args: {
+            field: match[1].trim(),
+          },
+        });
+
+        continue;
+      }
+
+      //----------------------------------------------
+      // UNCHECK
+      //----------------------------------------------
+
+      match = cmd.match(/^(?:uncheck|untick)\s+(.+)$/i);
+
+      if (match) {
+        steps.push({
+          tool: "uncheck",
+
+          args: {
+            field: match[1].trim(),
+          },
+        });
+
+        continue;
+      }
+
+      //----------------------------------------------
+      // HOVER
+      //----------------------------------------------
+
+      match = cmd.match(/^(?:hover|move)\s+(.+)$/i);
+
+      if (match) {
+        steps.push({
+          tool: "hover",
+
+          args: {
+            text: match[1].trim(),
+          },
+        });
+
+        continue;
+      }
+
+      //----------------------------------------------
+      // PRESS KEY
+      //----------------------------------------------
+
+      match = cmd.match(/^(?:press|hit)\s+(.+)$/i);
+
+      if (match) {
+        steps.push({
+          tool: "press",
+
+          args: {
+            key: match[1].trim(),
+          },
+        });
+
+        continue;
+      }
+
+      //----------------------------------------------
       // WAIT
-      m = p.match(/^wait\s+([0-9]+)(ms|s)?$/i);
-      if (m) {
-        let time = Number(m[1]);
-        if (m[2] === "s") time *= 1000;
+      //----------------------------------------------
+
+      match = cmd.match(
+        /^wait\s+([0-9]+)\s*(ms|milliseconds|s|sec|seconds)?$/i,
+      );
+
+      if (match) {
+        let time = Number(match[1]);
+
+        const unit = (match[2] || "").toLowerCase();
+
+        if (unit.startsWith("s")) {
+          time *= 1000;
+        }
 
         steps.push({
           tool: "wait",
-          args: { time },
+
+          args: {
+            time,
+          },
         });
+
         continue;
       }
 
+      //----------------------------------------------
       // NAVIGATE
-      m = p.match(/^go\s+to\s+(.+)$/i);
-      if (m) {
+      //----------------------------------------------
+
+      match = cmd.match(/^(?:go\s+to|navigate\s+to|visit|browse)\s+(.+)$/i);
+
+      if (match) {
         steps.push({
           tool: "navigate",
-          args: { url: m[1].trim() },
+
+          args: {
+            url: match[1].trim(),
+          },
         });
+
         continue;
       }
 
+      //----------------------------------------------
       // READ
-      m = p.match(/^read\s+(.+)$/i);
-      if (m) {
+      //----------------------------------------------
+
+      match = cmd.match(/^(?:read|inspect|show)\s+(.+)$/i);
+
+      if (match) {
         steps.push({
           tool: "read",
-          args: { text: m[1].trim() },
+
+          args: {
+            text: match[1].trim(),
+          },
         });
+
         continue;
       }
     }
@@ -366,106 +766,466 @@ export default class Planner {
     return steps.length ? steps : null;
   }
 
-  // ====================================================
-  // LLM PLANNER (UNCHANGED)
-  // ====================================================
+  //==================================================
+  // PART 4
+  // LLM Planner
+  // JSON repair
+  // Response normalization
+  //==================================================
+  //==================================================
+  // LLM PLANNER
+  //==================================================
 
-  async llmPlan(command, pageText) {
+  async llmPlan(command, pageText = "") {
     const prompt = `
+You are Jarvis Browser Planner.
+
 Return ONLY valid JSON.
 
-If chatting:
+----------------------------------------
+CHAT RESPONSE
+----------------------------------------
+
 {
- "mode":"chat",
- "reply":"..."
+  "mode":"chat",
+  "reply":"..."
 }
 
-If action:
+----------------------------------------
+ACTION RESPONSE
+----------------------------------------
+
 {
- "mode":"action",
- "steps":[
-   { "tool":"click", "args":{ "text":"..." } }
- ]
+  "mode":"action",
+  "steps":[
+    {
+      "tool":"click",
+      "args":{
+        "text":"..."
+      }
+    }
+  ]
 }
 
-Tools:
-click, type, select, check, uncheck, hover, press, wait, navigate, read
+Available tools:
 
-Page:
+click
+type
+search
+select
+check
+uncheck
+hover
+press
+wait
+navigate
+read
+scroll
+
+Rules:
+
+- Never explain.
+- Never return markdown.
+- Never wrap JSON in code fences.
+- Prefer multiple steps when needed.
+- Use only the tools listed above.
+
+Current page:
+
 ${pageText}
 
-User:
+User command:
+
 ${command}
 `;
 
     const controller = new AbortController();
 
-    const timeout = setTimeout(() => controller.abort(), 120000);
+    const timeout = setTimeout(
+      () => controller.abort(),
+
+      this.options.timeout,
+    );
 
     try {
-      const r = await fetch(this.ollama, {
-        method: "POST",
-        signal: controller.signal,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: this.model,
-          prompt,
-          stream: false,
-          options: { temperature: 0 },
-        }),
-      });
+      const response = await fetch(
+        this.ollama,
+
+        {
+          method: "POST",
+
+          signal: controller.signal,
+
+          headers: {
+            "Content-Type": "application/json",
+          },
+
+          body: JSON.stringify({
+            model: this.model,
+
+            prompt,
+
+            stream: false,
+
+            options: {
+              temperature: this.options.temperature,
+            },
+          }),
+        },
+      );
 
       clearTimeout(timeout);
 
-      const json = await r.json();
+      if (!response.ok) {
+        throw new Error(`LLM request failed (${response.status})`);
+      }
+
+      const json = await response.json();
+
       const parsed = this.safeParse(json.response);
 
-      if (parsed) return parsed;
+      //--------------------------------------------------
+      // Parsed successfully
+      //--------------------------------------------------
+
+      if (parsed) {
+        if (parsed.mode === "chat") {
+          this.stats.chatResponses++;
+        } else {
+          this.stats.actionResponses++;
+        }
+
+        return parsed;
+      }
+
+      //--------------------------------------------------
+      // JSON parsing failed
+      //--------------------------------------------------
+
+      this.stats.parseFailures++;
+
+      const repaired = this.repairJSON(json.response || "");
+
+      if (repaired) {
+        if (repaired.mode === "chat") {
+          this.stats.chatResponses++;
+        } else {
+          this.stats.actionResponses++;
+        }
+
+        return repaired;
+      }
+
+      //--------------------------------------------------
+      // Plain text fallback
+      //--------------------------------------------------
+
+      this.stats.chatResponses++;
 
       return {
         mode: "chat",
-        reply: json.response || "Unable to understand request.",
+
+        reply: String(json.response || "Unable to understand request.").trim(),
       };
     } catch (err) {
       clearTimeout(timeout);
 
+      this.stats.llmFailures++;
+
+      this.error(
+        "LLM planner failed:",
+
+        err.message,
+      );
+
       return {
         mode: "chat",
+
         reply: `Planner failed: ${err.message}`,
       };
     }
   }
 
-  // ====================================================
+  //==================================================
   // JSON PARSER
-  // ====================================================
+  //==================================================
 
   safeParse(text) {
     if (!text) return null;
 
-    text = text
-      .replace(/```json/g, "")
-      .replace(/```/g, "")
-      .trim();
-
-    const match = text.match(/\{[\s\S]*\}/);
-    if (!match) return null;
-
     try {
+      text = String(text)
+        .replace(/```json/gi, "")
+
+        .replace(/```/g, "")
+
+        .trim();
+
+      const match = text.match(/\{[\s\S]*\}/);
+
+      if (!match) return null;
+
       return JSON.parse(match[0]);
     } catch {
       return null;
     }
   }
 
-  // ====================================================
-  // EMPTY
-  // ====================================================
+  //==================================================
+  // JSON REPAIR
+  //==================================================
 
-  _empty() {
+  repairJSON(text) {
+    if (!text) return null;
+
+    try {
+      let repaired = String(text)
+        .replace(/```json/gi, "")
+
+        .replace(/```/g, "")
+
+        .replace(/\r/g, "")
+
+        .trim();
+
+      repaired = repaired.substring(
+        repaired.indexOf("{"),
+
+        repaired.lastIndexOf("}") + 1,
+      );
+
+      repaired = repaired.replace(
+        /,\s*}/g,
+
+        "}",
+      );
+
+      repaired = repaired.replace(
+        /,\s*]/g,
+
+        "]",
+      );
+
+      return JSON.parse(repaired);
+    } catch {
+      return null;
+    }
+  }
+
+  //==================================================
+  // RESPONSE NORMALIZATION
+  //==================================================
+
+  normalizeResponse(result) {
+    if (!result) {
+      return this.empty();
+    }
+
+    if (result.mode === "action") {
+      result.steps ??= [];
+    }
+
+    if (result.mode === "chat") {
+      result.reply ??= "";
+    }
+
+    return result;
+  }
+
+  //==================================================
+  // PART 5
+  // Statistics
+  // Reset
+  // Empty
+  // Debug Helpers
+  //==================================================
+  //==================================================
+  // STATISTICS
+  //==================================================
+
+  getStats() {
+    return {
+      ...this.stats,
+
+      model: this.model,
+
+      endpoint: this.ollama,
+
+      options: {
+        regexFirst: this.options.regexFirst,
+
+        enableCore: this.options.enableCore,
+
+        enableLLM: this.options.enableLLM,
+
+        timeout: this.options.timeout,
+
+        temperature: this.options.temperature,
+      },
+    };
+  }
+
+  resetStats() {
+    this.stats = {
+      requests: 0,
+
+      corePlannerHits: 0,
+
+      regexPlannerHits: 0,
+
+      llmPlannerHits: 0,
+
+      chatResponses: 0,
+
+      actionResponses: 0,
+
+      parseFailures: 0,
+
+      llmFailures: 0,
+    };
+
+    return this.stats;
+  }
+
+  //==================================================
+  // EMPTY RESPONSE
+  //==================================================
+
+  empty() {
     return {
       mode: "chat",
+
       reply: "",
+    };
+  }
+
+  //==================================================
+  // DEBUG HELPERS
+  //==================================================
+
+  async selfTest() {
+    const samples = [
+      "Click Login",
+
+      "Type admin into username",
+
+      "Type secret into password",
+
+      "Click Sign In",
+
+      "Navigate to https://google.com",
+
+      "Search Playwright",
+
+      "Wait 2 seconds",
+    ];
+
+    const results = [];
+
+    for (const sample of samples) {
+      const result = await this.plan(sample);
+
+      results.push({
+        command: sample,
+
+        result,
+      });
+    }
+
+    return results;
+  }
+
+  async benchmark(commands = []) {
+    if (!commands.length) {
+      commands = [
+        "Click Login",
+
+        "Type admin into username",
+
+        "Navigate to https://google.com",
+      ];
+    }
+
+    const started = performance.now();
+
+    const results = [];
+
+    for (const command of commands) {
+      results.push(await this.plan(command));
+    }
+
+    const elapsed = performance.now() - started;
+
+    return {
+      commands: commands.length,
+
+      totalTime: Number(elapsed.toFixed(2)),
+
+      averageTime: Number((elapsed / commands.length).toFixed(2)),
+
+      results,
+    };
+  }
+
+  dumpConfiguration() {
+    return {
+      model: this.model,
+
+      endpoint: this.ollama,
+
+      options: { ...this.options },
+
+      statistics: this.getStats(),
+    };
+  }
+
+  async health() {
+    return {
+      healthy: true,
+
+      model: this.model,
+
+      endpoint: this.ollama,
+
+      corePlanner: !!this.core,
+
+      llmEnabled: this.options.enableLLM,
+
+      regexEnabled: true,
+
+      statistics: this.getStats(),
+    };
+  }
+
+  //==================================================
+  // VERSION
+  //==================================================
+
+  version() {
+    return {
+      name: "Ultra Intelligent Planner",
+
+      version: "2.0.0",
+
+      planner: "Core + Regex + LLM",
+
+      model: this.model,
+    };
+  }
+
+  //==================================================
+  // EXPORT
+  //==================================================
+
+  exportConfiguration() {
+    return {
+      version: this.version(),
+
+      options: {
+        ...this.options,
+      },
+
+      statistics: this.getStats(),
     };
   }
 }

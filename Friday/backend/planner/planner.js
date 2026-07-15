@@ -1,371 +1,752 @@
 /**
- * planner/planner.js
+ * ============================================================
+ * backend/planner/planner.js
  *
- * Ultra-Fast Intent Planner for Jarvis Browser
+ * Ultra Intelligent Planner
  *
- * Features:
- * ✅ Zero-LLM fast path (regex + heuristics)
- * ✅ Action classification (click, navigate, search, scroll, wait)
- * ✅ Multi-step intent splitting
- * ✅ JSON repair fallback
- * ✅ LLM fallback (Ollama / Qwen / OpenAI compatible)
- * ✅ Safe execution planner output
+ * Responsibilities
+ * ------------------------------------------------------------
+ * ✔ Uses IntentParser (NO fuzzy logic)
+ * ✔ Uses ScoringEngine (all ranking happens here)
+ * ✔ Uses SelfHealingEngine
+ * ✔ Uses LLM ONLY when ScoringEngine requests it
+ * ✔ Multi-step planning
+ * ✔ Zero-LLM fast execution
+ * ✔ Planner NEVER performs spelling correction
+ *
+ * Pipeline
+ * ------------------------------------------------------------
+ *
+ * User Input
+ *      │
+ *      ▼
+ * IntentParser
+ *      │
+ *      ▼
+ * ScoringEngine
+ *      │
+ *      ├── confidence >=95
+ *      │        Execute
+ *      │
+ *      ├── confidence 80-94
+ *      │        Execute + remember
+ *      │
+ *      └── confidence <80
+ *               ▼
+ *              LLM
+ *               ▼
+ *          Re-score
+ *               ▼
+ *            Execute
+ *
+ * ============================================================
  */
+
+import IntentParser from "./intent-parser.js";
+import ScoringEngine from "./scoring-engine.js";
+import SelfHealingEngine from "./self-healing.js";
+
+const DEFAULT_OPTIONS = {
+  model: "qwen3:8b",
+
+  useLLM: true,
+
+  debug: false,
+
+  plannerThreshold: 80,
+
+  autoExecuteThreshold: 95,
+
+  ollamaEndpoint: "http://localhost:11434/api/generate",
+};
 
 export default class Planner {
   constructor(options = {}) {
-    this.model = options.model || "qwen3:8b";
-    this.useLLM = options.useLLM ?? true;
+    this.options = {
+      ...DEFAULT_OPTIONS,
 
-    this.rules = this._loadRules();
+      ...options,
+    };
+
+    //------------------------------------------------------
+    // Core Components
+    //------------------------------------------------------
+
+    this.parser =
+      options.parser ||
+      new IntentParser({
+        debug: this.options.debug,
+      });
+
+    this.scoring =
+      options.scoring ||
+      new ScoringEngine({
+        plannerThreshold: this.options.plannerThreshold,
+
+        autoExecuteThreshold: this.options.autoExecuteThreshold,
+      });
+
+    this.healing =
+      options.healing ||
+      new SelfHealingEngine({
+        browser: options.browser,
+        planner: this,
+        scoringEngine: this.scoring,
+      });
+
+    //------------------------------------------------------
+    // Runtime
+    //------------------------------------------------------
+
+    this.browser = options.browser || null;
+
+    this.model = this.options.model;
+
+    this.useLLM = this.options.useLLM;
+
+    this.cache = new Map();
+
+    this.history = [];
+
+    this.stats = {
+      total: 0,
+
+      parserResolved: 0,
+
+      scoringResolved: 0,
+
+      llmResolved: 0,
+
+      failures: 0,
+    };
   }
 
-  // =====================================================
+  //==========================================================
   // PUBLIC API
-  // =====================================================
+  //==========================================================
 
+  /**
+   * Main planner entry
+   */
   async plan(input, context = {}) {
     if (!input || typeof input !== "string") {
-      return this._emptyPlan();
+      return this.emptyPlan();
     }
 
-    const cleaned = input.trim();
+    this.stats.total++;
 
-    // 1. FAST RULE-BASED PARSER (NO LLM)
-    const fastPlan = this._fastParse(cleaned, context);
-    if (fastPlan && fastPlan.steps.length > 0) {
-      return fastPlan;
+    const cacheKey = input.trim().toLowerCase();
+
+    if (this.cache.has(cacheKey)) {
+      return this.cache.get(cacheKey);
     }
 
-    // 2. FALLBACK LLM PARSER
-    if (this.useLLM) {
-      try {
-        const llmPlan = await this._llmParse(cleaned, context);
-        if (llmPlan) return llmPlan;
-      } catch (err) {
-        console.error("[Planner] LLM fallback failed:", err.message);
-      }
+    //------------------------------------------------------
+    // 1. Parse intent
+    //------------------------------------------------------
+
+    const parsed = this.parser.parse(input);
+
+    if (!parsed.steps.length) {
+      return this.emptyPlan();
     }
 
-    return this._emptyPlan();
+    this.stats.parserResolved++;
+
+    //------------------------------------------------------
+    // 2. Resolve every step
+    //------------------------------------------------------
+
+    const resolvedSteps = [];
+
+    for (const step of parsed.steps) {
+      const resolved = await this.resolveStep(step, context);
+
+      resolvedSteps.push(resolved);
+    }
+
+    const plan = {
+      source: "planner",
+
+      mode: parsed.mode,
+
+      confidence: parsed.confidence,
+
+      steps: resolvedSteps,
+    };
+
+    this.cache.set(cacheKey, plan);
+
+    if (this.cache.size > 500) {
+      const first = this.cache.keys().next().value;
+
+      this.cache.delete(first);
+    }
+
+    return plan;
   }
 
-  // =====================================================
-  // FAST PARSER
-  // =====================================================
+  /**
+   * Planner used by SelfHealingEngine
+   */
+  async replan(input, context = {}) {
+    return this.plan(input, context);
+  }
+  //==========================================================
+  // STEP RESOLUTION
+  //==========================================================
 
-  _fastParse(text) {
-    const steps = [];
+  /**
+   * Resolve a parsed step into an executable step.
+   *
+   * IMPORTANT:
+   * Planner never performs fuzzy matching.
+   * All element matching is delegated to ScoringEngine.
+   */
+  async resolveStep(step, context = {}) {
+    //------------------------------------------------------
+    // Chat messages
+    //------------------------------------------------------
 
-    // Split numbered / bulleted commands
-    const lines = text
-      .split(/\r?\n/)
-      .map((l) =>
-        l
-          .replace(/^\s*\d+[.)]\s*/, "")
-          .replace(/^[-*]\s*/, "")
-          .trim(),
-      )
+    if (step.action === "chat") {
+      return step;
+    }
+
+    //------------------------------------------------------
+    // Navigation
+    //------------------------------------------------------
+
+    if (step.action === "navigate") {
+      return {
+        ...step,
+
+        executable: true,
+
+        confidence: 100,
+      };
+    }
+
+    //------------------------------------------------------
+    // Search
+    //------------------------------------------------------
+
+    if (step.action === "search") {
+      return {
+        ...step,
+
+        executable: true,
+
+        confidence: 100,
+      };
+    }
+
+    //------------------------------------------------------
+    // Wait
+    //------------------------------------------------------
+
+    if (step.action === "wait") {
+      return {
+        ...step,
+
+        executable: true,
+
+        confidence: 100,
+      };
+    }
+
+    //------------------------------------------------------
+    // Actions requiring DOM lookup
+    //------------------------------------------------------
+
+    if (
+      [
+        "click",
+
+        "type",
+
+        "hover",
+
+        "check",
+
+        "uncheck",
+
+        "upload",
+
+        "download",
+      ].includes(step.action)
+    ) {
+      return await this.resolveElementStep(
+        step,
+
+        context,
+      );
+    }
+
+    //------------------------------------------------------
+
+    return {
+      ...step,
+
+      executable: false,
+
+      confidence: 0,
+    };
+  }
+
+  //==========================================================
+  // DOM RESOLUTION
+  //==========================================================
+
+  async resolveElementStep(step, context = {}) {
+    //------------------------------------------------------
+    // Refresh DOM Index
+    //------------------------------------------------------
+
+    const elements = await this.collectDOM(context);
+
+    this.scoring.buildIndex(elements);
+
+    //------------------------------------------------------
+    // Ask Scoring Engine
+    //------------------------------------------------------
+
+    const result = this.scoring.resolve(
+      step.target || step.text || step.value || "",
+    );
+
+    //------------------------------------------------------
+    // Perfect Match
+    //------------------------------------------------------
+
+    if (
+      result.success &&
+      result.confidence >= this.options.autoExecuteThreshold
+    ) {
+      this.stats.scoringResolved++;
+
+      return {
+        ...step,
+
+        executable: true,
+
+        plannerUsed: false,
+
+        confidence: result.confidence,
+
+        score: result.confidence,
+
+        candidate: result.best,
+
+        element: result.best.element,
+      };
+    }
+
+    //------------------------------------------------------
+    // Good Match
+    //------------------------------------------------------
+
+    if (result.success && result.confidence >= this.options.plannerThreshold) {
+      this.stats.scoringResolved++;
+
+      return {
+        ...step,
+
+        executable: true,
+
+        plannerUsed: false,
+
+        confidence: result.confidence,
+
+        score: result.confidence,
+
+        candidate: result.best,
+
+        element: result.best.element,
+      };
+    }
+
+    //------------------------------------------------------
+    // Planner Required
+    //------------------------------------------------------
+
+    return await this.resolveUsingLLM(
+      step,
+
+      result,
+
+      context,
+    );
+  }
+
+  //==========================================================
+  // DOM COLLECTION
+  //==========================================================
+
+  async collectDOM(context = {}) {
+    //------------------------------------------------------
+    // Context supplied DOM
+    //------------------------------------------------------
+
+    if (Array.isArray(context.elements)) {
+      return context.elements;
+    }
+
+    //------------------------------------------------------
+    // Browser helper
+    //------------------------------------------------------
+
+    if (this.browser?.collectElements) {
+      return await this.browser.collectElements();
+    }
+
+    //------------------------------------------------------
+    // MCP helper
+    //------------------------------------------------------
+
+    if (this.browser?.getAllElements) {
+      return await this.browser.getAllElements();
+    }
+
+    //------------------------------------------------------
+    // Self-healing helper
+    //------------------------------------------------------
+
+    if (this.healing?.collectDOM) {
+      return await this.healing.collectDOM();
+    }
+
+    return [];
+  }
+
+  //==========================================================
+  // LLM RESOLUTION
+  //==========================================================
+
+  async resolveUsingLLM(step, scoreResult, context = {}) {
+    //------------------------------------------------------
+    // LLM disabled
+    //------------------------------------------------------
+
+    if (!this.useLLM) {
+      this.stats.failures++;
+
+      return {
+        ...step,
+
+        executable: false,
+
+        plannerUsed: false,
+
+        confidence: scoreResult?.confidence || 0,
+
+        candidates: scoreResult?.candidates || [],
+
+        reason: "Planner disabled",
+      };
+    }
+
+    //------------------------------------------------------
+    // Build prompt
+    //------------------------------------------------------
+
+    const prompt = this.buildPrompt(step, scoreResult, context);
+
+    //------------------------------------------------------
+    // Call LLM
+    //------------------------------------------------------
+
+    const response = await this.callLLM(prompt);
+
+    if (!response) {
+      this.stats.failures++;
+
+      return {
+        ...step,
+
+        executable: false,
+
+        plannerUsed: true,
+
+        confidence: scoreResult?.confidence || 0,
+
+        reason: "LLM unavailable",
+      };
+    }
+
+    //------------------------------------------------------
+    // Parse LLM response
+    //------------------------------------------------------
+
+    const repaired = this.safeJSON(response);
+
+    if (!repaired?.target) {
+      this.stats.failures++;
+
+      return {
+        ...step,
+
+        executable: false,
+
+        plannerUsed: true,
+
+        confidence: scoreResult?.confidence || 0,
+
+        reason: "Invalid LLM response",
+      };
+    }
+
+    //------------------------------------------------------
+    // Re-score with corrected target
+    //------------------------------------------------------
+
+    const rescored = this.scoring.resolve(repaired.target);
+
+    if (!rescored.success) {
+      this.stats.failures++;
+
+      return {
+        ...step,
+
+        executable: false,
+
+        plannerUsed: true,
+
+        confidence: rescored.confidence,
+
+        correctedTarget: repaired.target,
+
+        candidates: rescored.candidates || [],
+      };
+    }
+
+    //------------------------------------------------------
+    // Success
+    //------------------------------------------------------
+
+    this.stats.llmResolved++;
+
+    return {
+      ...step,
+
+      executable: true,
+
+      plannerUsed: true,
+
+      confidence: rescored.confidence,
+
+      correctedTarget: repaired.target,
+
+      candidate: rescored.best,
+
+      element: rescored.best.element,
+
+      llm: repaired,
+    };
+  }
+
+  //==========================================================
+  // PROMPT BUILDER
+  //==========================================================
+
+  buildPrompt(step, scoreResult = {}, context = {}) {
+    const candidates = (scoreResult.candidates || [])
+      .slice(0, 10)
+      .map((x) => x.text)
       .filter(Boolean);
 
-    // If user entered a single sentence
-    if (!lines.length) lines.push(text);
+    return `
+You are a browser planning assistant.
 
-    for (const line of lines) {
-      const lower = line.toLowerCase();
+DO NOT perform browser actions.
 
-      //------------------------------------------------
-      // Navigate
-      //------------------------------------------------
+ONLY determine the correct target.
 
-      if (this._match(lower, this.rules.navigate)) {
-        steps.push({
-          type: "navigate",
-          url: this._extractUrl(line) || this._extractDomain(line),
-        });
-        continue;
-      }
+Action:
+${step.action}
 
-      //------------------------------------------------
-      // Click
-      //------------------------------------------------
+Original Target:
+${step.target || step.text || ""}
 
-      if (this._match(lower, this.rules.click)) {
-        steps.push({
-          type: "click",
-          text: this._extractClickText(line),
-        });
-        continue;
-      }
+Top Candidates:
+${JSON.stringify(candidates, null, 2)}
 
-      //------------------------------------------------
-      // Type
-      //------------------------------------------------
+Return ONLY valid JSON.
 
-      let m;
+Example:
 
-      m = line.match(
-        /(?:type|enter|fill)\s+(email|username|password|username-password)\s+"([^"]+)"/i,
-      );
-
-      if (m) {
-        let field = m[1].toLowerCase();
-
-        if (field === "username") field = "email";
-
-        if (field === "username-password") field = "password";
-
-        steps.push({
-          type: "type",
-          field,
-          value: m[2],
-        });
-
-        continue;
-      }
-
-      //------------------------------------------------
-      // Type "... " into ...
-      //------------------------------------------------
-
-      m = line.match(/(?:type|enter|fill)\s+"([^"]+)"\s+(?:into|in)\s+(.+)/i);
-
-      if (m) {
-        steps.push({
-          type: "type",
-          field: m[2].trim(),
-          value: m[1],
-        });
-
-        continue;
-      }
-
-      //------------------------------------------------
-      // Search
-      //------------------------------------------------
-
-      if (this._match(lower, this.rules.search)) {
-        steps.push({
-          type: "search",
-          query: this._extractQuery(line),
-        });
-
-        continue;
-      }
-
-      //------------------------------------------------
-      // Scroll
-      //------------------------------------------------
-
-      if (this._match(lower, this.rules.scroll)) {
-        steps.push({
-          type: "scroll",
-          direction: lower.includes("up") ? "up" : "down",
-          amount: this._extractNumber(line) || 800,
-        });
-
-        continue;
-      }
-
-      //------------------------------------------------
-      // Wait
-      //------------------------------------------------
-
-      if (this._match(lower, this.rules.wait)) {
-        steps.push({
-          type: "wait",
-          time: this._extractNumber(line) || 2000,
-        });
-
-        continue;
-      }
-
-      //------------------------------------------------
-      // Submit
-      //------------------------------------------------
-
-      if (/submit|log\s*in|sign\s*in/i.test(lower)) {
-        steps.push({
-          type: "click",
-          text: "Log in",
-        });
-
-        continue;
-      }
-
-      //------------------------------------------------
-      // Unknown
-      //------------------------------------------------
-
-      steps.push({
-        type: "chat",
-        message: line,
-      });
-    }
-
-    return {
-      source: "fast-parser",
-      mode: "action",
-      steps,
-    };
-  }
-
-  // =====================================================
-  // LLM PARSER (Ollama / Qwen compatible)
-  // =====================================================
-
-  async _llmParse(text, context) {
-    const prompt = `
-You are an intent planner for a browser automation system.
-
-Convert user input into JSON steps.
-
-Rules:
-- Only output JSON
-- No explanation
-- Supported actions: navigate, search, click, scroll, wait, type
-
-Input:
-"${text}"
-
-Output format:
 {
-  "steps": [
-    { "type": "...", "..." }
-  ]
+    "target":"Punch In"
 }
 `;
-
-    const response = await this._callLLM(prompt);
-
-    if (!response) return null;
-
-    const json = this._safeJSONParse(response);
-    if (!json?.steps) return null;
-
-    return {
-      source: "llm",
-      steps: json.steps,
-    };
   }
 
-  async _callLLM(prompt) {
-    // Ollama default endpoint
-    const endpoint = "http://localhost:11434/api/generate";
+  //==========================================================
+  // LLM CALL
+  //==========================================================
 
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: this.model,
-        prompt,
-        stream: false,
-      }),
-    });
+  async callLLM(prompt) {
+    try {
+      const response = await fetch(this.options.ollamaEndpoint, {
+        method: "POST",
 
-    if (!res.ok) return null;
+        headers: {
+          "Content-Type": "application/json",
+        },
 
-    const data = await res.json();
-    return data.response || null;
-  }
+        body: JSON.stringify({
+          model: this.model,
 
-  // =====================================================
-  // RULES
-  // =====================================================
+          prompt,
 
-  _loadRules() {
-    return {
-      navigate: ["open", "go to", "visit", "navigate", "launch"],
-      search: ["search", "look for", "find", "google"],
-      click: ["click", "press", "tap"],
-      type: ["type", "enter", "fill"],
-      scroll: ["scroll"],
-      wait: ["wait", "pause", "delay"],
-      submit: ["submit", "login", "log in", "sign in"],
-    };
-  }
+          stream: false,
+        }),
+      });
 
-  _match(text, keywords) {
-    return keywords.some((k) => text.includes(k));
-  }
+      if (!response.ok) return null;
 
-  // =====================================================
-  // EXTRACTION HELPERS
-  // =====================================================
+      const json = await response.json();
 
-  _extractUrl(text) {
-    const match = text.match(/https?:\/\/[^\s]+/);
-    return match ? match[0] : null;
-  }
+      return json.response;
+    } catch (err) {
+      if (this.options.debug) {
+        console.error("[Planner]", err.message);
+      }
 
-  _extractDomain(text) {
-    const match = text.match(
-      /(?:go to|visit|open)\s+([a-zA-Z0-9.-]+\.[a-zA-Z]+)/i,
-    );
-    return match ? `https://${match[1]}` : null;
-  }
-
-  _extractQuery(text) {
-    return text.replace(/search|google|find|look for/gi, "").trim();
-  }
-
-  _extractSelector(text) {
-    const match = text.match(/#\w+|\.\w+/);
-    return match ? match[0] : null;
-  }
-
-  _extractClickText(text) {
-    const patterns = [
-      /click\s+"([^"]+)"/i,
-
-      /click\s+'([^']+)'/i,
-
-      /click\s+(?:the\s+)?(.+)/i,
-    ];
-
-    for (const p of patterns) {
-      const m = text.match(p);
-
-      if (m) return m[1].trim();
+      return null;
     }
+  }
+
+  //==========================================================
+  // JSON UTILITIES
+  //==========================================================
+
+  safeJSON(text) {
+    if (!text) return null;
+
+    //------------------------------------------------------
+    // Direct parse
+    //------------------------------------------------------
+
+    try {
+      return JSON.parse(text);
+    } catch {}
+
+    //------------------------------------------------------
+    // Remove markdown
+    //------------------------------------------------------
+
+    try {
+      let cleaned = text
+        .replace(/```json/gi, "")
+        .replace(/```/g, "")
+        .trim();
+
+      return JSON.parse(cleaned);
+    } catch {}
+
+    //------------------------------------------------------
+    // Extract JSON object
+    //------------------------------------------------------
+
+    try {
+      const start = text.indexOf("{");
+      const end = text.lastIndexOf("}");
+
+      if (start >= 0 && end > start) {
+        return JSON.parse(text.substring(start, end + 1));
+      }
+    } catch {}
 
     return null;
   }
 
-  _extractNumber(text) {
-    const match = text.match(/\d+/);
-    return match ? parseInt(match[0], 10) : null;
-  }
+  //==========================================================
+  // LEARNING
+  //==========================================================
 
-  // =====================================================
-  // JSON SAFETY
-  // =====================================================
+  remember(step) {
+    if (!step?.candidate) return;
 
-  _safeJSONParse(str) {
     try {
-      return JSON.parse(str);
-    } catch {
-      // repair attempt
-      try {
-        const fixed = str
-          .replace(/```json/g, "")
-          .replace(/```/g, "")
-          .trim();
-        return JSON.parse(fixed);
-      } catch {
-        return null;
-      }
+      this.scoring.remember(
+        step.correctedTarget || step.target || step.text || "",
+
+        step.candidate,
+      );
+    } catch {}
+
+    this.history.push({
+      timestamp: Date.now(),
+
+      action: step.action,
+
+      target: step.correctedTarget || step.target || step.text || "",
+
+      confidence: step.confidence,
+
+      plannerUsed: step.plannerUsed,
+    });
+
+    if (this.history.length > 1000) {
+      this.history.shift();
     }
   }
 
-  // =====================================================
-  // UTIL
-  // =====================================================
+  //==========================================================
+  // CACHE
+  //==========================================================
 
-  _emptyPlan() {
+  clearCache() {
+    this.cache.clear();
+  }
+
+  clearHistory() {
+    this.history = [];
+  }
+
+  //==========================================================
+  // STATISTICS
+  //==========================================================
+
+  getStats() {
     return {
-      source: "empty",
+      ...this.stats,
+
+      cacheSize: this.cache.size,
+
+      history: this.history.length,
+
+      parser: this.parser?.constructor?.name,
+
+      scorer: this.scoring?.constructor?.name,
+
+      healing: this.healing?.constructor?.name,
+    };
+  }
+
+  //==========================================================
+  // EMPTY PLAN
+  //==========================================================
+
+  emptyPlan() {
+    return {
+      source: "planner",
+
+      mode: "empty",
+
+      confidence: 0,
+
       steps: [],
     };
+  }
+
+  //==========================================================
+  // DESTROY
+  //==========================================================
+
+  destroy() {
+    this.clearCache();
+
+    this.clearHistory();
   }
 }
