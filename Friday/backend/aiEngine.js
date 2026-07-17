@@ -33,25 +33,37 @@ Think step-by-step and respond in JSON:
       for (const line of lines) {
         if (!line.trim()) continue;
 
-        const json = JSON.parse(line);
+        try {
+          const json = JSON.parse(line);
 
-        if (json.response) {
-          finalText += json.response;
+          if (json.response) {
+            finalText += json.response;
 
-          // 🔥 send live thinking
-          if (onStream) onStream(json.response);
+            // Send live thinking to UI
+            if (onStream) onStream(json.response);
+          }
+
+          if (json.done) break;
+        } catch (e) {
+          // Ignore malformed streaming chunks
         }
       }
     }
 
-    // CLEAN JSON
+    // Extract JSON from model output
     const match = finalText.match(/\{[\s\S]*\}/);
 
-    if (match) return JSON.parse(match[0]);
+    if (match) {
+      try {
+        return JSON.parse(match[0]);
+      } catch (e) {
+        console.error("Failed to parse AI JSON:", e);
+      }
+    }
 
     return { action: "scroll" };
   } catch (err) {
-    console.error(err);
+    console.error("AI Engine Error:", err);
     return { action: "scroll" };
   }
 };
