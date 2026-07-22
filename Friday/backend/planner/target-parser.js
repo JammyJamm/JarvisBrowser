@@ -1,179 +1,737 @@
-// planner/target-parser.js
+// backend/planner/target-parser.js
 
 /**
- * Ultra-fast Intent & Target Parser
- * - No dependencies
- * - Regex-first classification
- * - Cached parsing for repeated inputs
- * - Designed for planner pipeline systems
+ * ==========================================================
+ *
+ * backend/planner/target-parser.js
+ *
+ * Ultra-fast Target & Intent Classification Engine
+ *
+ * Responsibilities
+ * ----------------------------------------------------------
+ * ✔ Classify target / intent categories
+ * ✔ Extract target text
+ * ✔ Detect URLs
+ * ✔ Detect browser controls
+ * ✔ Detect files
+ * ✔ Detect planner commands
+ * ✔ Detect self-healing commands
+ * ✔ Lightweight tokenization
+ * ✔ Cache repeated requests
+ * ✔ Return confidence metadata
+ *
+ * IMPORTANT
+ * ----------------------------------------------------------
+ * ❌ No fuzzy matching
+ * ❌ No spelling correction
+ * ❌ No DOM lookup
+ * ❌ No selector resolution
+ * ❌ No target guessing
+ *
+ * Fuzzy matching belongs ONLY to ScoringEngine.
+ *
+ * ==========================================================
  */
+
+//==========================================================
+// DEFAULT OPTIONS
+//==========================================================
+
+const DEFAULT_OPTIONS = {
+  maxCacheSize: 500,
+
+  confidenceThreshold: 0.75,
+
+  debug: false,
+
+  enableHeuristics: true,
+};
+
+//==========================================================
+// TARGET TYPES
+//==========================================================
+
+const TARGET_TYPES = {
+  NAVIGATE: "NAVIGATE",
+
+  SEARCH: "SEARCH",
+
+  ACTION: "ACTION",
+
+  FILE: "FILE",
+
+  PLAN: "PLAN",
+
+  BROWSER_CONTROL: "BROWSER_CONTROL",
+
+  HEAL: "HEAL",
+
+  URL: "URL",
+
+  QUERY: "QUERY",
+
+  SHORT_COMMAND: "SHORT_COMMAND",
+
+  GENERAL: "GENERAL",
+
+  UNKNOWN: "UNKNOWN",
+};
+
+//==========================================================
+// TARGET PARSER
+//==========================================================
 
 class TargetParser {
   constructor(options = {}) {
+    this.options = {
+      ...DEFAULT_OPTIONS,
+      ...options,
+    };
+
+    //------------------------------------------------------
+    // Cache
+    //------------------------------------------------------
+
     this.cache = new Map();
-    this.maxCacheSize = options.maxCacheSize || 500;
+
+    //------------------------------------------------------
+    // Rules
+    //------------------------------------------------------
 
     this.rules = [
-      // Navigation / browser control
-      { type: "NAVIGATE", test: /^go\s+to\s+|^open\s+/i },
+      //----------------------------------------------------
+      // Navigation / browser navigation
+      //----------------------------------------------------
 
-      // Search intent
-      { type: "SEARCH", test: /^search\s+for\s+|^find\s+/i },
+      {
+        type: TARGET_TYPES.NAVIGATE,
 
+        test: /^(go\s+to|goto|navigate\s+to|open|visit|launch)\s+/i,
+
+        confidence: 0.95,
+      },
+
+      //----------------------------------------------------
+      // Search
+      //----------------------------------------------------
+
+      {
+        type: TARGET_TYPES.SEARCH,
+
+        test: /^(search\s+for|search|find|look\s+up|lookup|google)\s+/i,
+
+        confidence: 0.95,
+      },
+
+      //----------------------------------------------------
       // Action execution
-      { type: "ACTION", test: /^run\s+|^execute\s+|^start\s+/i },
+      //----------------------------------------------------
 
-      // File/system operations
-      { type: "FILE", test: /^read\s+file|^open\s+file|^delete\s+file/i },
+      {
+        type: TARGET_TYPES.ACTION,
 
-      // Planner-specific commands
-      { type: "PLAN", test: /^plan\s+|^schedule\s+|^create\s+task/i },
+        test: /^(run|execute|start|perform)\s+/i,
 
-      // Browser control signals
-      { type: "BROWSER_CONTROL", test: /browser\s+|tab\s+|window\s+/i },
+        confidence: 0.9,
+      },
 
-      // Self-healing / debugging
-      { type: "HEAL", test: /fix\s+|repair\s+|self[-\s]?heal/i },
+      //----------------------------------------------------
+      // File / system operations
+      //----------------------------------------------------
+
+      {
+        type: TARGET_TYPES.FILE,
+
+        test: /^(read|open|delete|remove|create|copy|move|rename)\s+(the\s+)?file\b/i,
+
+        confidence: 0.95,
+      },
+
+      //----------------------------------------------------
+      // Planner commands
+      //----------------------------------------------------
+
+      {
+        type: TARGET_TYPES.PLAN,
+
+        test: /^(plan|schedule|create\s+(a\s+)?task|add\s+(a\s+)?task)\s+/i,
+
+        confidence: 0.95,
+      },
+
+      //----------------------------------------------------
+      // Browser controls
+      //----------------------------------------------------
+
+      {
+        type: TARGET_TYPES.BROWSER_CONTROL,
+
+        test: /\b(browser|tab|tabs|window|windows|back|forward|refresh|reload)\b/i,
+
+        confidence: 0.85,
+      },
+
+      //----------------------------------------------------
+      // Self healing / debugging
+      //----------------------------------------------------
+
+      {
+        type: TARGET_TYPES.HEAL,
+
+        test: /\b(fix|repair|recover|retry|self[-\s]?heal|heal|debug)\b/i,
+
+        confidence: 0.9,
+      },
     ];
+
+    //------------------------------------------------------
+    // URL regex
+    //------------------------------------------------------
+
+    this.urlRegex = /^(https?:\/\/|www\.)[^\s]+$/i;
+
+    //------------------------------------------------------
+    // Command regex
+    //------------------------------------------------------
+
+    this.commandRegex = /^\/[a-zA-Z0-9_-]+/;
+
+    //------------------------------------------------------
+    // Query regex
+    //------------------------------------------------------
+
+    this.queryRegex = /\?$/;
+
+    //------------------------------------------------------
+    // Initialize rule map
+    //------------------------------------------------------
+
+    this.ruleMap = new Map();
+
+    for (const rule of this.rules) {
+      this.ruleMap.set(rule.type, rule);
+    }
   }
 
-  /**
-   * Main entry point
-   */
+  //========================================================
+  // PUBLIC PARSE
+  //========================================================
+
   parse(input = "") {
-    if (!input || typeof input !== "string") {
-      return this._result("UNKNOWN", input);
+    //------------------------------------------------------
+    // Invalid input
+    //------------------------------------------------------
+
+    if (input === null || input === undefined || typeof input !== "string") {
+      return this._result(TARGET_TYPES.UNKNOWN, input);
     }
 
-    const normalized = input.trim();
+    //------------------------------------------------------
+    // Normalize
+    //------------------------------------------------------
 
+    const normalized = this._normalize(input);
+
+    if (!normalized) {
+      return this._result(TARGET_TYPES.UNKNOWN, "");
+    }
+
+    //------------------------------------------------------
     // Cache hit
-    if (this.cache.has(normalized)) {
-      return this.cache.get(normalized);
+    //------------------------------------------------------
+
+    const cached = this.cache.get(normalized);
+
+    if (cached) {
+      return cached;
     }
+
+    //------------------------------------------------------
+    // Analyze
+    //------------------------------------------------------
 
     const result = this._analyze(normalized);
 
-    this._cache(result.key, result);
+    //------------------------------------------------------
+    // Cache
+    //------------------------------------------------------
+
+    this._cache(normalized, result);
+
+    //------------------------------------------------------
+    // Debug
+    //------------------------------------------------------
+
+    this._log("Parsed target:", result);
 
     return result;
   }
 
-  /**
-   * Core analysis engine
-   */
+  //========================================================
+  // NORMALIZATION
+  //========================================================
+
+  _normalize(input) {
+    return String(input).normalize("NFKC").replace(/\s+/g, " ").trim();
+  }
+
+  //========================================================
+  // CORE ANALYSIS
+  //========================================================
+
   _analyze(text) {
     const lower = text.toLowerCase();
 
-    let detected = {
-      type: "UNKNOWN",
+    //------------------------------------------------------
+    // Base result
+    //------------------------------------------------------
+
+    const detected = {
+      type: TARGET_TYPES.UNKNOWN,
+
       confidence: 0,
+
       raw: text,
+
+      normalized: text,
+
+      target: "",
+
+      intent: "",
+
       tokens: this._tokenize(text),
+
+      source: "unknown",
     };
 
+    //------------------------------------------------------
+    // Direct URL
+    //------------------------------------------------------
+
+    if (this._isUrl(text)) {
+      detected.type = TARGET_TYPES.URL;
+
+      detected.confidence = 1;
+
+      detected.target = text;
+
+      detected.intent = text;
+
+      detected.source = "url";
+
+      detected.key = this._createKey(detected.type, detected.intent);
+
+      return detected;
+    }
+
+    //------------------------------------------------------
+    // Slash command
+    //------------------------------------------------------
+
+    if (this._isCommand(text)) {
+      detected.type = TARGET_TYPES.ACTION;
+
+      detected.confidence = 0.95;
+
+      detected.target = text;
+
+      detected.intent = this._extractCommand(text);
+
+      detected.source = "command";
+
+      detected.key = this._createKey(detected.type, detected.intent);
+
+      return detected;
+    }
+
+    //------------------------------------------------------
+    // Rule matching
+    //------------------------------------------------------
+
     for (const rule of this.rules) {
-      if (rule.test.test(lower)) {
+      if (rule.test.test(text)) {
         detected.type = rule.type;
-        detected.confidence = 0.85;
-        break;
+
+        detected.confidence = rule.confidence ?? 0.85;
+
+        detected.target = this._extractTarget(text, rule.type);
+
+        detected.intent = this._extractIntent(text, rule.type);
+
+        detected.source = "rule";
+
+        detected.key = this._createKey(detected.type, detected.intent);
+
+        return detected;
       }
     }
 
-    // fallback heuristics
-    if (detected.type === "UNKNOWN") {
-      detected.type = this._heuristicType(lower);
-      detected.confidence = 0.5;
+    //------------------------------------------------------
+    // Heuristic fallback
+    //------------------------------------------------------
+
+    if (this.options.enableHeuristics) {
+      const heuristic = this._heuristicType(lower);
+
+      if (heuristic) {
+        detected.type = heuristic.type;
+
+        detected.confidence = heuristic.confidence;
+
+        detected.target = text;
+
+        detected.intent = text;
+
+        detected.source = "heuristic";
+
+        detected.key = this._createKey(detected.type, detected.intent);
+
+        return detected;
+      }
     }
 
-    detected.intent = this._extractIntent(text, detected.type);
-    detected.key = `${detected.type}:${detected.intent}`;
+    //------------------------------------------------------
+    // General fallback
+    //------------------------------------------------------
+
+    detected.type = TARGET_TYPES.GENERAL;
+
+    detected.confidence = 0.3;
+
+    detected.target = text;
+
+    detected.intent = text;
+
+    detected.source = "fallback";
+
+    detected.key = this._createKey(detected.type, detected.intent);
 
     return detected;
   }
 
-  /**
-   * Lightweight tokenization
-   */
+  //========================================================
+  // TARGET EXTRACTION
+  //========================================================
+
+  _extractTarget(text, type) {
+    if (!text) {
+      return "";
+    }
+
+    let target = text;
+
+    switch (type) {
+      case TARGET_TYPES.NAVIGATE:
+        target = text.replace(
+          /^(go\s+to|goto|navigate\s+to|open|visit|launch)\s+/i,
+          "",
+        );
+        break;
+
+      case TARGET_TYPES.SEARCH:
+        target = text.replace(
+          /^(search\s+for|search|find|look\s+up|lookup|google)\s+/i,
+          "",
+        );
+        break;
+
+      case TARGET_TYPES.ACTION:
+        target = text.replace(/^(run|execute|start|perform)\s+/i, "");
+        break;
+
+      case TARGET_TYPES.FILE:
+        target = text.replace(
+          /^(read|open|delete|remove|create|copy|move|rename)\s+(the\s+)?file\s*/i,
+          "",
+        );
+        break;
+
+      case TARGET_TYPES.PLAN:
+        target = text.replace(
+          /^(plan|schedule|create\s+(a\s+)?task|add\s+(a\s+)?task)\s*/i,
+          "",
+        );
+        break;
+
+      default:
+        target = text;
+    }
+
+    return this._cleanTarget(target);
+  }
+
+  //========================================================
+  // INTENT EXTRACTION
+  //========================================================
+
+  _extractIntent(text, type) {
+    const target = this._extractTarget(text, type);
+
+    return target || text;
+  }
+
+  //========================================================
+  // CLEAN TARGET
+  //========================================================
+
+  _cleanTarget(target) {
+    if (!target) {
+      return "";
+    }
+
+    return target
+      .replace(/^[,:;.\-]+/, "")
+      .replace(/[,:;.\-]+$/, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  //========================================================
+  // TOKENIZATION
+  //========================================================
+
   _tokenize(text) {
+    if (!text) {
+      return [];
+    }
+
     return text
       .toLowerCase()
-      .replace(/[^a-z0-9\s]/gi, " ")
+      .replace(/[^a-zA-Z0-9_\s]/g, " ")
       .split(/\s+/)
       .filter(Boolean);
   }
 
-  /**
-   * Heuristic fallback classification
-   */
+  //========================================================
+  // URL DETECTION
+  //========================================================
+
+  _isUrl(text) {
+    if (!text) {
+      return false;
+    }
+
+    return this.urlRegex.test(text.trim());
+  }
+
+  //========================================================
+  // COMMAND DETECTION
+  //========================================================
+
+  _isCommand(text) {
+    if (!text) {
+      return false;
+    }
+
+    return this.commandRegex.test(text.trim());
+  }
+
+  //========================================================
+  // COMMAND EXTRACTION
+  //========================================================
+
+  _extractCommand(text) {
+    const match = text.match(this.commandRegex);
+
+    return match ? match[0] : "";
+  }
+
+  //========================================================
+  // HEURISTIC CLASSIFICATION
+  //========================================================
+
   _heuristicType(text) {
-    if (text.includes("?")) return "QUERY";
-    if (text.includes("http") || text.includes("www")) return "URL";
-    if (text.length < 10) return "SHORT_COMMAND";
-    return "GENERAL";
-  }
+    //------------------------------------------------------
+    // Query
+    //------------------------------------------------------
 
-  /**
-   * Extract simplified intent phrase
-   */
-  _extractIntent(text, type) {
-    switch (type) {
-      case "NAVIGATE":
-        return text.replace(/^go to\s+|^open\s+/i, "");
-
-      case "SEARCH":
-        return text.replace(/^search for\s+|^find\s+/i, "");
-
-      case "ACTION":
-        return text.replace(/^run\s+|^execute\s+|^start\s+/i, "");
-
-      case "PLAN":
-        return text.replace(/^plan\s+|^schedule\s+|^create task\s+/i, "");
-
-      default:
-        return text;
+    if (this.queryRegex.test(text)) {
+      return {
+        type: TARGET_TYPES.QUERY,
+        confidence: 0.7,
+      };
     }
+
+    //------------------------------------------------------
+    // URL inside sentence
+    //------------------------------------------------------
+
+    if (
+      text.includes("http://") ||
+      text.includes("https://") ||
+      text.includes("www.")
+    ) {
+      return {
+        type: TARGET_TYPES.URL,
+        confidence: 0.8,
+      };
+    }
+
+    //------------------------------------------------------
+    // Short command
+    //------------------------------------------------------
+
+    if (text.length < 10 && text.split(/\s+/).length <= 3) {
+      return {
+        type: TARGET_TYPES.SHORT_COMMAND,
+        confidence: 0.45,
+      };
+    }
+
+    //------------------------------------------------------
+    // No confident heuristic
+    //------------------------------------------------------
+
+    return null;
   }
 
-  /**
-   * Cache management (LRU-lite)
-   */
+  //========================================================
+  // CACHE
+  //========================================================
+
   _cache(key, value) {
-    if (this.cache.size >= this.maxCacheSize) {
+    //------------------------------------------------------
+    // Remove oldest item
+    //------------------------------------------------------
+
+    if (this.cache.size >= this.options.maxCacheSize) {
       const firstKey = this.cache.keys().next().value;
-      this.cache.delete(firstKey);
+
+      if (firstKey !== undefined) {
+        this.cache.delete(firstKey);
+      }
     }
+
+    //------------------------------------------------------
+    // Store
+    //------------------------------------------------------
+
     this.cache.set(key, value);
   }
 
-  /**
-   * Result factory
-   */
+  //========================================================
+  // CLEAR CACHE
+  //========================================================
+
+  clearCache() {
+    this.cache.clear();
+  }
+
+  //========================================================
+  // CACHE SIZE
+  //========================================================
+
+  getCacheSize() {
+    return this.cache.size;
+  }
+
+  //========================================================
+  // KEY GENERATOR
+  //========================================================
+
+  _createKey(type, intent) {
+    return `${type}:${intent}`;
+  }
+
+  //========================================================
+  // RESULT FACTORY
+  //========================================================
+
   _result(type, raw) {
+    const normalized = typeof raw === "string" ? this._normalize(raw) : "";
+
     return {
       type,
+
       confidence: 0,
+
       raw,
-      tokens: [],
-      intent: raw,
-      key: `${type}:${raw}`,
+
+      normalized,
+
+      target: normalized,
+
+      tokens: normalized ? this._tokenize(normalized) : [],
+
+      intent: normalized,
+
+      source: "invalid",
+
+      key: this._createKey(type, normalized),
     };
   }
 
-  /**
-   * Debug helper
-   */
+  //========================================================
+  // EXPLAIN
+  //========================================================
+
   explain(input) {
     const result = this.parse(input);
 
     return {
       input,
+
       classification: result.type,
+
       confidence: result.confidence,
+
+      target: result.target,
+
       intent: result.intent,
+
       tokens: result.tokens,
+
+      source: result.source,
+
+      key: result.key,
     };
   }
+
+  //========================================================
+  // IS TARGET TYPE
+  //========================================================
+
+  isType(input, type) {
+    const result = this.parse(input);
+
+    return result.type === type;
+  }
+
+  //========================================================
+  // STATS
+  //========================================================
+
+  stats() {
+    return {
+      cacheSize: this.cache.size,
+
+      maxCacheSize: this.options.maxCacheSize,
+
+      ruleCount: this.rules.length,
+
+      heuristics: this.options.enableHeuristics,
+
+      confidenceThreshold: this.options.confidenceThreshold,
+
+      supportedTypes: Object.values(TARGET_TYPES),
+    };
+  }
+
+  //========================================================
+  // DEBUG LOGGER
+  //========================================================
+
+  _log(...args) {
+    if (!this.options.debug) {
+      return;
+    }
+
+    console.log("[TargetParser]", ...args);
+  }
 }
+
+//==========================================================
+// EXPORT
+//==========================================================
 
 export default TargetParser;

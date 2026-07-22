@@ -1,592 +1,760 @@
-/**
- * ============================================================
- * backend/planner/planner.js
- *
- * Ultra Intelligent Planner
- *
- * Responsibilities
- * ------------------------------------------------------------
- * ✔ Uses IntentParser (NO fuzzy logic)
- * ✔ Uses ScoringEngine (all ranking happens here)
- * ✔ Uses SelfHealingEngine
- * ✔ Uses LLM ONLY when ScoringEngine requests it
- * ✔ Multi-step planning
- * ✔ Zero-LLM fast execution
- * ✔ Planner NEVER performs spelling correction
- *
- * Pipeline
- * ------------------------------------------------------------
- *
- * User Input
- *      │
- *      ▼
- * IntentParser
- *      │
- *      ▼
- * ScoringEngine
- *      │
- *      ├── confidence >=95
- *      │        Execute
- *      │
- *      ├── confidence 80-94
- *      │        Execute + remember
- *      │
- *      └── confidence <80
- *               ▼
- *              LLM
- *               ▼
- *          Re-score
- *               ▼
- *            Execute
- *
- * ============================================================
- */
+//==========================================================
+//
+// backend/planner/planner.js
+//
+// Ultra Intelligent Planner
+//
+// Architecture
+//
+// User Command
+//      │
+//      ▼
+// Command Classification
+//      │
+//      ▼
+// IntentParser
+//      │
+//      ├── Fast Intent Detection
+//      │
+//      ├── Multi-Step Parsing
+//      │
+//      └── Action Extraction
+//      │
+//      ▼
+// ScoringEngine
+//      │
+//      ├── Exact Matching
+//      ├── Token Matching
+//      ├── Fuzzy Matching
+//      ├── Semantic Matching
+//      └── Candidate Ranking
+//      │
+//      ▼
+// Planner
+//      │
+//      ├── High Confidence → Direct Execution
+//      │
+//      └── Low Confidence / Ambiguous
+//              │
+//              ▼
+//          LLM Fallback
+//              │
+//              ▼
+//          Structured Plan
+//              │
+//              ▼
+//          ToolMap
+//              │
+//              ▼
+//          Resolver
+//              │
+//              ▼
+//          Playwright
+//
+// IMPORTANT
+// ----------------------------------------------------------
+// Planner NEVER performs fuzzy matching.
+// Fuzzy matching belongs to ScoringEngine.
+//
+// Planner responsibilities:
+// ✔ Parse user intent
+// ✔ Coordinate IntentParser
+// ✔ Coordinate ScoringEngine
+// ✔ Generate multi-step plans
+// ✔ Use LLM only when required
+// ✔ Repair invalid LLM JSON
+// ✔ Normalize plans
+// ✔ Validate plans
+// ✔ Prevent skipped steps
+// ✔ Preserve step ordering
+// ✔ Support chat and action modes
+//
+//==========================================================
 
 import IntentParser from "./intent-parser.js";
 import ScoringEngine from "./scoring-engine.js";
-import SelfHealingEngine from "./self-healing.js";
-
-const DEFAULT_OPTIONS = {
-  model: "qwen3:8b",
-
-  useLLM: true,
-
-  debug: false,
-
-  plannerThreshold: 80,
-
-  autoExecuteThreshold: 95,
-
-  ollamaEndpoint: "http://localhost:11434/api/generate",
-};
 
 export default class Planner {
   constructor(options = {}) {
+    //--------------------------------------------------
+    // Configuration
+    //--------------------------------------------------
+
     this.options = {
-      ...DEFAULT_OPTIONS,
+      model: options.model || "qwen3:8b",
+
+      endpoint: options.endpoint || "http://localhost:11434/api/generate",
+
+      apiKey: options.apiKey || process.env.OPENAI_API_KEY || "",
+
+      provider: options.provider || "ollama",
+
+      useLLM: options.useLLM !== false,
+
+      timeout: options.timeout || 30000,
+
+      plannerThreshold: options.plannerThreshold ?? 80,
+
+      autoExecuteThreshold: options.autoExecuteThreshold ?? 95,
+
+      maxSteps: options.maxSteps || 20,
+
+      maxContextLength: options.maxContextLength || 8000,
+
+      debug: options.debug || false,
+
+      enableScoring: options.enableScoring !== false,
+
+      enableLearning: options.enableLearning !== false,
 
       ...options,
     };
 
-    //------------------------------------------------------
-    // Core Components
-    //------------------------------------------------------
+    //--------------------------------------------------
+    // Intent Parser
+    //--------------------------------------------------
 
-    this.parser =
-      options.parser ||
+    this.intentParser =
+      options.intentParser ||
       new IntentParser({
         debug: this.options.debug,
       });
 
-    this.scoring =
-      options.scoring ||
+    //--------------------------------------------------
+    // Scoring Engine
+    //--------------------------------------------------
+
+    this.scoringEngine =
+      options.scoringEngine ||
       new ScoringEngine({
         plannerThreshold: this.options.plannerThreshold,
 
         autoExecuteThreshold: this.options.autoExecuteThreshold,
       });
 
-    this.healing =
-      options.healing ||
-      new SelfHealingEngine({
-        browser: options.browser,
-        planner: this,
-        scoringEngine: this.scoring,
-      });
+    //--------------------------------------------------
+    // Runtime State
+    //--------------------------------------------------
 
-    //------------------------------------------------------
-    // Runtime
-    //------------------------------------------------------
+    this.lastPlan = null;
 
-    this.browser = options.browser || null;
+    this.lastInput = "";
 
-    this.model = this.options.model;
-
-    this.useLLM = this.options.useLLM;
-
-    this.cache = new Map();
+    this.lastError = null;
 
     this.history = [];
 
+    //--------------------------------------------------
+    // Statistics
+    //--------------------------------------------------
+
     this.stats = {
-      total: 0,
+      totalCalls: 0,
 
-      parserResolved: 0,
+      fastPathCalls: 0,
 
-      scoringResolved: 0,
+      llmCalls: 0,
 
-      llmResolved: 0,
+      llmFailures: 0,
 
-      failures: 0,
+      repairedPlans: 0,
+
+      chatCalls: 0,
+
+      actionCalls: 0,
+
+      multiStepCalls: 0,
+
+      successfulPlans: 0,
+
+      failedPlans: 0,
     };
   }
 
-  //==========================================================
-  // PUBLIC API
-  //==========================================================
+  //======================================================
+  // LOGGER
+  //======================================================
 
-  /**
-   * Main planner entry
-   */
+  log(...args) {
+    if (this.options.debug) {
+      console.log("[Planner]", ...args);
+    }
+  }
+
+  warn(...args) {
+    console.warn("[Planner]", ...args);
+  }
+
+  error(...args) {
+    console.error("[Planner]", ...args);
+  }
+
+  //======================================================
+  // MAIN PLAN METHOD
+  //======================================================
+
   async plan(input, context = {}) {
-    if (!input || typeof input !== "string") {
-      return this.emptyPlan();
+    const started = Date.now();
+
+    this.stats.totalCalls++;
+
+    this.lastInput = String(input || "").trim();
+
+    this.lastError = null;
+
+    //--------------------------------------------------
+    // Validate Input
+    //--------------------------------------------------
+
+    if (!this.lastInput) {
+      throw new Error("Planner requires a command.");
     }
 
-    this.stats.total++;
+    //--------------------------------------------------
+    // Normalize Context
+    //--------------------------------------------------
 
-    const cacheKey = input.trim().toLowerCase();
+    const normalizedContext = this.normalizeContext(context);
 
-    if (this.cache.has(cacheKey)) {
-      return this.cache.get(cacheKey);
+    this.log("Planning command:", this.lastInput);
+
+    //--------------------------------------------------
+    // FAST INTENT PARSER
+    //--------------------------------------------------
+
+    let parsed = null;
+
+    try {
+      parsed = await this.parseIntent(this.lastInput, normalizedContext);
+    } catch (err) {
+      this.warn("Intent parser failed:", err.message);
     }
 
-    //------------------------------------------------------
-    // 1. Parse intent
-    //------------------------------------------------------
+    //--------------------------------------------------
+    // Normalize Parsed Result
+    //--------------------------------------------------
 
-    const parsed = this.parser.parse(input);
+    parsed = this.normalizeParsedIntent(parsed, this.lastInput);
 
-    if (!parsed.steps.length) {
-      return this.emptyPlan();
+    //--------------------------------------------------
+    // CHAT DETECTION
+    //--------------------------------------------------
+
+    if (parsed.mode === "chat") {
+      this.stats.chatCalls++;
+
+      const chatPlan = this.createChatPlan(parsed, this.lastInput);
+
+      return this.finalizePlan(chatPlan, started);
     }
 
-    this.stats.parserResolved++;
+    //--------------------------------------------------
+    // FAST ACTION PATH
+    //--------------------------------------------------
 
-    //------------------------------------------------------
-    // 2. Resolve every step
-    //------------------------------------------------------
+    if (parsed.steps?.length) {
+      const fastPlan = await this.evaluateFastPlan(parsed, normalizedContext);
 
-    const resolvedSteps = [];
+      if (fastPlan.accept) {
+        this.stats.fastPathCalls++;
 
-    for (const step of parsed.steps) {
-      const resolved = await this.resolveStep(step, context);
+        this.stats.actionCalls++;
 
-      resolvedSteps.push(resolved);
+        if (fastPlan.steps.length > 1) {
+          this.stats.multiStepCalls++;
+        }
+
+        this.log("Fast path accepted:", fastPlan.reason);
+
+        return this.finalizePlan(fastPlan.plan, started);
+      }
     }
 
-    const plan = {
-      source: "planner",
+    //--------------------------------------------------
+    // LLM FALLBACK
+    //--------------------------------------------------
 
-      mode: parsed.mode,
+    if (this.options.useLLM) {
+      try {
+        this.stats.llmCalls++;
 
-      confidence: parsed.confidence,
+        const llmPlan = await this.planWithLLM(
+          this.lastInput,
+          normalizedContext,
+          parsed,
+        );
 
-      steps: resolvedSteps,
+        if (llmPlan) {
+          this.stats.actionCalls++;
+
+          if (llmPlan.steps?.length > 1) {
+            this.stats.multiStepCalls++;
+          }
+
+          return this.finalizePlan(llmPlan, started);
+        }
+      } catch (err) {
+        this.stats.llmFailures++;
+
+        this.lastError = err;
+
+        this.warn("LLM planning failed:", err.message);
+      }
+    }
+
+    //--------------------------------------------------
+    // FINAL FALLBACK
+    //--------------------------------------------------
+
+    if (parsed.steps?.length) {
+      this.stats.actionCalls++;
+
+      return this.finalizePlan(
+        this.createFallbackPlan(parsed, this.lastInput),
+
+        started,
+      );
+    }
+
+    //--------------------------------------------------
+    // Nothing Resolved
+    //--------------------------------------------------
+
+    this.stats.failedPlans++;
+
+    throw new Error(`Unable to understand command: "${this.lastInput}"`);
+  }
+
+  //======================================================
+  // INTENT PARSER
+  //======================================================
+
+  async parseIntent(input, context) {
+    //--------------------------------------------------
+    // IntentParser should remain fast.
+    //
+    // No LLM.
+    // No fuzzy matching.
+    //--------------------------------------------------
+
+    if (typeof this.intentParser.parse === "function") {
+      return await this.intentParser.parse(input, context);
+    }
+
+    throw new Error("IntentParser.parse() is not available.");
+  }
+
+  //======================================================
+  // FAST PLAN EVALUATION
+  //======================================================
+
+  async evaluateFastPlan(parsed, context) {
+    const steps = this.normalizeSteps(parsed.steps);
+
+    if (!steps.length) {
+      return {
+        accept: false,
+
+        reason: "No executable steps found.",
+
+        steps: [],
+
+        plan: null,
+      };
+    }
+
+    //--------------------------------------------------
+    // Limit Steps
+    //--------------------------------------------------
+
+    const limitedSteps = steps.slice(0, this.options.maxSteps);
+
+    //--------------------------------------------------
+    // Validate Every Step
+    //--------------------------------------------------
+
+    const validatedSteps = [];
+
+    let requiresLLM = false;
+
+    for (let index = 0; index < limitedSteps.length; index++) {
+      const step = limitedSteps[index];
+
+      const validation = await this.validateStep(step, context);
+
+      //--------------------------------------------------
+      // Invalid step
+      //--------------------------------------------------
+
+      if (!validation.valid) {
+        requiresLLM = true;
+
+        this.log(
+          `Step ${index + 1} requires planner fallback:`,
+
+          validation.reason,
+        );
+      }
+
+      //--------------------------------------------------
+      // Low confidence
+      //--------------------------------------------------
+
+      if (
+        validation.confidence !== null &&
+        validation.confidence < this.options.plannerThreshold
+      ) {
+        requiresLLM = true;
+      }
+
+      validatedSteps.push({
+        ...step,
+
+        confidence: validation.confidence,
+
+        validation: validation.reason,
+      });
+    }
+
+    //--------------------------------------------------
+    // If explicit multi-step command exists,
+    // preserve ALL steps.
+    //
+    // Never silently skip a step.
+    //--------------------------------------------------
+
+    if (validatedSteps.length > 1) {
+      this.log(
+        "Multi-step plan detected:",
+
+        validatedSteps.length,
+      );
+
+      this.stats.multiStepCalls++;
+    }
+
+    //--------------------------------------------------
+    // High confidence direct path
+    //--------------------------------------------------
+
+    if (!requiresLLM) {
+      return {
+        accept: true,
+
+        reason: "All steps resolved with sufficient confidence.",
+
+        steps: validatedSteps,
+
+        plan: {
+          success: true,
+
+          mode: "action",
+
+          source: "intent-parser",
+
+          confidence: this.calculatePlanConfidence(validatedSteps),
+
+          steps: validatedSteps,
+        },
+      };
+    }
+
+    //--------------------------------------------------
+    // Low confidence
+    //--------------------------------------------------
+
+    return {
+      accept: false,
+
+      reason: "One or more steps require LLM clarification.",
+
+      steps: validatedSteps,
+
+      plan: null,
     };
+  }
 
-    this.cache.set(cacheKey, plan);
+  //======================================================
+  // STEP VALIDATION
+  //======================================================
 
-    if (this.cache.size > 500) {
-      const first = this.cache.keys().next().value;
+  async validateStep(step, context) {
+    //--------------------------------------------------
+    // Basic validation
+    //--------------------------------------------------
 
-      this.cache.delete(first);
+    if (!step || typeof step !== "object") {
+      return {
+        valid: false,
+
+        confidence: 0,
+
+        reason: "Invalid step.",
+      };
+    }
+
+    const action = this.normalizeAction(step.action || step.tool);
+
+    //--------------------------------------------------
+    // Chat
+    //--------------------------------------------------
+
+    if (action === "chat") {
+      return {
+        valid: true,
+
+        confidence: 100,
+
+        reason: "Chat action.",
+      };
+    }
+
+    //--------------------------------------------------
+    // Navigation
+    //--------------------------------------------------
+
+    if (action === "navigate") {
+      if (step.url || step.value || step.target) {
+        return {
+          valid: true,
+
+          confidence: 100,
+
+          reason: "Navigation target available.",
+        };
+      }
+
+      return {
+        valid: false,
+
+        confidence: 0,
+
+        reason: "Navigation URL missing.",
+      };
+    }
+
+    //--------------------------------------------------
+    // Wait
+    //--------------------------------------------------
+
+    if (action === "wait") {
+      return {
+        valid: true,
+
+        confidence: 100,
+
+        reason: "Wait action.",
+      };
+    }
+
+    //--------------------------------------------------
+    // Keyboard
+    //--------------------------------------------------
+
+    if (action === "press") {
+      if (step.key || step.value || step.target) {
+        return {
+          valid: true,
+
+          confidence: 100,
+
+          reason: "Keyboard key available.",
+        };
+      }
+    }
+
+    //--------------------------------------------------
+    // Actions requiring target
+    //--------------------------------------------------
+
+    const query = step.target || step.label || step.text || step.selector;
+
+    if (!query) {
+      return {
+        valid: false,
+
+        confidence: 0,
+
+        reason: "Action target missing.",
+      };
+    }
+
+    //--------------------------------------------------
+    // Scoring Engine
+    //
+    // IMPORTANT:
+    // Planner does NOT perform fuzzy matching.
+    // ScoringEngine owns candidate ranking.
+    //--------------------------------------------------
+
+    if (!this.options.enableScoring) {
+      return {
+        valid: true,
+
+        confidence: 70,
+
+        reason: "Scoring disabled.",
+      };
+    }
+
+    //--------------------------------------------------
+    // Use provided ranked candidates
+    //--------------------------------------------------
+
+    let ranked = context.ranked;
+
+    if (!Array.isArray(ranked) || !ranked.length) {
+      try {
+        if (
+          this.scoringEngine &&
+          typeof this.scoringEngine.rankCandidates === "function"
+        ) {
+          ranked = this.scoringEngine.rankCandidates(query);
+        }
+      } catch (err) {
+        this.log("Scoring failed:", err.message);
+      }
+    }
+
+    //--------------------------------------------------
+    // No candidates
+    //--------------------------------------------------
+
+    if (!ranked?.length) {
+      return {
+        valid: true,
+
+        confidence: null,
+
+        reason: "No DOM candidates available; LLM may be required.",
+      };
+    }
+
+    //--------------------------------------------------
+    // Best Candidate
+    //--------------------------------------------------
+
+    const best = ranked[0];
+
+    const confidence = Number(best?.score ?? best?.confidence ?? 0);
+
+    //--------------------------------------------------
+    // Ambiguous Candidates
+    //--------------------------------------------------
+
+    const second = ranked[1];
+
+    const secondScore = Number(second?.score ?? second?.confidence ?? 0);
+
+    const ambiguous = second && Math.abs(confidence - secondScore) < 5;
+
+    if (ambiguous) {
+      return {
+        valid: true,
+
+        confidence,
+
+        reason: "Top candidates are ambiguous.",
+      };
+    }
+
+    //--------------------------------------------------
+    // Successful candidate
+    //--------------------------------------------------
+
+    return {
+      valid: true,
+
+      confidence,
+
+      candidate: best,
+
+      ranked,
+
+      reason:
+        confidence >= this.options.plannerThreshold
+          ? "Candidate confidence is sufficient."
+          : "Candidate confidence is below planner threshold.",
+    };
+  }
+
+  //======================================================
+  // LLM PLANNER
+  //======================================================
+
+  async planWithLLM(input, context, parsed) {
+    const prompt = this.buildPrompt(input, context, parsed);
+
+    this.log("Calling LLM...");
+
+    let response;
+
+    if (this.options.provider === "ollama") {
+      response = await this.callOllama(prompt);
+    } else {
+      response = await this.callOpenAICompatible(prompt);
+    }
+
+    //--------------------------------------------------
+    // Parse LLM response
+    //--------------------------------------------------
+
+    let plan = this.parseLLMResponse(response);
+
+    //--------------------------------------------------
+    // Repair JSON
+    //--------------------------------------------------
+
+    if (!plan) {
+      const repaired = this.repairJSON(response);
+
+      if (repaired) {
+        this.stats.repairedPlans++;
+
+        plan = repaired;
+      }
+    }
+
+    //--------------------------------------------------
+    // Validate
+    //--------------------------------------------------
+
+    if (!plan) {
+      throw new Error("LLM returned invalid plan.");
+    }
+
+    //--------------------------------------------------
+    // Normalize
+    //--------------------------------------------------
+
+    plan = this.normalizeLLMPlan(plan);
+
+    //--------------------------------------------------
+    // Validate normalized plan
+    //--------------------------------------------------
+
+    if (!plan.steps.length) {
+      throw new Error("LLM plan contains no executable steps.");
     }
 
     return plan;
   }
 
-  /**
-   * Planner used by SelfHealingEngine
-   */
-  async replan(input, context = {}) {
-    return this.plan(input, context);
-  }
-  //==========================================================
-  // STEP RESOLUTION
-  //==========================================================
+  //======================================================
+  // OLLAMA
+  //======================================================
 
-  /**
-   * Resolve a parsed step into an executable step.
-   *
-   * IMPORTANT:
-   * Planner never performs fuzzy matching.
-   * All element matching is delegated to ScoringEngine.
-   */
-  async resolveStep(step, context = {}) {
-    //------------------------------------------------------
-    // Chat messages
-    //------------------------------------------------------
+  async callOllama(prompt) {
+    const controller = new AbortController();
 
-    if (step.action === "chat") {
-      return step;
-    }
+    const timeout = setTimeout(
+      () => controller.abort(),
 
-    //------------------------------------------------------
-    // Navigation
-    //------------------------------------------------------
-
-    if (step.action === "navigate") {
-      return {
-        ...step,
-
-        executable: true,
-
-        confidence: 100,
-      };
-    }
-
-    //------------------------------------------------------
-    // Search
-    //------------------------------------------------------
-
-    if (step.action === "search") {
-      return {
-        ...step,
-
-        executable: true,
-
-        confidence: 100,
-      };
-    }
-
-    //------------------------------------------------------
-    // Wait
-    //------------------------------------------------------
-
-    if (step.action === "wait") {
-      return {
-        ...step,
-
-        executable: true,
-
-        confidence: 100,
-      };
-    }
-
-    //------------------------------------------------------
-    // Actions requiring DOM lookup
-    //------------------------------------------------------
-
-    if (
-      [
-        "click",
-
-        "type",
-
-        "hover",
-
-        "check",
-
-        "uncheck",
-
-        "upload",
-
-        "download",
-      ].includes(step.action)
-    ) {
-      return await this.resolveElementStep(
-        step,
-
-        context,
-      );
-    }
-
-    //------------------------------------------------------
-
-    return {
-      ...step,
-
-      executable: false,
-
-      confidence: 0,
-    };
-  }
-
-  //==========================================================
-  // DOM RESOLUTION
-  //==========================================================
-
-  async resolveElementStep(step, context = {}) {
-    //------------------------------------------------------
-    // Refresh DOM Index
-    //------------------------------------------------------
-
-    const elements = await this.collectDOM(context);
-
-    this.scoring.buildIndex(elements);
-
-    //------------------------------------------------------
-    // Ask Scoring Engine
-    //------------------------------------------------------
-
-    const result = this.scoring.resolve(
-      step.target || step.text || step.value || "",
+      this.options.timeout,
     );
 
-    //------------------------------------------------------
-    // Perfect Match
-    //------------------------------------------------------
-
-    if (
-      result.success &&
-      result.confidence >= this.options.autoExecuteThreshold
-    ) {
-      this.stats.scoringResolved++;
-
-      return {
-        ...step,
-
-        executable: true,
-
-        plannerUsed: false,
-
-        confidence: result.confidence,
-
-        score: result.confidence,
-
-        candidate: result.best,
-
-        element: result.best.element,
-      };
-    }
-
-    //------------------------------------------------------
-    // Good Match
-    //------------------------------------------------------
-
-    if (result.success && result.confidence >= this.options.plannerThreshold) {
-      this.stats.scoringResolved++;
-
-      return {
-        ...step,
-
-        executable: true,
-
-        plannerUsed: false,
-
-        confidence: result.confidence,
-
-        score: result.confidence,
-
-        candidate: result.best,
-
-        element: result.best.element,
-      };
-    }
-
-    //------------------------------------------------------
-    // Planner Required
-    //------------------------------------------------------
-
-    return await this.resolveUsingLLM(
-      step,
-
-      result,
-
-      context,
-    );
-  }
-
-  //==========================================================
-  // DOM COLLECTION
-  //==========================================================
-
-  async collectDOM(context = {}) {
-    //------------------------------------------------------
-    // Context supplied DOM
-    //------------------------------------------------------
-
-    if (Array.isArray(context.elements)) {
-      return context.elements;
-    }
-
-    //------------------------------------------------------
-    // Browser helper
-    //------------------------------------------------------
-
-    if (this.browser?.collectElements) {
-      return await this.browser.collectElements();
-    }
-
-    //------------------------------------------------------
-    // MCP helper
-    //------------------------------------------------------
-
-    if (this.browser?.getAllElements) {
-      return await this.browser.getAllElements();
-    }
-
-    //------------------------------------------------------
-    // Self-healing helper
-    //------------------------------------------------------
-
-    if (this.healing?.collectDOM) {
-      return await this.healing.collectDOM();
-    }
-
-    return [];
-  }
-
-  //==========================================================
-  // LLM RESOLUTION
-  //==========================================================
-
-  async resolveUsingLLM(step, scoreResult, context = {}) {
-    //------------------------------------------------------
-    // LLM disabled
-    //------------------------------------------------------
-
-    if (!this.useLLM) {
-      this.stats.failures++;
-
-      return {
-        ...step,
-
-        executable: false,
-
-        plannerUsed: false,
-
-        confidence: scoreResult?.confidence || 0,
-
-        candidates: scoreResult?.candidates || [],
-
-        reason: "Planner disabled",
-      };
-    }
-
-    //------------------------------------------------------
-    // Build prompt
-    //------------------------------------------------------
-
-    const prompt = this.buildPrompt(step, scoreResult, context);
-
-    //------------------------------------------------------
-    // Call LLM
-    //------------------------------------------------------
-
-    const response = await this.callLLM(prompt);
-
-    if (!response) {
-      this.stats.failures++;
-
-      return {
-        ...step,
-
-        executable: false,
-
-        plannerUsed: true,
-
-        confidence: scoreResult?.confidence || 0,
-
-        reason: "LLM unavailable",
-      };
-    }
-
-    //------------------------------------------------------
-    // Parse LLM response
-    //------------------------------------------------------
-
-    const repaired = this.safeJSON(response);
-
-    if (!repaired?.target) {
-      this.stats.failures++;
-
-      return {
-        ...step,
-
-        executable: false,
-
-        plannerUsed: true,
-
-        confidence: scoreResult?.confidence || 0,
-
-        reason: "Invalid LLM response",
-      };
-    }
-
-    //------------------------------------------------------
-    // Re-score with corrected target
-    //------------------------------------------------------
-
-    const rescored = this.scoring.resolve(repaired.target);
-
-    if (!rescored.success) {
-      this.stats.failures++;
-
-      return {
-        ...step,
-
-        executable: false,
-
-        plannerUsed: true,
-
-        confidence: rescored.confidence,
-
-        correctedTarget: repaired.target,
-
-        candidates: rescored.candidates || [],
-      };
-    }
-
-    //------------------------------------------------------
-    // Success
-    //------------------------------------------------------
-
-    this.stats.llmResolved++;
-
-    return {
-      ...step,
-
-      executable: true,
-
-      plannerUsed: true,
-
-      confidence: rescored.confidence,
-
-      correctedTarget: repaired.target,
-
-      candidate: rescored.best,
-
-      element: rescored.best.element,
-
-      llm: repaired,
-    };
-  }
-
-  //==========================================================
-  // PROMPT BUILDER
-  //==========================================================
-
-  buildPrompt(step, scoreResult = {}, context = {}) {
-    const candidates = (scoreResult.candidates || [])
-      .slice(0, 10)
-      .map((x) => x.text)
-      .filter(Boolean);
-
-    return `
-You are a browser planning assistant.
-
-DO NOT perform browser actions.
-
-ONLY determine the correct target.
-
-Action:
-${step.action}
-
-Original Target:
-${step.target || step.text || ""}
-
-Top Candidates:
-${JSON.stringify(candidates, null, 2)}
-
-Return ONLY valid JSON.
-
-Example:
-
-{
-    "target":"Punch In"
-}
-`;
-  }
-
-  //==========================================================
-  // LLM CALL
-  //==========================================================
-
-  async callLLM(prompt) {
     try {
-      const response = await fetch(this.options.ollamaEndpoint, {
+      const response = await fetch(this.options.endpoint, {
         method: "POST",
 
         headers: {
@@ -594,159 +762,723 @@ Example:
         },
 
         body: JSON.stringify({
-          model: this.model,
+          model: this.options.model,
 
           prompt,
 
           stream: false,
+
+          format: "json",
         }),
+
+        signal: controller.signal,
       });
 
-      if (!response.ok) return null;
-
-      const json = await response.json();
-
-      return json.response;
-    } catch (err) {
-      if (this.options.debug) {
-        console.error("[Planner]", err.message);
+      if (!response.ok) {
+        throw new Error(`Ollama HTTP ${response.status}`);
       }
 
-      return null;
+      const data = await response.json();
+
+      return data.response || data.output || data.text || "";
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
-  //==========================================================
-  // JSON UTILITIES
-  //==========================================================
+  //======================================================
+  // OPENAI-COMPATIBLE
+  //======================================================
 
-  safeJSON(text) {
-    if (!text) return null;
+  async callOpenAICompatible(prompt) {
+    if (!this.options.apiKey) {
+      throw new Error("API key missing.");
+    }
 
-    //------------------------------------------------------
-    // Direct parse
-    //------------------------------------------------------
+    const controller = new AbortController();
+
+    const timeout = setTimeout(
+      () => controller.abort(),
+
+      this.options.timeout,
+    );
+
+    try {
+      const response = await fetch(this.options.endpoint, {
+        method: "POST",
+
+        headers: {
+          "Content-Type": "application/json",
+
+          Authorization: `Bearer ${this.options.apiKey}`,
+        },
+
+        body: JSON.stringify({
+          model: this.options.model,
+
+          messages: [
+            {
+              role: "system",
+
+              content: this.systemPrompt(),
+            },
+
+            {
+              role: "user",
+
+              content: prompt,
+            },
+          ],
+
+          temperature: 0,
+        }),
+
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`LLM HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      return data?.choices?.[0]?.message?.content || "";
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  //======================================================
+  // SYSTEM PROMPT
+  //======================================================
+
+  systemPrompt() {
+    return `You are the planning engine for an AI browser automation system.
+
+Your job is to convert a user's command into a strict JSON execution plan.
+
+Rules:
+
+1. Return JSON only.
+2. Preserve the user's requested step order.
+3. Never skip a requested step.
+4. Never invent unrelated actions.
+5. Use only supported browser actions.
+6. Do not perform fuzzy matching.
+7. Do not guess selectors when a natural-language target is sufficient.
+8. Keep target text close to the user's original wording.
+9. For multiple actions, return every action as a separate ordered step.
+10. Use "chat" mode only for conversational requests.
+
+Supported actions:
+
+click
+type
+select
+hover
+press
+wait
+navigate
+back
+forward
+reload
+scroll
+checkbox
+upload
+
+Example:
+
+{
+  "mode": "action",
+  "steps": [
+    {
+      "action": "click",
+      "target": "Login"
+    }
+  ]
+}
+
+Multi-step example:
+
+{
+  "mode": "action",
+  "steps": [
+    {
+      "action": "click",
+      "target": "Login"
+    },
+    {
+      "action": "type",
+      "target": "Email",
+      "value": "user@example.com"
+    },
+    {
+      "action": "click",
+      "target": "Submit"
+    }
+  ]
+}`;
+  }
+
+  //======================================================
+  // BUILD PROMPT
+  //======================================================
+
+  buildPrompt(input, context, parsed) {
+    const pageText = String(context.pageText || context.text || "").slice(
+      0,
+      this.options.maxContextLength,
+    );
+
+    const ranked = Array.isArray(context.ranked)
+      ? context.ranked.slice(0, 10).map((candidate) => ({
+          text: candidate.text,
+
+          role: candidate.role,
+
+          tag: candidate.tag,
+
+          score: candidate.score,
+        }))
+      : [];
+
+    return `User command:
+${input}
+
+Fast parsed intent:
+${JSON.stringify(parsed || {}, null, 2)}
+
+Top scored DOM candidates:
+${JSON.stringify(ranked, null, 2)}
+
+Current page text:
+${pageText}
+
+Return a valid JSON execution plan only.`;
+  }
+
+  //======================================================
+  // PARSE LLM RESPONSE
+  //======================================================
+
+  parseLLMResponse(response) {
+    if (!response) {
+      return null;
+    }
+
+    if (typeof response === "object") {
+      return response;
+    }
+
+    let text = String(response).trim();
+
+    //--------------------------------------------------
+    // Remove markdown fences
+    //--------------------------------------------------
+
+    text = text
+      .replace(/^```json\s*/i, "")
+      .replace(/^```\s*/i, "")
+      .replace(/\s*```$/i, "")
+      .trim();
+
+    //--------------------------------------------------
+    // Direct JSON
+    //--------------------------------------------------
 
     try {
       return JSON.parse(text);
     } catch {}
 
-    //------------------------------------------------------
-    // Remove markdown
-    //------------------------------------------------------
-
-    try {
-      let cleaned = text
-        .replace(/```json/gi, "")
-        .replace(/```/g, "")
-        .trim();
-
-      return JSON.parse(cleaned);
-    } catch {}
-
-    //------------------------------------------------------
+    //--------------------------------------------------
     // Extract JSON object
-    //------------------------------------------------------
+    //--------------------------------------------------
 
-    try {
-      const start = text.indexOf("{");
-      const end = text.lastIndexOf("}");
+    const start = text.indexOf("{");
 
-      if (start >= 0 && end > start) {
-        return JSON.parse(text.substring(start, end + 1));
-      }
-    } catch {}
+    const end = text.lastIndexOf("}");
+
+    if (start >= 0 && end > start) {
+      try {
+        return JSON.parse(text.slice(start, end + 1));
+      } catch {}
+    }
 
     return null;
   }
 
-  //==========================================================
-  // LEARNING
-  //==========================================================
+  //======================================================
+  // JSON REPAIR
+  //======================================================
 
-  remember(step) {
-    if (!step?.candidate) return;
+  repairJSON(response) {
+    if (!response) {
+      return null;
+    }
+
+    let text = String(response).trim();
+
+    //--------------------------------------------------
+    // Remove markdown
+    //--------------------------------------------------
+
+    text = text
+      .replace(/```json/gi, "")
+      .replace(/```/g, "")
+      .trim();
+
+    //--------------------------------------------------
+    // Find object
+    //--------------------------------------------------
+
+    const start = text.indexOf("{");
+
+    const end = text.lastIndexOf("}");
+
+    if (start < 0 || end < start) {
+      return null;
+    }
+
+    text = text.slice(start, end + 1);
+
+    //--------------------------------------------------
+    // Common repairs
+    //--------------------------------------------------
+
+    text = text.replace(/,\s*([}\]])/g, "$1").replace(/'/g, '"');
 
     try {
-      this.scoring.remember(
-        step.correctedTarget || step.target || step.text || "",
-
-        step.candidate,
-      );
-    } catch {}
-
-    this.history.push({
-      timestamp: Date.now(),
-
-      action: step.action,
-
-      target: step.correctedTarget || step.target || step.text || "",
-
-      confidence: step.confidence,
-
-      plannerUsed: step.plannerUsed,
-    });
-
-    if (this.history.length > 1000) {
-      this.history.shift();
+      return JSON.parse(text);
+    } catch {
+      return null;
     }
   }
 
-  //==========================================================
-  // CACHE
-  //==========================================================
+  //======================================================
+  // NORMALIZE LLM PLAN
+  //======================================================
 
-  clearCache() {
-    this.cache.clear();
-  }
+  normalizeLLMPlan(plan) {
+    const mode = plan.mode === "chat" ? "chat" : "action";
 
-  clearHistory() {
-    this.history = [];
-  }
+    //--------------------------------------------------
+    // Chat
+    //--------------------------------------------------
 
-  //==========================================================
-  // STATISTICS
-  //==========================================================
+    if (mode === "chat") {
+      return {
+        success: true,
 
-  getStats() {
+        mode: "chat",
+
+        source: "llm",
+
+        reply: String(plan.reply || ""),
+
+        steps: [],
+      };
+    }
+
+    //--------------------------------------------------
+    // Steps
+    //--------------------------------------------------
+
+    const rawSteps = Array.isArray(plan.steps) ? plan.steps : [];
+
+    const steps = this.normalizeSteps(rawSteps);
+
     return {
-      ...this.stats,
+      success: true,
 
-      cacheSize: this.cache.size,
+      mode: "action",
 
-      history: this.history.length,
+      source: "llm",
 
-      parser: this.parser?.constructor?.name,
+      confidence: Number(plan.confidence ?? 70),
 
-      scorer: this.scoring?.constructor?.name,
-
-      healing: this.healing?.constructor?.name,
+      steps,
     };
   }
 
-  //==========================================================
-  // EMPTY PLAN
-  //==========================================================
+  //======================================================
+  // NORMALIZE PARSED INTENT
+  //======================================================
 
-  emptyPlan() {
+  normalizeParsedIntent(parsed, input) {
+    if (!parsed) {
+      return {
+        mode: "unknown",
+
+        steps: [],
+      };
+    }
+
+    //--------------------------------------------------
+    // Already structured
+    //--------------------------------------------------
+
+    if (typeof parsed === "object") {
+      const mode = parsed.mode || (parsed.steps?.length ? "action" : "unknown");
+
+      return {
+        ...parsed,
+
+        mode,
+
+        steps: this.normalizeSteps(parsed.steps || []),
+      };
+    }
+
     return {
-      source: "planner",
-
-      mode: "empty",
-
-      confidence: 0,
+      mode: "unknown",
 
       steps: [],
     };
   }
 
-  //==========================================================
-  // DESTROY
-  //==========================================================
+  //======================================================
+  // NORMALIZE STEPS
+  //======================================================
 
-  destroy() {
-    this.clearCache();
+  normalizeSteps(steps) {
+    if (!Array.isArray(steps)) {
+      return [];
+    }
 
-    this.clearHistory();
+    return steps
+
+      .map((step, index) => {
+        if (!step || typeof step !== "object") {
+          return null;
+        }
+
+        const action = this.normalizeAction(step.action || step.tool);
+
+        return {
+          ...step,
+
+          id: step.id || `step-${index + 1}`,
+
+          order: index + 1,
+
+          action,
+
+          tool: this.actionToTool(action),
+
+          target: step.target ?? step.label ?? step.text ?? "",
+
+          value: step.value ?? step.input ?? undefined,
+        };
+      })
+
+      .filter(Boolean)
+
+      .slice(0, this.options.maxSteps);
+  }
+
+  //======================================================
+  // ACTION NORMALIZER
+  //======================================================
+
+  normalizeAction(action) {
+    if (!action) {
+      return "";
+    }
+
+    const normalized = String(action)
+      .trim()
+      .toLowerCase()
+      .replace(/[\s_-]+/g, "");
+
+    const aliases = {
+      click: "click",
+
+      press: "press",
+
+      keypress: "press",
+
+      type: "type",
+
+      fill: "type",
+
+      input: "type",
+
+      select: "select",
+
+      selectoption: "select",
+
+      hover: "hover",
+
+      mouseover: "hover",
+
+      wait: "wait",
+
+      delay: "wait",
+
+      navigate: "navigate",
+
+      goto: "navigate",
+
+      open: "navigate",
+
+      back: "back",
+
+      forward: "forward",
+
+      reload: "reload",
+
+      refresh: "reload",
+
+      scroll: "scroll",
+
+      checkbox: "checkbox",
+
+      check: "checkbox",
+
+      upload: "upload",
+
+      chat: "chat",
+    };
+
+    return aliases[normalized] || normalized;
+  }
+
+  //======================================================
+  // ACTION → TOOL
+  //======================================================
+
+  actionToTool(action) {
+    const map = {
+      click: "click",
+
+      type: "type",
+
+      select: "select",
+
+      hover: "hover",
+
+      press: "press",
+
+      wait: "wait",
+
+      navigate: "navigate",
+
+      back: "back",
+
+      forward: "forward",
+
+      reload: "reload",
+
+      scroll: "scroll",
+
+      checkbox: "checkbox",
+
+      upload: "upload",
+    };
+
+    return map[action] || action;
+  }
+
+  //======================================================
+  // CHAT PLAN
+  //======================================================
+
+  createChatPlan(parsed, input) {
+    return {
+      success: true,
+
+      mode: "chat",
+
+      source: "intent-parser",
+
+      reply: parsed.reply || `I understood your request: ${input}`,
+
+      steps: [],
+    };
+  }
+
+  //======================================================
+  // FALLBACK PLAN
+  //======================================================
+
+  createFallbackPlan(parsed, input) {
+    const steps = this.normalizeSteps(parsed.steps || []);
+
+    return {
+      success: true,
+
+      mode: steps.length ? "action" : "chat",
+
+      source: "fallback",
+
+      confidence: 50,
+
+      reply: steps.length ? undefined : `I understood: ${input}`,
+
+      steps,
+    };
+  }
+
+  //======================================================
+  // PLAN CONFIDENCE
+  //======================================================
+
+  calculatePlanConfidence(steps) {
+    if (!steps?.length) {
+      return 0;
+    }
+
+    const scores = steps.map((step) => Number(step.confidence ?? 100));
+
+    const total = scores.reduce((sum, score) => sum + score, 0);
+
+    return Number((total / scores.length).toFixed(2));
+  }
+
+  //======================================================
+  // CONTEXT NORMALIZER
+  //======================================================
+
+  normalizeContext(context) {
+    if (!context || typeof context !== "object") {
+      return {
+        pageText: "",
+
+        ranked: [],
+
+        query: "",
+      };
+    }
+
+    return {
+      ...context,
+
+      pageText: String(context.pageText || context.text || "").slice(
+        0,
+        this.options.maxContextLength,
+      ),
+
+      ranked: Array.isArray(context.ranked) ? context.ranked : [],
+    };
+  }
+
+  //======================================================
+  // FINALIZE PLAN
+  //======================================================
+
+  finalizePlan(plan, started) {
+    const finalPlan = {
+      success: plan?.success !== false,
+
+      mode: plan?.mode || "action",
+
+      source: plan?.source || "planner",
+
+      confidence: Number(
+        plan?.confidence ?? this.calculatePlanConfidence(plan?.steps || []),
+      ),
+
+      steps: this.normalizeSteps(plan?.steps || []),
+
+      ...(plan?.reply !== undefined
+        ? {
+            reply: plan.reply,
+          }
+        : {}),
+
+      metadata: {
+        planningTime: Date.now() - started,
+
+        timestamp: Date.now(),
+
+        stepCount: plan?.steps?.length || 0,
+      },
+    };
+
+    //--------------------------------------------------
+    // Preserve chat response
+    //--------------------------------------------------
+
+    if (finalPlan.mode === "chat") {
+      finalPlan.steps = [];
+    }
+
+    //--------------------------------------------------
+    // Store history
+    //--------------------------------------------------
+
+    this.lastPlan = finalPlan;
+
+    this.history.push({
+      input: this.lastInput,
+
+      plan: finalPlan,
+
+      timestamp: Date.now(),
+    });
+
+    //--------------------------------------------------
+    // Keep history bounded
+    //--------------------------------------------------
+
+    if (this.history.length > 100) {
+      this.history.shift();
+    }
+
+    this.stats.successfulPlans++;
+
+    this.log("Final plan:", JSON.stringify(finalPlan, null, 2));
+
+    return finalPlan;
+  }
+
+  //======================================================
+  // HISTORY
+  //======================================================
+
+  getLastPlan() {
+    return this.lastPlan;
+  }
+
+  getHistory() {
+    return [...this.history];
+  }
+
+  clearHistory() {
+    this.history = [];
+
+    this.lastPlan = null;
+  }
+
+  //======================================================
+  // STATISTICS
+  //======================================================
+
+  getStatistics() {
+    return {
+      ...this.stats,
+
+      lastInput: this.lastInput,
+
+      historySize: this.history.length,
+
+      lastPlanMode: this.lastPlan?.mode || null,
+
+      lastPlanSource: this.lastPlan?.source || null,
+    };
+  }
+
+  //======================================================
+  // RESET
+  //======================================================
+
+  reset() {
+    this.lastPlan = null;
+
+    this.lastInput = "";
+
+    this.lastError = null;
+
+    this.history = [];
   }
 }

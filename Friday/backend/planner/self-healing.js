@@ -1,671 +1,965 @@
-/**
- * backend/planner/self-healing.js
- *
- * Ultra Self Healing Engine
- *
- * Responsibilities
- * ----------------
- * ✔ Retry failed actions
- * ✔ DOM recovery
- * ✔ Accessibility recovery
- * ✔ iframe recovery
- * ✔ ShadowDOM recovery
- * ✔ Overlay recovery
- * ✔ ScoringEngine integration
- * ✔ Planner fallback
- * ✔ Adaptive retries
- * ✔ Candidate learning
- * ✔ Recovery statistics
- */
+// backend/planner/self-healing.js
+//
+// ============================================================
+// Jarvis Browser - Self Healing Engine
+// backend/planner/self-healing.js
+//
+// Purpose
+// ------------------------------------------------------------
+// Automatically recover failed browser/planner actions.
+//
+// Architecture
+// ------------------------------------------------------------
+//
+// User Command
+//      │
+//      ▼
+// Intent Parser
+//      │
+//      ▼
+// Scoring Engine
+//      │
+//      ▼
+// Planner
+//      │
+//      ▼
+// Resolver
+//      │
+//      ▼
+// Executor
+//      │
+//      ├── SUCCESS ───────────────► Complete
+//      │
+//      └── FAILURE
+//            │
+//            ▼
+//       SelfHealing
+//            │
+//            ├── Classify Error
+//            ├── Inspect Failure
+//            ├── Generate Recovery
+//            ├── Retry
+//            ├── Change Strategy
+//            └── Report Result
+//
+// Responsibilities
+// ------------------------------------------------------------
+// ✔ Detect failed actions
+// ✔ Classify common browser failures
+// ✔ Retry failed actions
+// ✔ Change execution strategy
+// ✔ Handle stale elements
+// ✔ Handle timeout failures
+// ✔ Handle selector failures
+// ✔ Handle iframe failures
+// ✔ Handle visibility failures
+// ✔ Handle navigation failures
+// ✔ Handle click failures
+// ✔ Handle type/input failures
+// ✔ Generate recovery strategies
+// ✔ Maintain healing history
+// ✔ Prevent infinite retry loops
+// ✔ Provide diagnostics
+//
+// IMPORTANT
+// ------------------------------------------------------------
+// This file NEVER:
+//
+// ❌ Performs DOM ranking
+// ❌ Performs fuzzy matching
+// ❌ Replaces ScoringEngine
+// ❌ Replaces Planner
+// ❌ Directly controls browser unless explicitly injected
+//
+// SelfHealing is a recovery/orchestration layer.
+//
+// ============================================================
 
-export default class SelfHealingEngine {
+// ============================================================
+// DEFAULT OPTIONS
+// ============================================================
+
+const DEFAULT_OPTIONS = {
+  maxRetries: 3,
+
+  retryDelay: 250,
+
+  backoffMultiplier: 1.5,
+
+  maxRetryDelay: 3000,
+
+  enableAlternativeStrategies: true,
+
+  enableErrorClassification: true,
+
+  enableHistory: true,
+
+  maxHistory: 500,
+
+  stopOnNavigationFailure: false,
+
+  debug: false,
+
+  logger: console,
+};
+
+// ============================================================
+// ERROR TYPES
+// ============================================================
+
+export const ERROR_TYPES = Object.freeze({
+  UNKNOWN: "UNKNOWN",
+
+  TIMEOUT: "TIMEOUT",
+
+  SELECTOR_NOT_FOUND: "SELECTOR_NOT_FOUND",
+
+  ELEMENT_NOT_FOUND: "ELEMENT_NOT_FOUND",
+
+  ELEMENT_NOT_VISIBLE: "ELEMENT_NOT_VISIBLE",
+
+  ELEMENT_NOT_INTERACTABLE: "ELEMENT_NOT_INTERACTABLE",
+
+  CLICK_FAILED: "CLICK_FAILED",
+
+  TYPE_FAILED: "TYPE_FAILED",
+
+  NAVIGATION_FAILED: "NAVIGATION_FAILED",
+
+  FRAME_NOT_FOUND: "FRAME_NOT_FOUND",
+
+  IFRAME_ERROR: "IFRAME_ERROR",
+
+  STALE_ELEMENT: "STALE_ELEMENT",
+
+  DETACHED_ELEMENT: "DETACHED_ELEMENT",
+
+  PAGE_CLOSED: "PAGE_CLOSED",
+
+  CONTEXT_CLOSED: "CONTEXT_CLOSED",
+
+  BROWSER_ERROR: "BROWSER_ERROR",
+
+  NETWORK_ERROR: "NETWORK_ERROR",
+
+  PERMISSION_ERROR: "PERMISSION_ERROR",
+
+  VALIDATION_ERROR: "VALIDATION_ERROR",
+});
+
+// ============================================================
+// RECOVERY STRATEGIES
+// ============================================================
+
+export const RECOVERY_STRATEGIES = Object.freeze({
+  RETRY: "retry",
+
+  WAIT: "wait",
+
+  RELOCATE: "relocate",
+
+  REFRESH: "refresh",
+
+  RELOAD: "reload",
+
+  RESELECT: "reselect",
+
+  SCROLL_INTO_VIEW: "scroll_into_view",
+
+  FORCE_CLICK: "force_click",
+
+  JAVASCRIPT_CLICK: "javascript_click",
+
+  FRAME_SEARCH: "frame_search",
+
+  FRAME_RETRY: "frame_retry",
+
+  ALTERNATIVE_SELECTOR: "alternative_selector",
+
+  ALTERNATIVE_TEXT: "alternative_text",
+
+  REBUILD_PLAN: "rebuild_plan",
+
+  ABORT: "abort",
+});
+
+// ============================================================
+// SELF HEALING ENGINE
+// ============================================================
+
+class SelfHealing {
   constructor(options = {}) {
-    //--------------------------------------------------
-    // Configuration
-    //--------------------------------------------------
-
     this.options = {
-      maxRetries: 4,
-
-      retryDelay: 300,
-
-      adaptiveDelay: true,
-
-      enableLearning: true,
-
-      enablePlanner: true,
-
-      enableDOMRecovery: true,
-
-      enableFrameRecovery: true,
-
-      enableShadowRecovery: true,
-
-      enableOverlayRecovery: true,
-
-      enableNavigationRecovery: true,
-
-      enableAccessibilityRecovery: true,
-
-      debug: false,
-
-      logger: console,
-
+      ...DEFAULT_OPTIONS,
       ...options,
     };
 
-    //--------------------------------------------------
-    // Dependencies
-    //--------------------------------------------------
-
-    this.browser = options.browser || null;
-
-    this.scoringEngine = options.scoringEngine || null;
-
-    this.planner = options.planner || null;
-
-    //--------------------------------------------------
-    // Runtime
-    //--------------------------------------------------
+    this.logger = this.options.logger || console;
 
     this.history = [];
 
-    this.recoveryCache = new Map();
+    this.activeAttempts = new Map();
 
-    this.lastRecovery = null;
+    this.stats = {
+      totalFailures: 0,
 
-    this.runningRecovery = false;
+      totalRetries: 0,
 
-    //--------------------------------------------------
-    // Statistics
-    //--------------------------------------------------
+      totalRecovered: 0,
 
-    this.metrics = {
-      executions: 0,
+      totalAborted: 0,
 
-      successfulExecutions: 0,
+      byErrorType: {},
 
-      failedExecutions: 0,
-
-      retries: 0,
-
-      timeoutRecoveries: 0,
-
-      detachedRecoveries: 0,
-
-      iframeRecoveries: 0,
-
-      shadowRecoveries: 0,
-
-      overlayRecoveries: 0,
-
-      navigationRecoveries: 0,
-
-      accessibilityRecoveries: 0,
-
-      genericRecoveries: 0,
-
-      plannerRecoveries: 0,
-
-      learnedRecoveries: 0,
-
-      domRebuilds: 0,
-
-      cacheHits: 0,
-
-      cacheMisses: 0,
-    };
-
-    //--------------------------------------------------
-    // Error Classifier
-    //--------------------------------------------------
-
-    this.errorMap = {
-      timeout: ["timeout", "timed out", "waiting failed", "exceeded timeout"],
-
-      detached: [
-        "detached",
-
-        "not attached",
-
-        "stale element",
-
-        "execution context was destroyed",
-      ],
-
-      invisible: ["not visible", "hidden", "zero size"],
-
-      disabled: ["disabled", "readonly"],
-
-      intercepted: [
-        "another element",
-
-        "intercepts pointer",
-
-        "would receive the click",
-
-        "element is obscured",
-      ],
-
-      iframe: ["iframe", "frame", "content frame"],
-
-      shadow: ["shadow", "shadowroot", "shadow root"],
-
-      navigation: [
-        "navigation",
-
-        "execution context",
-
-        "page closed",
-
-        "target closed",
-      ],
-
-      accessibility: ["aria", "accessible", "role"],
+      byStrategy: {},
     };
   }
 
-  //==================================================
-  // LOGGING
-  //==================================================
+  // ==========================================================
+  // MAIN EXECUTION WRAPPER
+  // ==========================================================
 
-  log(...args) {
-    if (this.options.debug) {
-      this.options.logger.log(
-        "[SelfHealing]",
-
-        ...args,
-      );
-    }
-  }
-
-  warn(...args) {
-    this.options.logger.warn(
-      "[SelfHealing]",
-
-      ...args,
-    );
-  }
-
-  error(...args) {
-    this.options.logger.error(
-      "[SelfHealing]",
-
-      ...args,
-    );
-  }
-
-  //==================================================
-  // HELPERS
-  //==================================================
-
-  sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  adaptiveRetryDelay(attempt) {
-    if (!this.options.adaptiveDelay) {
-      return this.options.retryDelay;
+  async execute(action, executor, context = {}) {
+    if (typeof executor !== "function") {
+      throw new Error("[SelfHealing] executor must be a function");
     }
 
-    return Math.min(
-      this.options.retryDelay * attempt,
+    const actionId = context.actionId || this._generateActionId();
 
-      3000,
-    );
-  }
+    const maxRetries = Number.isInteger(context.maxRetries)
+      ? context.maxRetries
+      : this.options.maxRetries;
 
-  recordHistory(entry) {
-    this.history.push({
-      timestamp: Date.now(),
-
-      ...entry,
-    });
-
-    if (this.history.length > 1000) {
-      this.history.shift();
-    }
-  }
-
-  clearHistory() {
-    this.history.length = 0;
-  }
-
-  //==================================================
-  // PART 2
-  // Execute
-  // Recovery Router
-  // Error Classification
-  //==================================================
-  //==================================================
-  // EXECUTE
-  //==================================================
-
-  async execute(executor, context = {}) {
-    this.metrics.executions++;
+    let attempt = 0;
 
     let lastError = null;
 
-    for (let attempt = 1; attempt <= this.options.maxRetries; attempt++) {
+    const triedStrategies = new Set();
+
+    while (attempt <= maxRetries) {
       try {
-        const result = await executor(context);
+        this._debug(`Executing action ${actionId}, attempt ${attempt + 1}`);
 
-        this.metrics.successfulExecutions++;
-
-        this.recordHistory({
-          success: true,
-
-          attempt,
-
-          action: context.action,
-
-          target: context.query || context.target,
-        });
-
-        return result;
-      } catch (err) {
-        lastError = err;
-
-        this.metrics.retries++;
-
-        this.warn(
-          `Attempt ${attempt}/${this.options.maxRetries} failed:`,
-
-          err.message,
-        );
-
-        //--------------------------------------------------
-        // Try recovery
-        //--------------------------------------------------
-
-        const recovered = await this.recover(
-          err,
+        const result = await executor({
+          action,
 
           context,
 
           attempt,
+
+          actionId,
+
+          strategy: context.strategy || "default",
+        });
+
+        this.stats.totalRetries += attempt;
+
+        if (attempt > 0) {
+          this.stats.totalRecovered++;
+
+          this._recordRecovery({
+            actionId,
+
+            action,
+
+            attempts: attempt + 1,
+
+            result,
+          });
+        }
+
+        return {
+          success: true,
+
+          recovered: attempt > 0,
+
+          attempts: attempt + 1,
+
+          actionId,
+
+          result,
+        };
+      } catch (error) {
+        lastError = error;
+
+        this.stats.totalFailures++;
+
+        const errorInfo = this.classifyError(error);
+
+        this._recordError({
+          actionId,
+
+          action,
+
+          attempt: attempt + 1,
+
+          error: errorInfo,
+        });
+
+        this._debug(`[SelfHealing] Failure: ${errorInfo.type}`);
+
+        if (this._shouldAbort(errorInfo, attempt, maxRetries)) {
+          this.stats.totalAborted++;
+
+          return this._failureResult(actionId, action, attempt + 1, errorInfo);
+        }
+
+        const recovery = this.getRecoveryStrategy(
+          errorInfo,
+          action,
+          context,
+          triedStrategies,
         );
 
-        if (!recovered) {
-          break;
+        if (!recovery) {
+          this.stats.totalAborted++;
+
+          return this._failureResult(actionId, action, attempt + 1, errorInfo);
         }
 
-        //--------------------------------------------------
-        // Adaptive delay
-        //--------------------------------------------------
+        triedStrategies.add(recovery.strategy);
 
-        await this.sleep(this.adaptiveRetryDelay(attempt));
+        await this._applyRecovery(recovery, context);
+
+        attempt++;
       }
     }
 
-    //--------------------------------------------------
-    // Failed
-    //--------------------------------------------------
-
-    this.metrics.failedExecutions++;
-
-    this.recordHistory({
+    return {
       success: false,
 
-      action: context.action,
+      recovered: false,
 
-      target: context.query || context.target,
+      attempts: attempt,
 
-      error: lastError?.message,
-    });
+      actionId,
 
-    throw lastError;
+      error: lastError
+        ? this.classifyError(lastError)
+        : {
+            type: ERROR_TYPES.UNKNOWN,
+            message: "Unknown failure",
+          },
+    };
   }
 
-  //==================================================
-  // RECOVERY ROUTER
-  //==================================================
+  // ==========================================================
+  // ERROR CLASSIFICATION
+  // ==========================================================
 
-  async recover(
-    error,
+  classifyError(error) {
+    const message = String(error?.message || error || "").toLowerCase();
 
-    context,
+    let type = ERROR_TYPES.UNKNOWN;
 
-    attempt,
+    if (
+      message.includes("timeout") ||
+      message.includes("timed out") ||
+      message.includes("waiting for")
+    ) {
+      type = ERROR_TYPES.TIMEOUT;
+    } else if (
+      message.includes("selector") &&
+      (message.includes("not found") || message.includes("failed"))
+    ) {
+      type = ERROR_TYPES.SELECTOR_NOT_FOUND;
+    } else if (
+      message.includes("element not found") ||
+      message.includes("no element")
+    ) {
+      type = ERROR_TYPES.ELEMENT_NOT_FOUND;
+    } else if (
+      message.includes("not visible") ||
+      message.includes("visibility")
+    ) {
+      type = ERROR_TYPES.ELEMENT_NOT_VISIBLE;
+    } else if (
+      message.includes("not interactable") ||
+      message.includes("interactable")
+    ) {
+      type = ERROR_TYPES.ELEMENT_NOT_INTERACTABLE;
+    } else if (
+      message.includes("click") &&
+      (message.includes("failed") ||
+        message.includes("intercepted") ||
+        message.includes("not clickable"))
+    ) {
+      type = ERROR_TYPES.CLICK_FAILED;
+    } else if (
+      message.includes("fill") ||
+      message.includes("type") ||
+      message.includes("input")
+    ) {
+      type = ERROR_TYPES.TYPE_FAILED;
+    } else if (message.includes("frame") || message.includes("iframe")) {
+      type = ERROR_TYPES.FRAME_NOT_FOUND;
+    } else if (message.includes("detached") || message.includes("stale")) {
+      type = ERROR_TYPES.STALE_ELEMENT;
+    } else if (message.includes("navigation") || message.includes("goto")) {
+      type = ERROR_TYPES.NAVIGATION_FAILED;
+    } else if (message.includes("page has been closed")) {
+      type = ERROR_TYPES.PAGE_CLOSED;
+    } else if (message.includes("context has been closed")) {
+      type = ERROR_TYPES.CONTEXT_CLOSED;
+    } else if (message.includes("network") || message.includes("connection")) {
+      type = ERROR_TYPES.NETWORK_ERROR;
+    }
+
+    this.stats.byErrorType[type] = (this.stats.byErrorType[type] || 0) + 1;
+
+    return {
+      type,
+
+      message: error?.message || String(error),
+
+      originalError: error,
+
+      retryable: this.isRetryable(type),
+    };
+  }
+
+  // ==========================================================
+  // RETRY CHECK
+  // ==========================================================
+
+  isRetryable(type) {
+    const retryable = new Set([
+      ERROR_TYPES.TIMEOUT,
+
+      ERROR_TYPES.SELECTOR_NOT_FOUND,
+
+      ERROR_TYPES.ELEMENT_NOT_FOUND,
+
+      ERROR_TYPES.ELEMENT_NOT_VISIBLE,
+
+      ERROR_TYPES.ELEMENT_NOT_INTERACTABLE,
+
+      ERROR_TYPES.CLICK_FAILED,
+
+      ERROR_TYPES.TYPE_FAILED,
+
+      ERROR_TYPES.FRAME_NOT_FOUND,
+
+      ERROR_TYPES.IFRAME_ERROR,
+
+      ERROR_TYPES.STALE_ELEMENT,
+
+      ERROR_TYPES.DETACHED_ELEMENT,
+
+      ERROR_TYPES.NETWORK_ERROR,
+    ]);
+
+    return retryable.has(type);
+  }
+
+  // ==========================================================
+  // RECOVERY STRATEGY SELECTION
+  // ==========================================================
+
+  getRecoveryStrategy(
+    errorInfo,
+    action = {},
+    context = {},
+    triedStrategies = new Set(),
   ) {
-    this.runningRecovery = true;
+    const candidates = this._buildRecoveryStrategies(
+      errorInfo,
+      action,
+      context,
+    );
 
-    try {
-      const type = this.classify(error);
-
-      this.lastRecovery = {
-        type,
-
-        timestamp: Date.now(),
-
-        attempt,
-      };
-
-      this.log(
-        "Recovery:",
-
-        type,
-      );
-
-      switch (type) {
-        case "timeout":
-          this.metrics.timeoutRecoveries++;
-
-          return await this.timeoutRecovery(
-            context,
-
-            attempt,
-          );
-
-        case "detached":
-          this.metrics.detachedRecoveries++;
-
-          return await this.detachedRecovery(context);
-
-        case "iframe":
-          this.metrics.iframeRecoveries++;
-
-          return await this.iframeRecovery(context);
-
-        case "shadow":
-          this.metrics.shadowRecoveries++;
-
-          return await this.shadowRecovery(context);
-
-        case "intercepted":
-          this.metrics.overlayRecoveries++;
-
-          return await this.overlayRecovery(context);
-
-        case "navigation":
-          this.metrics.navigationRecoveries++;
-
-          return await this.navigationRecovery(context);
-
-        case "accessibility":
-          this.metrics.accessibilityRecoveries++;
-
-          return await this.accessibilityRecovery(context);
-
-        default:
-          this.metrics.genericRecoveries++;
-
-          return await this.genericRecovery(context);
+    for (const strategy of candidates) {
+      if (triedStrategies.has(strategy.strategy)) {
+        continue;
       }
-    } finally {
-      this.runningRecovery = false;
-    }
-  }
 
-  //==================================================
-  // ERROR CLASSIFIER
-  //==================================================
-
-  classify(error) {
-    const message = String(error?.message || error).toLowerCase();
-
-    for (const [type, keywords] of Object.entries(this.errorMap)) {
-      if (keywords.some((keyword) => message.includes(keyword.toLowerCase()))) {
-        return type;
+      if (!this.options.enableAlternativeStrategies && strategy.alternative) {
+        continue;
       }
+
+      this.stats.byStrategy[strategy.strategy] =
+        (this.stats.byStrategy[strategy.strategy] || 0) + 1;
+
+      return strategy;
     }
 
-    return "generic";
+    return null;
   }
 
-  //==================================================
-  // CACHE HELPERS
-  //==================================================
+  // ==========================================================
+  // BUILD RECOVERY STRATEGIES
+  // ==========================================================
 
-  getRecoveryCache(key) {
-    if (!this.recoveryCache.has(key)) {
-      this.metrics.cacheMisses++;
+  _buildRecoveryStrategies(errorInfo, action, context) {
+    const type = errorInfo.type;
 
-      return null;
+    switch (type) {
+      case ERROR_TYPES.TIMEOUT:
+        return [
+          {
+            strategy: RECOVERY_STRATEGIES.WAIT,
+
+            delay: this.options.retryDelay,
+          },
+
+          {
+            strategy: RECOVERY_STRATEGIES.RETRY,
+          },
+        ];
+
+      case ERROR_TYPES.SELECTOR_NOT_FOUND:
+
+      case ERROR_TYPES.ELEMENT_NOT_FOUND:
+        return [
+          {
+            strategy: RECOVERY_STRATEGIES.RESELECT,
+
+            alternative: true,
+          },
+
+          {
+            strategy: RECOVERY_STRATEGIES.ALTERNATIVE_SELECTOR,
+
+            alternative: true,
+          },
+
+          {
+            strategy: RECOVERY_STRATEGIES.ALTERNATIVE_TEXT,
+
+            alternative: true,
+          },
+
+          {
+            strategy: RECOVERY_STRATEGIES.RETRY,
+          },
+        ];
+
+      case ERROR_TYPES.ELEMENT_NOT_VISIBLE:
+        return [
+          {
+            strategy: RECOVERY_STRATEGIES.SCROLL_INTO_VIEW,
+
+            alternative: true,
+          },
+
+          {
+            strategy: RECOVERY_STRATEGIES.WAIT,
+          },
+
+          {
+            strategy: RECOVERY_STRATEGIES.RETRY,
+          },
+        ];
+
+      case ERROR_TYPES.ELEMENT_NOT_INTERACTABLE:
+
+      case ERROR_TYPES.CLICK_FAILED:
+        return [
+          {
+            strategy: RECOVERY_STRATEGIES.SCROLL_INTO_VIEW,
+
+            alternative: true,
+          },
+
+          {
+            strategy: RECOVERY_STRATEGIES.RESELECT,
+
+            alternative: true,
+          },
+
+          {
+            strategy: RECOVERY_STRATEGIES.FORCE_CLICK,
+
+            alternative: true,
+          },
+
+          {
+            strategy: RECOVERY_STRATEGIES.JAVASCRIPT_CLICK,
+
+            alternative: true,
+          },
+        ];
+
+      case ERROR_TYPES.TYPE_FAILED:
+        return [
+          {
+            strategy: RECOVERY_STRATEGIES.RESELECT,
+
+            alternative: true,
+          },
+
+          {
+            strategy: RECOVERY_STRATEGIES.ALTERNATIVE_SELECTOR,
+
+            alternative: true,
+          },
+
+          {
+            strategy: RECOVERY_STRATEGIES.RETRY,
+          },
+        ];
+
+      case ERROR_TYPES.FRAME_NOT_FOUND:
+
+      case ERROR_TYPES.IFRAME_ERROR:
+        return [
+          {
+            strategy: RECOVERY_STRATEGIES.FRAME_SEARCH,
+
+            alternative: true,
+          },
+
+          {
+            strategy: RECOVERY_STRATEGIES.FRAME_RETRY,
+
+            alternative: true,
+          },
+
+          {
+            strategy: RECOVERY_STRATEGIES.RETRY,
+          },
+        ];
+
+      case ERROR_TYPES.STALE_ELEMENT:
+
+      case ERROR_TYPES.DETACHED_ELEMENT:
+        return [
+          {
+            strategy: RECOVERY_STRATEGIES.RESELECT,
+
+            alternative: true,
+          },
+
+          {
+            strategy: RECOVERY_STRATEGIES.RETRY,
+          },
+        ];
+
+      case ERROR_TYPES.NAVIGATION_FAILED:
+        if (this.options.stopOnNavigationFailure) {
+          return [];
+        }
+
+        return [
+          {
+            strategy: RECOVERY_STRATEGIES.RETRY,
+          },
+
+          {
+            strategy: RECOVERY_STRATEGIES.RELOAD,
+
+            alternative: true,
+          },
+        ];
+
+      case ERROR_TYPES.NETWORK_ERROR:
+        return [
+          {
+            strategy: RECOVERY_STRATEGIES.WAIT,
+          },
+
+          {
+            strategy: RECOVERY_STRATEGIES.RETRY,
+          },
+        ];
+
+      default:
+        return [
+          {
+            strategy: RECOVERY_STRATEGIES.RETRY,
+          },
+        ];
+    }
+  }
+
+  // ==========================================================
+  // APPLY RECOVERY
+  // ==========================================================
+
+  async _applyRecovery(recovery, context = {}) {
+    const delay = recovery.delay || this._calculateDelay(context.attempt || 0);
+
+    this._debug(`[SelfHealing] Recovery: ${recovery.strategy}`);
+
+    switch (recovery.strategy) {
+      case RECOVERY_STRATEGIES.WAIT:
+        await this._sleep(delay);
+
+        break;
+
+      case RECOVERY_STRATEGIES.RETRY:
+        await this._sleep(delay);
+
+        break;
+
+      case RECOVERY_STRATEGIES.RESELECT:
+        if (typeof context.reselect === "function") {
+          await context.reselect();
+        }
+
+        break;
+
+      case RECOVERY_STRATEGIES.ALTERNATIVE_SELECTOR:
+        if (typeof context.alternativeSelector === "function") {
+          await context.alternativeSelector();
+        }
+
+        break;
+
+      case RECOVERY_STRATEGIES.ALTERNATIVE_TEXT:
+        if (typeof context.alternativeText === "function") {
+          await context.alternativeText();
+        }
+
+        break;
+
+      case RECOVERY_STRATEGIES.SCROLL_INTO_VIEW:
+        if (typeof context.scrollIntoView === "function") {
+          await context.scrollIntoView();
+        }
+
+        break;
+
+      case RECOVERY_STRATEGIES.FORCE_CLICK:
+        if (typeof context.forceClick === "function") {
+          await context.forceClick();
+        }
+
+        break;
+
+      case RECOVERY_STRATEGIES.JAVASCRIPT_CLICK:
+        if (typeof context.javascriptClick === "function") {
+          await context.javascriptClick();
+        }
+
+        break;
+
+      case RECOVERY_STRATEGIES.FRAME_SEARCH:
+        if (typeof context.findFrame === "function") {
+          await context.findFrame();
+        }
+
+        break;
+
+      case RECOVERY_STRATEGIES.FRAME_RETRY:
+        if (typeof context.retryFrame === "function") {
+          await context.retryFrame();
+        }
+
+        break;
+
+      case RECOVERY_STRATEGIES.RELOAD:
+        if (typeof context.reload === "function") {
+          await context.reload();
+        }
+
+        break;
+
+      case RECOVERY_STRATEGIES.REBUILD_PLAN:
+        if (typeof context.rebuildPlan === "function") {
+          await context.rebuildPlan();
+        }
+
+        break;
+
+      case RECOVERY_STRATEGIES.ABORT:
+
+      default:
+        break;
+    }
+  }
+
+  // ==========================================================
+  // FAILURE DECISION
+  // ==========================================================
+
+  _shouldAbort(errorInfo, attempt, maxRetries) {
+    if (!errorInfo.retryable) {
+      return true;
     }
 
-    this.metrics.cacheHits++;
+    if (attempt >= maxRetries + 1) {
+      return true;
+    }
 
-    return this.recoveryCache.get(key);
+    if (
+      errorInfo.type === ERROR_TYPES.PAGE_CLOSED ||
+      errorInfo.type === ERROR_TYPES.CONTEXT_CLOSED
+    ) {
+      return true;
+    }
+
+    return false;
   }
 
-  setRecoveryCache(
-    key,
+  // ==========================================================
+  // FAILURE RESULT
+  // ==========================================================
 
-    value,
-  ) {
-    this.recoveryCache.set(key, {
+  _failureResult(actionId, action, attempts, error) {
+    return {
+      success: false,
+
+      recovered: false,
+
+      actionId,
+
+      attempts,
+
+      action,
+
+      error,
+
+      healing: {
+        attempted: true,
+
+        recovered: false,
+      },
+    };
+  }
+
+  // ==========================================================
+  // DELAY CALCULATION
+  // ==========================================================
+
+  _calculateDelay(attempt) {
+    const delay =
+      this.options.retryDelay *
+      Math.pow(this.options.backoffMultiplier, attempt);
+
+    return Math.min(delay, this.options.maxRetryDelay);
+  }
+
+  // ==========================================================
+  // HISTORY
+  // ==========================================================
+
+  _recordError(data) {
+    if (!this.options.enableHistory) {
+      return;
+    }
+
+    this.history.push({
+      type: "failure",
+
       timestamp: Date.now(),
 
-      value,
+      ...data,
     });
+
+    this._trimHistory();
   }
 
-  clearRecoveryCache() {
-    this.recoveryCache.clear();
+  _recordRecovery(data) {
+    if (!this.options.enableHistory) {
+      return;
+    }
+
+    this.history.push({
+      type: "recovery",
+
+      timestamp: Date.now(),
+
+      ...data,
+    });
+
+    this._trimHistory();
   }
 
-  //==================================================
-  // PART 3
-  // Timeout Recovery
-  // Detached Recovery
-  // iframe Recovery
-  // Shadow DOM Recovery
-  // Overlay Recovery
-  // Navigation Recovery
-  // Accessibility Recovery
-  //==================================================
-  //==================================================
-  // TIMEOUT RECOVERY
-  //==================================================
+  _trimHistory() {
+    if (this.history.length > this.options.maxHistory) {
+      this.history.splice(
+        0,
 
-  async timeoutRecovery(context, attempt) {
-    this.log("Timeout recovery...", attempt);
-
-    //--------------------------------------------------
-    // Wait for page idle
-    //--------------------------------------------------
-
-    if (this.browser?.waitForPageIdle) {
-      try {
-        await this.browser.waitForPageIdle();
-      } catch {}
-    }
-
-    //--------------------------------------------------
-    // Wait for load state
-    //--------------------------------------------------
-
-    if (this.browser?.waitForLoadState) {
-      try {
-        await this.browser.waitForLoadState("networkidle");
-      } catch {}
-    }
-
-    //--------------------------------------------------
-    // Refresh DOM
-    //--------------------------------------------------
-
-    if (this.options.enableDOMRecovery) {
-      await this.refreshDOM(context);
-    }
-
-    return true;
-  }
-
-  //==================================================
-  // DETACHED ELEMENT RECOVERY
-  //==================================================
-
-  async detachedRecovery(context) {
-    this.log("Detached element recovery...");
-
-    if (!this.options.enableDOMRecovery) {
-      return false;
-    }
-
-    await this.refreshDOM(context);
-
-    return await this.recoverCandidate(context);
-  }
-
-  //==================================================
-  // IFRAME RECOVERY
-  //==================================================
-
-  async iframeRecovery(context) {
-    this.log("Iframe recovery...");
-
-    if (!this.options.enableFrameRecovery) {
-      return false;
-    }
-
-    try {
-      if (this.browser?.refreshFrames) {
-        await this.browser.refreshFrames();
-      }
-
-      if (this.browser?.getFrames) {
-        await this.browser.getFrames();
-      }
-
-      await this.refreshDOM(context);
-
-      return await this.recoverCandidate(context);
-    } catch (err) {
-      this.warn("Iframe recovery failed:", err.message);
-
-      return false;
-    }
-  }
-
-  //==================================================
-  // SHADOW DOM RECOVERY
-  //==================================================
-
-  async shadowRecovery(context) {
-    this.log("Shadow DOM recovery...");
-
-    if (!this.options.enableShadowRecovery) {
-      return false;
-    }
-
-    try {
-      if (this.browser?.scanShadowDOM) {
-        const elements = await this.browser.scanShadowDOM();
-
-        if (elements?.length && this.scoringEngine?.updateIndex) {
-          this.scoringEngine.updateIndex(elements);
-        }
-      }
-
-      return await this.recoverCandidate(context);
-    } catch (err) {
-      this.warn(
-        "Shadow recovery failed:",
-
-        err.message,
+        this.history.length - this.options.maxHistory,
       );
-
-      return false;
     }
   }
 
-  //==================================================
-  // OVERLAY RECOVERY
-  //==================================================
+  // ==========================================================
+  // PUBLIC DIAGNOSTICS
+  // ==========================================================
 
-  async overlayRecovery(context) {
-    this.log("Overlay recovery...");
-
-    if (!this.options.enableOverlayRecovery) {
-      return false;
-    }
-
-    try {
-      if (this.browser?.dismissOverlays) {
-        await this.browser.dismissOverlays();
-      }
-
-      await this.sleep(250);
-
-      return true;
-    } catch (err) {
-      this.warn(
-        "Overlay recovery failed:",
-
-        err.message,
-      );
-
-      return false;
-    }
+  getHistory() {
+    return [...this.history];
   }
 
-  //==================================================
-  // NAVIGATION RECOVERY
-  //==================================================
+  getStats() {
+    return {
+      ...this.stats,
 
-  async navigationRecovery(context) {
-    this.log("Navigation recovery...");
-
-    if (!this.options.enableNavigationRecovery) {
-      return false;
-    }
-
-    try {
-      if (this.browser?.waitForNavigation) {
-        await this.browser.waitForNavigation();
-      }
-
-      if (this.browser?.waitForLoadState) {
-        await this.browser.waitForLoadState("networkidle");
-      }
-
-      await this.refreshDOM(context);
-
-      return await this.recoverCandidate(context);
-    } catch (err) {
-      this.warn(
-        "Navigation recovery failed:",
-
-        err.message,
-      );
-
-      return false;
-    }
+      historySize: this.history.length,
+    };
   }
 
-  //==================================================
-  // ACCESSIBILITY RECOVERY
-  //==================================================
+  clearHistory() {
+    this.history = [];
+  }
 
-  async accessibilityRecovery(context) {
-    this.log("Accessibility recovery...");
+  resetStats() {
+    this.stats = {
+      totalFailures: 0,
 
-    if (!this.options.enableAccessibilityRecovery) {
-      return false;
-    }
+      totalRetries: 0,
 
-    try {
-      await this.refreshDOM(context);
+      totalRecovered: 0,
 
-      return await this.recoverCandidate(
-        context,
+      totalAborted: 0,
 
-        {
-          includeARIA: true,
+      byErrorType: {},
 
-          includeRoles: true,
-        },
-      );
-    } catch (err) {
-      this.warn(
-        "Accessibility recovery failed:",
+      byStrategy: {},
+    };
+  }
 
-        err.message,
-      );
+  // ==========================================================
+  // UTILITY
+  // ==========================================================
 
-      return false;
+  _generateActionId() {
+    return (
+      "heal_" +
+      Date.now().toString(36) +
+      "_" +
+      Math.random().toString(36).slice(2, 9)
+    );
+  }
+
+  _sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  _debug(...args) {
+    if (this.options.debug && this.logger) {
+      this.logger.debug(...args);
     }
   }
 }
+
+// ============================================================
+// DEFAULT SINGLETON
+// ============================================================
+
+const selfHealing = new SelfHealing({
+  maxRetries: 3,
+
+  retryDelay: 250,
+
+  backoffMultiplier: 1.5,
+
+  maxRetryDelay: 3000,
+
+  enableAlternativeStrategies: true,
+
+  enableHistory: true,
+
+  debug: false,
+});
+
+// ============================================================
+// EXPORTS
+// ============================================================
+
+export { SelfHealing };
+
+export default selfHealing;

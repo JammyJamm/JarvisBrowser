@@ -10,54 +10,79 @@
 //      │
 // Chromium CDP
 //      │
+// BrowserController
+//      │
 // PlaywrightClient
 //      │
-// Resolver / Planner / BrowserController
+// Resolver / Planner / ToolMap
 //
 // Features
 // --------
+// ✔ Shared BrowserController architecture
 // ✔ Automatic CDP reconnect
 // ✔ BrowserView detection
-// ✔ Health monitoring
+// ✔ Active page detection
 // ✔ Multi-tab support
 // ✔ Frame utilities
 // ✔ Snapshot utilities
+// ✔ DOM inspection
+// ✔ Interactive element extraction
 // ✔ Download manager
 // ✔ Dialog manager
-// ✔ Statistics
+// ✔ Popup tracking
 // ✔ Safe execution
+// ✔ Retry execution
+// ✔ Statistics
+// ✔ Structured results
 //
 //==========================================================
 
-import { chromium } from "playwright";
+import browserController from "./browser-controller.js";
 
-export default class PlaywrightClient {
+export default class PlaywrightMCPClient {
   constructor(options = {}) {
-    //--------------------------------------------------
-    // Configuration
-    //--------------------------------------------------
+    //------------------------------------------------------
+    // CONFIGURATION
+    //------------------------------------------------------
 
     this.options = {
-      cdpURL: "http://127.0.0.1:9222",
+      browserViewOnly: true,
+
+      autoReconnect: true,
 
       reconnectInterval: 1000,
 
       maxReconnectAttempts: 10,
 
-      autoReconnect: true,
-
       waitUntil: "domcontentloaded",
 
-      browserViewOnly: true,
+      navigationTimeout: 60000,
+
+      snapshotTimeout: 15000,
 
       debug: false,
 
       ...options,
     };
 
-    //--------------------------------------------------
-    // Playwright Handles
-    //--------------------------------------------------
+    //------------------------------------------------------
+    // SHARED BROWSER CONTROLLER
+    //
+    // IMPORTANT:
+    //
+    // Do NOT create another chromium.connectOverCDP()
+    // connection here.
+    //
+    // BrowserController owns the Playwright connection.
+    //------------------------------------------------------
+
+    this.browserController = browserController;
+
+    //------------------------------------------------------
+    // PLAYWRIGHT HANDLES
+    //
+    // These are synchronized from BrowserController.
+    //------------------------------------------------------
 
     this.browser = null;
 
@@ -65,9 +90,9 @@ export default class PlaywrightClient {
 
     this.page = null;
 
-    //--------------------------------------------------
-    // Runtime State
-    //--------------------------------------------------
+    //------------------------------------------------------
+    // RUNTIME STATE
+    //------------------------------------------------------
 
     this.connected = false;
 
@@ -79,23 +104,43 @@ export default class PlaywrightClient {
 
     this.lastSnapshot = null;
 
-    //--------------------------------------------------
-    // Downloads / Dialogs
-    //--------------------------------------------------
+    this.lastDOMSnapshot = null;
+
+    //------------------------------------------------------
+    // DOWNLOADS
+    //------------------------------------------------------
 
     this.lastDownload = null;
 
+    //------------------------------------------------------
+    // DIALOGS
+    //------------------------------------------------------
+
     this.lastDialog = null;
 
-    //--------------------------------------------------
-    // Event State
-    //--------------------------------------------------
+    //------------------------------------------------------
+    // POPUPS
+    //------------------------------------------------------
+
+    this.lastPopup = null;
+
+    //------------------------------------------------------
+    // EVENT STATE
+    //------------------------------------------------------
 
     this.eventsAttached = false;
 
-    //--------------------------------------------------
-    // Statistics
-    //--------------------------------------------------
+    //------------------------------------------------------
+    // PAGE EVENT REGISTRY
+    //
+    // Prevents duplicate listeners when active page changes.
+    //------------------------------------------------------
+
+    this.eventPages = new WeakSet();
+
+    //------------------------------------------------------
+    // STATISTICS
+    //------------------------------------------------------
 
     this.stats = {
       connects: 0,
@@ -119,43 +164,71 @@ export default class PlaywrightClient {
       downloads: 0,
 
       dialogs: 0,
+
+      popups: 0,
+
+      evaluations: 0,
+
+      frameOperations: 0,
+
+      retries: 0,
+
+      errors: 0,
     };
   }
 
-  //==================================================
+  //========================================================
   // LOGGING
-  //==================================================
+  //========================================================
 
   log(...args) {
     if (this.options.debug) {
-      console.log("[PlaywrightClient]", ...args);
+      console.log("[PlaywrightMCPClient]", ...args);
     }
   }
 
   warn(...args) {
-    console.warn("[PlaywrightClient]", ...args);
+    console.warn("[PlaywrightMCPClient]", ...args);
   }
 
   error(...args) {
-    console.error("[PlaywrightClient]", ...args);
+    console.error("[PlaywrightMCPClient]", ...args);
   }
 
-  //==================================================
+  //========================================================
+  // INTERNAL STATE SYNC
+  //========================================================
+
+  syncControllerState() {
+    this.browser = this.browserController.browser;
+
+    this.context = this.browserController.context;
+
+    this.page = this.browserController.page;
+
+    this.connected = this.browserController.connected;
+
+    if (this.page && !this.page.isClosed()) {
+      this.lastURL = this.page.url();
+    }
+  }
+
+  //========================================================
   // CONNECTION
-  //==================================================
+  //========================================================
 
   async connect(force = false) {
-    //--------------------------------------------------
-    // Already connected
-    //--------------------------------------------------
+    //------------------------------------------------------
+    // Existing connection
+    //------------------------------------------------------
 
     if (!force && this.connected && this.page && !this.page.isClosed()) {
       return this.page;
     }
 
-    //--------------------------------------------------
+    //------------------------------------------------------
     // Prevent duplicate connections
-    //--------------------------------------------------
+    //------------------------------------------------------
 
     if (this.connecting && this.connectionPromise) {
       return this.connectionPromise;
@@ -174,43 +247,77 @@ export default class PlaywrightClient {
     }
   }
 
-  //==================================================
+  //========================================================
   // INTERNAL CONNECT
-  //==================================================
+  //========================================================
 
   async connectInternal(force = false) {
-    if (force) {
-      await this.disconnect().catch(() => {});
+    try {
+      this.log("Connecting through BrowserController...");
+
+      //----------------------------------------------------
+      // Apply options to shared controller
+      //----------------------------------------------------
+
+      if (this.options.autoReconnect !== undefined) {
+        this.browserController.options.autoReconnect =
+          this.options.autoReconnect;
+      }
+
+      if (this.options.waitUntil) {
+        this.browserController.options.waitUntil = this.options.waitUntil;
+      }
+
+      if (this.options.navigationTimeout) {
+        this.browserController.options.navigationTimeout =
+          this.options.navigationTimeout;
+      }
+
+      //----------------------------------------------------
+      // Connect
+      //----------------------------------------------------
+
+      await this.browserController.connect(force);
+
+      //----------------------------------------------------
+      // Sync state
+      //----------------------------------------------------
+
+      this.syncControllerState();
+
+      //----------------------------------------------------
+      // Discover active page
+      //----------------------------------------------------
+
+      await this.refreshActivePage();
+
+      //----------------------------------------------------
+      // Attach events
+      //----------------------------------------------------
+
+      this.attachEvents();
+
+      this.connected = true;
+
+      this.stats.connects++;
+
+      this.log("Connected successfully:", this.lastURL);
+
+      return this.page;
+    } catch (err) {
+      this.connected = false;
+
+      this.stats.errors++;
+
+      this.error("Connection failed:", err.message);
+
+      throw err;
     }
-
-    this.log("Connecting to Electron CDP...");
-
-    this.browser = await chromium.connectOverCDP(this.options.cdpURL);
-
-    const contexts = this.browser.contexts();
-
-    if (!contexts.length) {
-      throw new Error("No browser contexts available.");
-    }
-
-    this.context = contexts[0];
-
-    await this.refreshActivePage();
-
-    this.attachEvents();
-
-    this.connected = true;
-
-    this.stats.connects++;
-
-    this.log("Connected:", this.page.url());
-
-    return this.page;
   }
 
-  //==================================================
+  //========================================================
   // DISCONNECT
-  //==================================================
+  //========================================================
 
   async disconnect() {
     this.connected = false;
@@ -221,101 +328,123 @@ export default class PlaywrightClient {
 
     this.context = null;
 
-    if (this.browser) {
-      try {
-        await this.browser.close();
-      } catch {}
-    }
-
     this.browser = null;
+
+    try {
+      await this.browserController.disconnect();
+    } catch (err) {
+      this.warn("Browser disconnect warning:", err.message);
+    }
   }
 
-  //==================================================
+  //========================================================
   // HEALTH CHECK
-  //==================================================
+  //========================================================
 
   async ensureConnected() {
     this.stats.healthChecks++;
 
     try {
+      //----------------------------------------------------
+      // Make sure controller is healthy
+      //----------------------------------------------------
+
+      await this.browserController.ensureConnected();
+
+      //----------------------------------------------------
+      // Synchronize handles
+      //----------------------------------------------------
+
+      this.syncControllerState();
+
+      //----------------------------------------------------
+      // Validate page
+      //----------------------------------------------------
+
       if (!this.page || this.page.isClosed()) {
-        throw new Error("Page unavailable");
+        throw new Error("Active page unavailable.");
       }
 
-      await this.page.title();
+      //----------------------------------------------------
+      // Lightweight health check
+      //----------------------------------------------------
+
+      await this.page
+        .title({
+          timeout: 5000,
+        })
+        .catch(() => {
+          throw new Error("Active page is unreachable.");
+        });
+
+      this.connected = true;
 
       return this.page;
-    } catch {
+    } catch (err) {
       this.connected = false;
 
       if (!this.options.autoReconnect) {
-        throw new Error("Browser disconnected.");
+        throw new Error(`Browser disconnected: ${err.message}`);
       }
 
       this.stats.reconnects++;
 
-      return await this.connect(true);
+      this.log("Attempting browser reconnect...");
+
+      //----------------------------------------------------
+      // Reconnect
+      //----------------------------------------------------
+
+      const page = await this.connect(true);
+
+      return page;
     }
   }
 
-  //==================================================
-  // PART 2
-  // Browser Discovery
-  // Active Page Detection
-  // BrowserView Selection
-  // Page Getters
-  //==================================================
-
-  //==================================================
+  //========================================================
   // ACTIVE PAGE DISCOVERY
-  //==================================================
+  //========================================================
 
   async refreshActivePage() {
-    if (!this.context) {
-      throw new Error("Browser context not available.");
-    }
+    await this.ensureControllerConnection();
 
     const pages = this.context.pages();
 
     if (!pages.length) {
-      throw new Error("No pages found.");
+      throw new Error("No browser pages available.");
     }
 
-    //--------------------------------------------------
-    // Prefer BrowserView HTTP pages
-    //--------------------------------------------------
+    //------------------------------------------------------
+    // Remove closed pages
+    //------------------------------------------------------
+
+    const activePages = pages.filter((page) => !page.isClosed());
+
+    if (!activePages.length) {
+      throw new Error("All browser pages are closed.");
+    }
+
+    //------------------------------------------------------
+    // Prefer real BrowserView page
+    //------------------------------------------------------
 
     let candidate = null;
 
-    for (const page of pages) {
-      if (page.isClosed()) continue;
-
-      const url = page.url();
-
-      if (
-        this.options.browserViewOnly &&
-        (url.startsWith("file://") ||
-          url.includes("renderer") ||
-          url.includes("localhost"))
-      ) {
-        continue;
-      }
-
-      candidate = page;
-      break;
+    if (this.options.browserViewOnly) {
+      candidate = activePages.find((page) => this.isRealBrowserPage(page));
     }
 
-    //--------------------------------------------------
+    //------------------------------------------------------
     // Fallback
-    //--------------------------------------------------
+    //------------------------------------------------------
 
     if (!candidate) {
-      candidate = pages.find((page) => !page.isClosed()) || pages[0];
+      candidate = activePages[0];
     }
 
-    //--------------------------------------------------
-    // Page switched
-    //--------------------------------------------------
+    //------------------------------------------------------
+    // Track page switch
+    //------------------------------------------------------
 
     if (this.page && this.page !== candidate) {
       this.stats.pageSwitches++;
@@ -323,41 +452,82 @@ export default class PlaywrightClient {
 
     this.page = candidate;
 
-    this.lastURL = this.page.url();
+    this.lastURL = candidate.url();
+
+    this.syncControllerState();
+
+    this.attachEvents();
 
     this.log("Active page:", this.lastURL);
 
     return this.page;
   }
 
-  //==================================================
-  // PAGE DISCOVERY
-  //==================================================
+  //========================================================
+  // CONTROLLER CONNECTION
+  //========================================================
 
-  async getRealBrowserPage() {
-    await this.ensureConnected();
-
-    const pages = this.context.pages();
-
-    for (const page of pages) {
-      const url = page.url();
-
-      if (
-        url.startsWith("http") &&
-        !url.includes("localhost") &&
-        !url.includes("renderer") &&
-        !url.startsWith("file://")
-      ) {
-        this.page = page;
-
-        this.lastURL = url;
-
-        return page;
-      }
+  async ensureControllerConnection() {
+    if (!this.browserController.browser || !this.browserController.context) {
+      await this.browserController.connect();
     }
 
-    throw new Error("No browser page found.");
+    this.syncControllerState();
+
+    if (!this.context) {
+      throw new Error("Browser context unavailable.");
+    }
   }
+
+  //========================================================
+  // PAGE CLASSIFICATION
+  //========================================================
+
+  isRealBrowserPage(page) {
+    if (!page || page.isClosed()) {
+      return false;
+    }
+
+    const url = page.url();
+
+    if (!url) {
+      return false;
+    }
+
+    //------------------------------------------------------
+    // Real web pages
+    //------------------------------------------------------
+
+    if (url.startsWith("http://") || url.startsWith("https://")) {
+      //----------------------------------------------------
+      // Ignore known Electron internal pages
+      //----------------------------------------------------
+
+      if (url.includes("localhost") && url.includes("renderer")) {
+        return false;
+      }
+
+      return true;
+    }
+
+    //------------------------------------------------------
+    // Ignore local Electron pages
+    //------------------------------------------------------
+
+    if (
+      url.startsWith("file://") ||
+      url.startsWith("devtools://") ||
+      url.startsWith("chrome://")
+    ) {
+      return false;
+    }
+
+    return false;
+  }
+
+  //========================================================
+  // PAGE GETTERS
+  //========================================================
 
   async getPage() {
     await this.ensureConnected();
@@ -365,6 +535,30 @@ export default class PlaywrightClient {
     await this.refreshActivePage();
 
     return this.page;
+  }
+
+  async getRealBrowserPage() {
+    await this.ensureConnected();
+
+    const pages = this.context.pages();
+
+    const page = pages.find((candidate) => this.isRealBrowserPage(candidate));
+
+    if (!page) {
+      throw new Error("No real browser page found.");
+    }
+
+    if (this.page !== page) {
+      this.page = page;
+
+      this.stats.pageSwitches++;
+
+      this.attachEvents();
+    }
+
+    this.lastURL = page.url();
+
+    return page;
   }
 
   async getBrowser() {
@@ -391,9 +585,87 @@ export default class PlaywrightClient {
     return page.frames();
   }
 
-  //==================================================
+  //========================================================
+  // TAB MANAGEMENT
+  //========================================================
+
+  async newTab(url = "about:blank") {
+    await this.ensureConnected();
+
+    const page = await this.context.newPage();
+
+    if (url && url !== "about:blank") {
+      await page.goto(url, {
+        waitUntil: this.options.waitUntil,
+
+        timeout: this.options.navigationTimeout,
+      });
+    }
+
+    this.page = page;
+
+    this.lastURL = page.url();
+
+    this.stats.pageSwitches++;
+
+    this.attachEvents();
+
+    return page;
+  }
+
+  async switchToPage(index = 0) {
+    await this.ensureConnected();
+
+    const pages = this.context.pages();
+
+    const validPages = pages.filter((page) => !page.isClosed());
+
+    if (index < 0 || index >= validPages.length) {
+      throw new Error(`Invalid page index ${index}.`);
+    }
+
+    this.page = validPages[index];
+
+    this.lastURL = this.page.url();
+
+    this.stats.pageSwitches++;
+
+    this.attachEvents();
+
+    return this.page;
+  }
+
+  async switchToLastPage() {
+    await this.ensureConnected();
+
+    const pages = this.context.pages().filter((page) => !page.isClosed());
+
+    if (!pages.length) {
+      throw new Error("No pages available.");
+    }
+
+    return this.switchToPage(pages.length - 1);
+  }
+
+  async closeCurrentPage() {
+    const page = await this.getPage();
+
+    await page.close().catch(() => {});
+
+    await this.refreshActivePage();
+
+    return {
+      success: true,
+
+      action: "closePage",
+
+      url: this.lastURL,
+    };
+  }
+
+  //========================================================
   // PAGE STATE
-  //==================================================
+  //========================================================
 
   async waitForReady() {
     const page = await this.getPage();
@@ -421,11 +693,31 @@ export default class PlaywrightClient {
     return page;
   }
 
+  async waitForURL(matcher, options = {}) {
+    const page = await this.getPage();
+
+    await page.waitForURL(matcher, options);
+
+    this.lastURL = page.url();
+
+    return this.lastURL;
+  }
+
+  async waitForLoadState(state = "networkidle") {
+    const page = await this.getPage();
+
+    await page.waitForLoadState(state);
+
+    return true;
+  }
+
   async reload(options = {}) {
     const page = await this.getPage();
 
     await page.reload({
       waitUntil: this.options.waitUntil,
+
+      timeout: this.options.navigationTimeout,
 
       ...options,
     });
@@ -434,16 +726,28 @@ export default class PlaywrightClient {
 
     this.lastURL = page.url();
 
-    return page;
+    return {
+      success: true,
+
+      action: "reload",
+
+      url: this.lastURL,
+    };
   }
 
   async goto(url, options = {}) {
+    if (!url) {
+      throw new Error("Navigation URL is required.");
+    }
+
     const page = await this.getPage();
 
-    await page.goto(url, {
+    const targetURL = String(url).trim();
+
+    await page.goto(targetURL, {
       waitUntil: this.options.waitUntil,
 
-      timeout: 60000,
+      timeout: this.options.navigationTimeout,
 
       ...options,
     });
@@ -457,21 +761,13 @@ export default class PlaywrightClient {
 
       action: "navigate",
 
-      url,
+      url: this.lastURL,
     };
   }
 
-  //==================================================
-  // PART 3
+  //========================================================
   // HTML
-  // Snapshot
-  // DOM Utilities
-  // Page Inspection
-  //==================================================
-
-  //==================================================
-  // HTML
-  //==================================================
+  //========================================================
 
   async html() {
     const page = await this.getPage();
@@ -481,17 +777,29 @@ export default class PlaywrightClient {
     return await page.content();
   }
 
+  //========================================================
+  // TEXT
+  //========================================================
+
   async text() {
     const page = await this.getPage();
 
     return await page.evaluate(() => document.body?.innerText || "");
   }
 
+  //========================================================
+  // TITLE
+  //========================================================
+
   async title() {
     const page = await this.getPage();
 
     return await page.title();
   }
+
+  //========================================================
+  // URL
+  //========================================================
 
   async url() {
     const page = await this.getPage();
@@ -501,24 +809,62 @@ export default class PlaywrightClient {
     return this.lastURL;
   }
 
-  //==================================================
+  //========================================================
   // SNAPSHOT
-  //==================================================
+  //========================================================
 
   async snapshot() {
     const page = await this.getPage();
 
     const snapshot = {
-      html: await page.content(),
+      html: "",
 
-      text: await page.evaluate(() => document.body?.innerText || ""),
+      text: "",
 
-      title: await page.title(),
+      title: "",
 
-      url: page.url(),
+      url: "",
 
       timestamp: Date.now(),
     };
+
+    //------------------------------------------------------
+    // HTML
+    //------------------------------------------------------
+
+    try {
+      snapshot.html = await page.content();
+    } catch (err) {
+      this.warn("Snapshot HTML failed:", err.message);
+    }
+
+    //------------------------------------------------------
+    // Text
+    //------------------------------------------------------
+
+    try {
+      snapshot.text = await page.evaluate(() => document.body?.innerText || "");
+    } catch (err) {
+      this.warn("Snapshot text failed:", err.message);
+    }
+
+    //------------------------------------------------------
+    // Title
+    //------------------------------------------------------
+
+    try {
+      snapshot.title = await page.title();
+    } catch {}
+
+    //------------------------------------------------------
+    // URL
+    //------------------------------------------------------
+
+    snapshot.url = page.url();
+
+    //------------------------------------------------------
+    // Save
+    //------------------------------------------------------
 
     this.lastSnapshot = snapshot;
 
@@ -535,18 +881,153 @@ export default class PlaywrightClient {
     this.lastSnapshot = null;
   }
 
-  //==================================================
+  //========================================================
+  // DOM SNAPSHOT
+  //
+  // Lightweight structured DOM representation.
+  //
+  // Useful for:
+  //
+  // Intent Parser
+  // Scoring Engine
+  // Resolver
+  // Self Healing
+  //
+  //========================================================
+
+  async getDOMSnapshot() {
+    const page = await this.getPage();
+
+    const snapshot = await page.evaluate(() => {
+      const normalize = (value) =>
+        String(value || "")
+          .replace(/\s+/g, " ")
+          .trim();
+
+      const elements = [];
+
+      const nodes = document.querySelectorAll(
+        "button, a, input, textarea, select, [role], [contenteditable='true']",
+      );
+
+      nodes.forEach((element, index) => {
+        const rect = element.getBoundingClientRect();
+
+        const style = window.getComputedStyle(element);
+
+        const text = normalize(element.innerText || element.textContent || "");
+
+        const aria = normalize(element.getAttribute("aria-label"));
+
+        const placeholder = normalize(element.getAttribute("placeholder"));
+
+        const title = normalize(element.getAttribute("title"));
+
+        const value = normalize(element.value);
+
+        const tag = element.tagName.toLowerCase();
+
+        const role = normalize(element.getAttribute("role"));
+
+        const visible =
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.visibility !== "hidden" &&
+          style.display !== "none";
+
+        const disabled =
+          element.disabled === true ||
+          element.getAttribute("aria-disabled") === "true";
+
+        elements.push({
+          index,
+
+          tag,
+
+          role,
+
+          text,
+
+          ariaLabel: aria,
+
+          placeholder,
+
+          title,
+
+          value,
+
+          type: element.getAttribute("type") || "",
+
+          name: element.getAttribute("name") || "",
+
+          id: element.id || "",
+
+          className:
+            typeof element.className === "string" ? element.className : "",
+
+          href: element.getAttribute("href") || "",
+
+          visible,
+
+          disabled,
+
+          editable:
+            element.isContentEditable || tag === "input" || tag === "textarea",
+
+          x: rect.x,
+
+          y: rect.y,
+
+          width: rect.width,
+
+          height: rect.height,
+        });
+      });
+
+      return {
+        url: window.location.href,
+
+        title: document.title,
+
+        readyState: document.readyState,
+
+        elements,
+      };
+    });
+
+    this.lastDOMSnapshot = snapshot;
+
+    return snapshot;
+  }
+
+  //========================================================
+  // INTERACTIVE ELEMENTS
+  //========================================================
+
+  async getInteractiveElements() {
+    const snapshot = await this.getDOMSnapshot();
+
+    return snapshot.elements.filter(
+      (element) => element.visible && !element.disabled,
+    );
+  }
+
+  //========================================================
   // DOM UTILITIES
-  //==================================================
+  //========================================================
 
   async evaluate(fn, arg = null) {
     const page = await this.getPage();
+
+    this.stats.evaluations++;
 
     return await page.evaluate(fn, arg);
   }
 
   async evaluateHandle(fn, arg = null) {
     const page = await this.getPage();
+
+    this.stats.evaluations++;
 
     return await page.evaluateHandle(fn, arg);
   }
@@ -581,9 +1062,9 @@ export default class PlaywrightClient {
     return await page.locator(selector).count();
   }
 
-  //==================================================
+  //========================================================
   // PAGE INSPECTION
-  //==================================================
+  //========================================================
 
   async inspectPage() {
     const page = await this.getPage();
@@ -621,386 +1102,9 @@ export default class PlaywrightClient {
     return page.viewportSize();
   }
 
-  //==================================================
-  // PART 4
-  // Click
-  // Type
-  // Hover
-  // Select
-  // Keyboard
-  // Mouse
-  //==================================================
-
-  //==================================================
-  // CLICK
-  //==================================================
-
-  async click(selector, options = {}) {
-    const page = await this.getPage();
-
-    await page.locator(selector).first().click(options);
-
-    this.stats.clicks++;
-
-    return {
-      success: true,
-
-      action: "click",
-
-      selector,
-    };
-  }
-
-  async clickByText(text, options = {}) {
-    const page = await this.getPage();
-
-    this.log("Click by text:", text);
-
-    await page
-      .getByText(text, {
-        exact: false,
-      })
-      .first()
-      .click(options);
-
-    this.stats.clicks++;
-
-    return {
-      success: true,
-
-      action: "click",
-
-      text,
-    };
-  }
-
-  async clickByRole(role, name, options = {}) {
-    const page = await this.getPage();
-
-    await page
-      .getByRole(role, {
-        name,
-
-        exact: false,
-      })
-      .click(options);
-
-    this.stats.clicks++;
-
-    return {
-      success: true,
-
-      action: "click",
-
-      role,
-
-      name,
-    };
-  }
-
-  async doubleClick(selector, options = {}) {
-    const page = await this.getPage();
-
-    await page.locator(selector).first().dblclick(options);
-
-    this.stats.clicks++;
-
-    return {
-      success: true,
-
-      action: "doubleClick",
-
-      selector,
-    };
-  }
-
-  async rightClick(selector, options = {}) {
-    const page = await this.getPage();
-
-    await page
-      .locator(selector)
-      .first()
-      .click({
-        button: "right",
-
-        ...options,
-      });
-
-    this.stats.clicks++;
-
-    return {
-      success: true,
-
-      action: "rightClick",
-
-      selector,
-    };
-  }
-
-  //==================================================
-  // TYPE
-  //==================================================
-
-  async type(selector, value, options = {}) {
-    const page = await this.getPage();
-
-    const locator = page.locator(selector).first();
-
-    await locator.waitFor({
-      state: "visible",
-
-      timeout: 10000,
-    });
-
-    await locator.fill("");
-
-    await locator.fill(String(value), options);
-
-    this.stats.types++;
-
-    return {
-      success: true,
-
-      action: "type",
-
-      selector,
-
-      value,
-    };
-  }
-
-  async typeByLabel(label, value, options = {}) {
-    const page = await this.getPage();
-
-    const locator = page
-      .getByLabel(label, {
-        exact: false,
-      })
-      .first();
-
-    await locator.fill("");
-
-    await locator.fill(String(value), options);
-
-    this.stats.types++;
-
-    return {
-      success: true,
-
-      action: "type",
-
-      label,
-
-      value,
-    };
-  }
-
-  async clear(selector) {
-    const page = await this.getPage();
-
-    await page.locator(selector).first().fill("");
-
-    return {
-      success: true,
-
-      action: "clear",
-
-      selector,
-    };
-  }
-
-  async appendText(selector, value) {
-    const page = await this.getPage();
-
-    const locator = page.locator(selector).first();
-
-    await locator.focus();
-
-    await page.keyboard.type(String(value));
-
-    this.stats.types++;
-
-    return {
-      success: true,
-
-      action: "append",
-
-      selector,
-
-      value,
-    };
-  }
-
-  //==================================================
-  // HOVER
-  //==================================================
-
-  async hover(selector, options = {}) {
-    const page = await this.getPage();
-
-    await page.locator(selector).first().hover(options);
-
-    return {
-      success: true,
-
-      action: "hover",
-
-      selector,
-    };
-  }
-
-  async hoverByText(text, options = {}) {
-    const page = await this.getPage();
-
-    await page
-      .getByText(text, {
-        exact: false,
-      })
-      .first()
-      .hover(options);
-
-    return {
-      success: true,
-
-      action: "hover",
-
-      text,
-    };
-  }
-
-  //==================================================
-  // SELECT
-  //==================================================
-
-  async selectOption(selector, value) {
-    const page = await this.getPage();
-
-    await page.locator(selector).first().selectOption(value);
-
-    return {
-      success: true,
-
-      action: "select",
-
-      selector,
-
-      value,
-    };
-  }
-
-  //==================================================
-  // KEYBOARD
-  //==================================================
-
-  async press(key) {
-    const page = await this.getPage();
-
-    await page.keyboard.press(key);
-
-    return {
-      success: true,
-
-      action: "press",
-
-      key,
-    };
-  }
-
-  async typeKeys(text) {
-    const page = await this.getPage();
-
-    await page.keyboard.type(String(text));
-
-    return {
-      success: true,
-
-      action: "keyboard.type",
-
-      text,
-    };
-  }
-
-  async shortcut(...keys) {
-    const page = await this.getPage();
-
-    const combo = keys.join("+");
-
-    await page.keyboard.press(combo);
-
-    return {
-      success: true,
-
-      action: "shortcut",
-
-      keys,
-    };
-  }
-
-  //==================================================
-  // MOUSE
-  //==================================================
-
-  async mouseMove(x, y) {
-    const page = await this.getPage();
-
-    await page.mouse.move(x, y);
-
-    return {
-      success: true,
-
-      action: "mouse.move",
-
-      x,
-
-      y,
-    };
-  }
-
-  async mouseClick(x, y, options = {}) {
-    const page = await this.getPage();
-
-    await page.mouse.click(x, y, options);
-
-    this.stats.clicks++;
-
-    return {
-      success: true,
-
-      action: "mouse.click",
-
-      x,
-
-      y,
-    };
-  }
-
-  async mouseWheel(deltaX = 0, deltaY = 800) {
-    const page = await this.getPage();
-
-    await page.mouse.wheel(deltaX, deltaY);
-
-    return {
-      success: true,
-
-      action: "mouse.wheel",
-
-      deltaX,
-
-      deltaY,
-    };
-  }
-
-  //==================================================
-  // PART 5
-  // Frame Helpers
-  // Downloads
-  // Dialogs
-  // Wait Helpers
-  //==================================================
-
-  //==================================================
+  //========================================================
   // FRAME HELPERS
-  //==================================================
+  //========================================================
 
   async getMainFrame() {
     const page = await this.getPage();
@@ -1034,32 +1138,44 @@ export default class PlaywrightClient {
 
       const found = frames.find(predicate);
 
-      if (found) return found;
+      if (found) {
+        return found;
+      }
 
-      await this.wait(250);
+      await new Promise((resolve) => setTimeout(resolve, 250));
     }
 
     throw new Error("Frame not found.");
   }
 
   async evaluateInFrame(frame, fn, arg = null) {
-    if (!frame) throw new Error("Frame is required.");
+    if (!frame) {
+      throw new Error("Frame is required.");
+    }
+
+    this.stats.frameOperations++;
 
     return await frame.evaluate(fn, arg);
   }
 
   async locatorInFrame(frame, selector) {
-    if (!frame) throw new Error("Frame is required.");
+    if (!frame) {
+      throw new Error("Frame is required.");
+    }
 
     return frame.locator(selector);
   }
 
   async clickInFrame(frame, selector, options = {}) {
-    if (!frame) throw new Error("Frame is required.");
+    if (!frame) {
+      throw new Error("Frame is required.");
+    }
 
     await frame.locator(selector).first().click(options);
 
     this.stats.clicks++;
+
+    this.stats.frameOperations++;
 
     return {
       success: true,
@@ -1070,16 +1186,20 @@ export default class PlaywrightClient {
     };
   }
 
-  async typeInFrame(frame, selector, value) {
-    if (!frame) throw new Error("Frame is required.");
+  async typeInFrame(frame, selector, value, options = {}) {
+    if (!frame) {
+      throw new Error("Frame is required.");
+    }
 
     const locator = frame.locator(selector).first();
 
     await locator.fill("");
 
-    await locator.fill(String(value));
+    await locator.fill(String(value), options);
 
     this.stats.types++;
+
+    this.stats.frameOperations++;
 
     return {
       success: true,
@@ -1092,9 +1212,9 @@ export default class PlaywrightClient {
     };
   }
 
-  //==================================================
+  //========================================================
   // DOWNLOAD MANAGER
-  //==================================================
+  //========================================================
 
   getLastDownload() {
     return this.lastDownload;
@@ -1112,7 +1232,7 @@ export default class PlaywrightClient {
         return this.lastDownload;
       }
 
-      await this.wait(200);
+      await new Promise((resolve) => setTimeout(resolve, 200));
     }
 
     throw new Error("Download timeout.");
@@ -1134,9 +1254,9 @@ export default class PlaywrightClient {
     };
   }
 
-  //==================================================
+  //========================================================
   // DIALOG MANAGER
-  //==================================================
+  //========================================================
 
   getLastDialog() {
     return this.lastDialog;
@@ -1154,7 +1274,7 @@ export default class PlaywrightClient {
         return this.lastDialog;
       }
 
-      await this.wait(200);
+      await new Promise((resolve) => setTimeout(resolve, 200));
     }
 
     throw new Error("Dialog timeout.");
@@ -1192,14 +1312,12 @@ export default class PlaywrightClient {
     };
   }
 
-  //==================================================
+  //========================================================
   // WAIT HELPERS
-  //==================================================
+  //========================================================
 
   async wait(milliseconds = 1000) {
-    const page = await this.getPage();
-
-    await page.waitForTimeout(milliseconds);
+    await new Promise((resolve) => setTimeout(resolve, milliseconds));
 
     return {
       success: true,
@@ -1222,49 +1340,36 @@ export default class PlaywrightClient {
     return await page.waitForFunction(fn, arg, options);
   }
 
-  async waitForURL(matcher, options = {}) {
-    const page = await this.getPage();
-
-    await page.waitForURL(matcher, options);
-
-    this.lastURL = page.url();
-
-    return this.lastURL;
-  }
-
-  async waitForLoadState(state = "networkidle") {
-    const page = await this.getPage();
-
-    await page.waitForLoadState(state);
-
-    return true;
-  }
-
-  //==================================================
-  // PART 6
-  // Event Manager
-  // Safe Execution
-  // Debug Helpers
-  // Statistics
-  // Export Helpers
-  //==================================================
-
-  //==================================================
+  //========================================================
   // EVENT MANAGER
-  //==================================================
+  //========================================================
 
   attachEvents() {
-    if (this.eventsAttached || !this.page) {
+    if (!this.page) {
       return;
     }
 
+    //------------------------------------------------------
+    // Do not attach twice to same page
+    //------------------------------------------------------
+
+    if (this.eventPages.has(this.page)) {
+      this.eventsAttached = true;
+
+      return;
+    }
+
+    this.eventPages.add(this.page);
+
     this.eventsAttached = true;
 
-    //--------------------------------------------------
-    // Download
-    //--------------------------------------------------
+    const page = this.page;
 
-    this.page.on("download", (download) => {
+    //------------------------------------------------------
+    // Download
+    //------------------------------------------------------
+
+    page.on("download", (download) => {
       this.lastDownload = download;
 
       this.stats.downloads++;
@@ -1272,78 +1377,125 @@ export default class PlaywrightClient {
       this.log("Download:", download.suggestedFilename());
     });
 
-    //--------------------------------------------------
+    //------------------------------------------------------
     // Dialog
-    //--------------------------------------------------
+    //
+    // IMPORTANT:
+    // Do NOT automatically accept dialogs.
+    // Resolver/tool layer can explicitly
+    // accept or dismiss them.
+    //------------------------------------------------------
 
-    this.page.on("dialog", async (dialog) => {
+    page.on("dialog", (dialog) => {
       this.lastDialog = dialog;
 
       this.stats.dialogs++;
 
-      this.log(dialog.type(), dialog.message());
-
-      try {
-        await dialog.accept();
-      } catch {}
+      this.log("Dialog:", dialog.type(), dialog.message());
     });
 
-    //--------------------------------------------------
+    //------------------------------------------------------
     // Navigation
-    //--------------------------------------------------
+    //------------------------------------------------------
 
-    this.page.on("framenavigated", (frame) => {
-      if (frame === this.page.mainFrame()) {
+    page.on("framenavigated", (frame) => {
+      if (frame === page.mainFrame()) {
         this.lastURL = frame.url();
 
         this.stats.navigations++;
+
+        this.log("Navigated:", this.lastURL);
       }
     });
 
-    //--------------------------------------------------
+    //------------------------------------------------------
     // Popup
-    //--------------------------------------------------
+    //------------------------------------------------------
 
-    this.page.on("popup", (popup) => {
+    page.on("popup", (popup) => {
+      this.lastPopup = popup;
+
+      this.stats.popups++;
+
       this.log("Popup:", popup.url());
+
+      popup.on("close", () => {
+        if (this.lastPopup === popup) {
+          this.lastPopup = null;
+        }
+      });
     });
 
-    //--------------------------------------------------
+    //------------------------------------------------------
     // Crash
-    //--------------------------------------------------
+    //------------------------------------------------------
 
-    this.page.on("crash", () => {
+    page.on("crash", () => {
       this.connected = false;
 
       this.warn("Page crashed.");
     });
 
-    //--------------------------------------------------
+    //------------------------------------------------------
     // Close
-    //--------------------------------------------------
+    //------------------------------------------------------
 
-    this.page.on("close", () => {
-      this.connected = false;
+    page.on("close", () => {
+      if (this.page === page) {
+        this.connected = false;
+      }
 
       this.warn("Page closed.");
     });
   }
 
-  //==================================================
+  //========================================================
+  // POPUP MANAGER
+  //========================================================
+
+  getLastPopup() {
+    return this.lastPopup;
+  }
+
+  clearPopup() {
+    this.lastPopup = null;
+  }
+
+  async switchToPopup() {
+    if (!this.lastPopup || this.lastPopup.isClosed()) {
+      throw new Error("No active popup.");
+    }
+
+    this.page = this.lastPopup;
+
+    this.lastURL = this.page.url();
+
+    this.stats.pageSwitches++;
+
+    this.attachEvents();
+
+    return this.page;
+  }
+
+  //========================================================
   // SAFE EXECUTION
-  //==================================================
+  //========================================================
 
   async safeExecute(executor, fallback = null) {
     try {
       return await executor();
     } catch (err) {
+      this.stats.errors++;
+
       this.error(err);
 
       if (fallback) {
         try {
           return await fallback(err);
-        } catch (fallbackErr) {
-          this.error(fallbackErr);
+        } catch (fallbackError) {
+          this.stats.errors++;
+
+          this.error(fallbackError);
         }
       }
 
@@ -1357,14 +1509,20 @@ export default class PlaywrightClient {
     }
   }
 
+  //========================================================
+  // RETRY
+  //========================================================
+
   async retry(executor, retries = 3, delay = 500) {
-    let lastError;
+    let lastError = null;
 
     for (let attempt = 1; attempt <= retries; attempt++) {
       try {
         return await executor(attempt);
       } catch (err) {
         lastError = err;
+
+        this.stats.retries++;
 
         this.warn(`Retry ${attempt}/${retries}:`, err.message);
 
@@ -1377,9 +1535,9 @@ export default class PlaywrightClient {
     throw lastError;
   }
 
-  //==================================================
-  // DEBUG HELPERS
-  //==================================================
+  //========================================================
+  // DEBUG PAGES
+  //========================================================
 
   async debugPages() {
     const pages = await this.getPages();
@@ -1393,11 +1551,19 @@ export default class PlaywrightClient {
         title: await page.title().catch(() => ""),
 
         closed: page.isClosed(),
+
+        realBrowserPage: this.isRealBrowserPage(page),
       });
     }
 
     console.log("======================================\n");
+
+    return pages;
   }
+
+  //========================================================
+  // DEBUG FRAMES
+  //========================================================
 
   async debugFrames() {
     const frames = await this.getFrames();
@@ -1415,7 +1581,13 @@ export default class PlaywrightClient {
     });
 
     console.log("============================\n");
+
+    return frames;
   }
+
+  //========================================================
+  // DEBUG SNAPSHOT
+  //========================================================
 
   async debugSnapshot() {
     const snapshot = await this.snapshot();
@@ -1433,47 +1605,127 @@ export default class PlaywrightClient {
     return snapshot;
   }
 
-  //==================================================
+  //========================================================
   // TOOL API
-  //==================================================
+  //========================================================
 
   async listTools() {
     return [
-      { name: "navigate" },
+      {
+        name: "navigate",
+        description: "Navigate to a URL",
+      },
 
-      { name: "click" },
+      {
+        name: "click",
+        description: "Click an element",
+      },
 
-      { name: "doubleClick" },
+      {
+        name: "doubleClick",
+        description: "Double click an element",
+      },
 
-      { name: "rightClick" },
+      {
+        name: "rightClick",
+        description: "Right click an element",
+      },
 
-      { name: "type" },
+      {
+        name: "type",
+        description: "Fill an input",
+      },
 
-      { name: "hover" },
+      {
+        name: "hover",
+        description: "Hover over an element",
+      },
 
-      { name: "selectOption" },
+      {
+        name: "selectOption",
+        description: "Select an option",
+      },
 
-      { name: "press" },
+      {
+        name: "press",
+        description: "Press keyboard key",
+      },
 
-      { name: "shortcut" },
+      {
+        name: "shortcut",
+        description: "Press keyboard shortcut",
+      },
 
-      { name: "snapshot" },
+      {
+        name: "snapshot",
+        description: "Capture page snapshot",
+      },
 
-      { name: "html" },
+      {
+        name: "html",
+        description: "Get page HTML",
+      },
 
-      { name: "reload" },
+      {
+        name: "reload",
+        description: "Reload current page",
+      },
 
-      { name: "wait" },
+      {
+        name: "wait",
+        description: "Wait for specified time",
+      },
 
-      { name: "evaluate" },
+      {
+        name: "evaluate",
+        description: "Execute JavaScript in page",
+      },
 
-      { name: "inspectPage" },
+      {
+        name: "inspectPage",
+        description: "Inspect current page",
+      },
+
+      {
+        name: "getDOMSnapshot",
+        description: "Get structured interactive DOM",
+      },
+
+      {
+        name: "getInteractiveElements",
+        description: "Get visible interactive elements",
+      },
+
+      {
+        name: "newTab",
+        description: "Open new browser tab",
+      },
+
+      {
+        name: "switchToPage",
+        description: "Switch browser tab",
+      },
+
+      {
+        name: "closeCurrentPage",
+        description: "Close active browser tab",
+      },
+
+      {
+        name: "getFrames",
+        description: "List all page frames",
+      },
+
+      {
+        name: "waitForURL",
+        description: "Wait for URL change",
+      },
     ];
   }
 
-  //==================================================
+  //========================================================
   // STATISTICS
-  //==================================================
+  //========================================================
 
   resetStatistics() {
     Object.keys(this.stats).forEach((key) => {
@@ -1493,15 +1745,19 @@ export default class PlaywrightClient {
 
       hasDialog: !!this.lastDialog,
 
+      hasPopup: !!this.lastPopup,
+
       hasSnapshot: !!this.lastSnapshot,
+
+      hasDOMSnapshot: !!this.lastDOMSnapshot,
 
       pages: this.context ? this.context.pages().length : 0,
     };
   }
 
-  //==================================================
-  // EXPORT HELPERS
-  //==================================================
+  //========================================================
+  // DISPOSE
+  //========================================================
 
   async dispose() {
     await this.disconnect();

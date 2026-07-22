@@ -26,6 +26,11 @@
 // ✔ Multi-tab support
 // ✔ Auto page recovery
 // ✔ Performance statistics
+// ✔ Safe execution
+// ✔ Retry execution
+// ✔ Frame helpers
+// ✔ DOM evaluation
+// ✔ Cookie management
 //
 //==========================================================
 
@@ -47,6 +52,10 @@ class BrowserController {
       autoReconnect: true,
 
       waitUntil: "domcontentloaded",
+
+      navigationTimeout: 60000,
+
+      healthCheckTimeout: 5000,
 
       debug: false,
 
@@ -86,16 +95,24 @@ class BrowserController {
     this.lastDialog = null;
 
     //--------------------------------------------------
-    // Event Flags
+    // Event State
     //--------------------------------------------------
 
-    this.eventsAttached = false;
+    this.attachedPages = new WeakSet();
 
     //--------------------------------------------------
     // Statistics
     //--------------------------------------------------
 
-    this.stats = {
+    this.stats = this.createStatistics();
+  }
+
+  //==================================================
+  // STATISTICS FACTORY
+  //==================================================
+
+  createStatistics() {
+    return {
       reconnects: 0,
 
       pageSwitches: 0,
@@ -108,9 +125,21 @@ class BrowserController {
 
       crashes: 0,
 
+      pageCloses: 0,
+
+      popups: 0,
+
       healthChecks: 0,
 
       screenshots: 0,
+
+      tabsCreated: 0,
+
+      tabsClosed: 0,
+
+      evaluations: 0,
+
+      retries: 0,
     };
   }
 
@@ -138,15 +167,22 @@ class BrowserController {
 
   async connect(force = false) {
     //--------------------------------------------------
-    // Already connected
+    // Existing healthy connection
     //--------------------------------------------------
 
-    if (!force && this.connected && this.page && !this.page.isClosed()) {
+    if (
+      !force &&
+      this.connected &&
+      this.browser &&
+      this.context &&
+      this.page &&
+      !this.page.isClosed()
+    ) {
       return this.page;
     }
 
     //--------------------------------------------------
-    // Prevent duplicate connects
+    // Prevent duplicate connections
     //--------------------------------------------------
 
     if (this.connecting && this.connectionPromise) {
@@ -158,9 +194,7 @@ class BrowserController {
     this.connectionPromise = this.connectInternal(force);
 
     try {
-      const page = await this.connectionPromise;
-
-      return page;
+      return await this.connectionPromise;
     } finally {
       this.connecting = false;
 
@@ -174,12 +208,20 @@ class BrowserController {
 
   async connectInternal(force = false) {
     if (force) {
-      await this.disconnect().catch(() => {});
+      await this.disconnect();
     }
 
-    this.log("Connecting to Electron CDP...");
+    this.log("Connecting to Electron CDP:", this.options.cdpURL);
+
+    //--------------------------------------------------
+    // Connect
+    //--------------------------------------------------
 
     this.browser = await chromium.connectOverCDP(this.options.cdpURL);
+
+    //--------------------------------------------------
+    // Context discovery
+    //--------------------------------------------------
 
     const contexts = this.browser.contexts();
 
@@ -189,9 +231,27 @@ class BrowserController {
 
     this.context = contexts[0];
 
+    //--------------------------------------------------
+    // Find active page
+    //--------------------------------------------------
+
     await this.refreshActivePage();
 
-    this.attachEvents();
+    //--------------------------------------------------
+    // Attach existing page events
+    //--------------------------------------------------
+
+    this.attachEventsToAllPages();
+
+    //--------------------------------------------------
+    // Context events
+    //--------------------------------------------------
+
+    this.attachContextEvents();
+
+    //--------------------------------------------------
+    // Connection state
+    //--------------------------------------------------
 
     this.connected = true;
 
@@ -199,8 +259,11 @@ class BrowserController {
 
     this.log("Connected successfully.");
 
+    this.log("Active URL:", this.lastURL);
+
     return this.page;
   }
+
   //==================================================
   // DISCONNECT
   //==================================================
@@ -208,19 +271,25 @@ class BrowserController {
   async disconnect() {
     this.connected = false;
 
-    this.eventsAttached = false;
-
     this.page = null;
 
     this.context = null;
 
-    if (this.browser) {
-      try {
-        await this.browser.close();
-      } catch {}
-    }
+    //--------------------------------------------------
+    // IMPORTANT
+    //
+    // Do NOT call browser.close() on a CDP-attached
+    // Electron browser when you only want to detach.
+    //
+    // Playwright's CDP connection will be released
+    // when the controller drops the reference.
+    //--------------------------------------------------
 
     this.browser = null;
+
+    this.attachedPages = new WeakSet();
+
+    this.lastURL = "";
   }
 
   //==================================================
@@ -230,32 +299,73 @@ class BrowserController {
   async ensureConnected() {
     this.stats.healthChecks++;
 
-    try {
-      if (
-        !this.browser ||
-        !this.context ||
-        !this.page ||
-        this.page.isClosed()
-      ) {
-        throw new Error("Browser disconnected");
+    //--------------------------------------------------
+    // Fast path
+    //--------------------------------------------------
+
+    if (
+      this.connected &&
+      this.browser &&
+      this.context &&
+      this.page &&
+      !this.page.isClosed()
+    ) {
+      try {
+        await this.page.title({
+          timeout: this.options.healthCheckTimeout,
+        });
+
+        return this.page;
+      } catch {
+        this.warn("Current page is unreachable.");
       }
-
-      await this.page.title().catch(() => {
-        throw new Error("Page unreachable");
-      });
-
-      return true;
-    } catch {
-      this.connected = false;
-
-      if (!this.options.autoReconnect) return false;
-
-      this.stats.reconnects++;
-
-      await this.connect(true);
-
-      return true;
     }
+
+    //--------------------------------------------------
+    // No auto reconnect
+    //--------------------------------------------------
+
+    if (!this.options.autoReconnect) {
+      throw new Error("Browser is disconnected.");
+    }
+
+    //--------------------------------------------------
+    // Reconnect
+    //--------------------------------------------------
+
+    this.stats.reconnects++;
+
+    let lastError = null;
+
+    for (
+      let attempt = 1;
+      attempt <= this.options.maxReconnectAttempts;
+      attempt++
+    ) {
+      try {
+        this.log(
+          `Reconnect attempt ${attempt}/${this.options.maxReconnectAttempts}`,
+        );
+
+        const page = await this.connect(true);
+
+        return page;
+      } catch (err) {
+        lastError = err;
+
+        this.warn(`Reconnect attempt ${attempt} failed:`, err.message);
+
+        if (attempt < this.options.maxReconnectAttempts) {
+          await this.sleep(this.options.reconnectInterval);
+        }
+      }
+    }
+
+    throw new Error(
+      `Unable to reconnect to Electron CDP after ` +
+        `${this.options.maxReconnectAttempts} attempts. ` +
+        `${lastError?.message || ""}`,
+    );
   }
 
   //==================================================
@@ -263,19 +373,36 @@ class BrowserController {
   //==================================================
 
   async refreshActivePage() {
-    if (!this.context) return null;
+    if (!this.context) {
+      throw new Error("Browser context not available.");
+    }
 
-    const pages = this.context.pages();
+    const pages = this.context.pages().filter((page) => !page.isClosed());
 
-    if (!pages.length) throw new Error("No pages found.");
+    if (!pages.length) {
+      throw new Error("No pages found.");
+    }
 
     //--------------------------------------------------
-    // Prefer visible page
+    // Keep current page if still alive
+    //
+    // This is safer than always choosing pages[0].
     //--------------------------------------------------
 
-    let active = pages.find((page) => !page.isClosed());
+    if (this.page && !this.page.isClosed() && pages.includes(this.page)) {
+      this.lastURL = this.page.url();
 
-    if (!active) active = pages[0];
+      return this.page;
+    }
+
+    //--------------------------------------------------
+    // Select last available page
+    //
+    // In Electron CDP environments this is generally
+    // the newest BrowserView/page.
+    //--------------------------------------------------
+
+    const active = pages[pages.length - 1];
 
     if (this.page && this.page !== active) {
       this.stats.pageSwitches++;
@@ -284,6 +411,8 @@ class BrowserController {
     this.page = active;
 
     this.lastURL = this.page.url();
+
+    this.log("Active page:", this.lastURL);
 
     return this.page;
   }
@@ -307,13 +436,15 @@ class BrowserController {
   async getPage() {
     await this.ensureConnected();
 
+    await this.refreshActivePage();
+
     return this.page;
   }
 
   async getPages() {
     await this.ensureConnected();
 
-    return this.context.pages();
+    return this.context.pages().filter((page) => !page.isClosed());
   }
 
   async getFrames() {
@@ -340,24 +471,26 @@ class BrowserController {
     const page = await this.getPage();
 
     await page
-      .waitForLoadState(this.options.waitUntil, { timeout })
+      .waitForLoadState(this.options.waitUntil, {
+        timeout,
+      })
       .catch(() => {});
-
-    this.stats.navigations++;
 
     this.lastURL = page.url();
 
     return page;
   }
 
-  async reload() {
+  async reload(options = {}) {
     const page = await this.getPage();
 
     await page.reload({
       waitUntil: this.options.waitUntil,
-    });
 
-    this.stats.navigations++;
+      timeout: this.options.navigationTimeout,
+
+      ...options,
+    });
 
     this.lastURL = page.url();
 
@@ -365,20 +498,37 @@ class BrowserController {
   }
 
   async goto(url, options = {}) {
+    if (!url) {
+      throw new Error("URL is required.");
+    }
+
     const page = await this.getPage();
 
-    await page.goto(url, {
-      waitUntil: this.options.waitUntil,
+    const previousURL = page.url();
 
-      ...options,
-    });
+    await page.goto(
+      String(url),
 
-    this.stats.navigations++;
+      {
+        waitUntil: this.options.waitUntil,
 
-    this.lastURL = page.url();
+        timeout: this.options.navigationTimeout,
+
+        ...options,
+      },
+    );
+
+    const currentURL = page.url();
+
+    if (previousURL !== currentURL) {
+      this.stats.navigations++;
+    }
+
+    this.lastURL = currentURL;
 
     return page;
   }
+
   //==================================================
   // HTML / URL
   //==================================================
@@ -387,6 +537,12 @@ class BrowserController {
     const page = await this.getPage();
 
     return await page.content();
+  }
+
+  async text() {
+    const page = await this.getPage();
+
+    return await page.evaluate(() => document.body?.innerText || "");
   }
 
   async url() {
@@ -404,7 +560,7 @@ class BrowserController {
   }
 
   //==================================================
-  // SCREENSHOTS
+  // SCREENSHOT
   //==================================================
 
   async screenshot(options = {}) {
@@ -422,144 +578,6 @@ class BrowserController {
   }
 
   //==================================================
-  // DOWNLOADS
-  //==================================================
-
-  getLastDownload() {
-    return this.lastDownload;
-  }
-
-  clearDownload() {
-    this.lastDownload = null;
-  }
-
-  //==================================================
-  // DIALOGS
-  //==================================================
-
-  getLastDialog() {
-    return this.lastDialog;
-  }
-
-  clearDialog() {
-    this.lastDialog = null;
-  }
-
-  //==================================================
-  // EVENT MANAGER
-  //==================================================
-
-  attachEvents() {
-    if (this.eventsAttached || !this.page) {
-      return;
-    }
-
-    this.eventsAttached = true;
-
-    //--------------------------------------------------
-    // Download
-    //--------------------------------------------------
-
-    this.page.on("download", (download) => {
-      this.lastDownload = download;
-
-      this.stats.downloads++;
-
-      this.log("Download started:", download.suggestedFilename());
-    });
-
-    //--------------------------------------------------
-    // Dialog
-    //--------------------------------------------------
-
-    this.page.on("dialog", async (dialog) => {
-      this.lastDialog = dialog;
-
-      this.stats.dialogs++;
-
-      this.log("Dialog:", dialog.type(), dialog.message());
-
-      try {
-        await dialog.accept();
-      } catch {}
-    });
-
-    //--------------------------------------------------
-    // Navigation
-    //--------------------------------------------------
-
-    this.page.on("framenavigated", (frame) => {
-      if (frame === this.page.mainFrame()) {
-        this.lastURL = frame.url();
-
-        this.stats.navigations++;
-
-        this.log("Navigated:", this.lastURL);
-      }
-    });
-
-    //--------------------------------------------------
-    // Crash
-    //--------------------------------------------------
-
-    this.page.on("crash", () => {
-      this.stats.crashes++;
-
-      this.connected = false;
-
-      this.warn("Page crashed.");
-    });
-
-    //--------------------------------------------------
-    // Close
-    //--------------------------------------------------
-
-    this.page.on("close", () => {
-      this.connected = false;
-
-      this.warn("Page closed.");
-    });
-
-    //--------------------------------------------------
-    // Popup
-    //--------------------------------------------------
-
-    this.page.on("popup", (popup) => {
-      this.log("Popup detected:", popup.url());
-    });
-  }
-
-  //==================================================
-  // WAIT HELPERS
-  //==================================================
-
-  async wait(milliseconds) {
-    const page = await this.getPage();
-
-    await page.waitForTimeout(milliseconds);
-  }
-
-  async waitForSelector(selector, options = {}) {
-    const page = await this.getPage();
-
-    return await page.waitForSelector(selector, options);
-  }
-
-  async waitForFunction(fn, arg, options = {}) {
-    const page = await this.getPage();
-
-    return await page.waitForFunction(fn, arg, options);
-  }
-
-  //==================================================
-  // PART 4
-  // Browser utilities
-  // Frame helpers
-  // Tab manager
-  // Safe execution
-  // Statistics
-  //==================================================
-  //==================================================
   // TAB MANAGEMENT
   //==================================================
 
@@ -568,19 +586,25 @@ class BrowserController {
 
     const page = await this.context.newPage();
 
+    this.stats.tabsCreated++;
+
+    this.attachPageEvents(page);
+
     if (url && url !== "about:blank") {
-      await page.goto(url, {
-        waitUntil: this.options.waitUntil,
-      });
+      await page.goto(
+        url,
+
+        {
+          waitUntil: this.options.waitUntil,
+
+          timeout: this.options.navigationTimeout,
+        },
+      );
     }
 
     this.page = page;
 
     this.lastURL = page.url();
-
-    this.eventsAttached = false;
-
-    this.attachEvents();
 
     this.stats.pageSwitches++;
 
@@ -590,29 +614,35 @@ class BrowserController {
   async switchToPage(index = 0) {
     await this.ensureConnected();
 
-    const pages = this.context.pages();
+    const pages = this.context.pages().filter((page) => !page.isClosed());
 
     if (index < 0 || index >= pages.length) {
-      throw new Error(`Invalid page index ${index}`);
+      throw new Error(
+        `Invalid page index ${index}. ` + `Available pages: ${pages.length}`,
+      );
     }
+
+    const previous = this.page;
 
     this.page = pages[index];
 
-    this.eventsAttached = false;
-
-    this.attachEvents();
+    this.attachPageEvents(this.page);
 
     this.lastURL = this.page.url();
 
-    this.stats.pageSwitches++;
+    if (previous !== this.page) {
+      this.stats.pageSwitches++;
+    }
 
     return this.page;
   }
 
   async switchToLastPage() {
-    await this.ensureConnected();
+    const pages = await this.getPages();
 
-    const pages = this.context.pages();
+    if (!pages.length) {
+      throw new Error("No pages available.");
+    }
 
     return this.switchToPage(pages.length - 1);
   }
@@ -622,7 +652,13 @@ class BrowserController {
 
     await page.close().catch(() => {});
 
+    this.stats.tabsClosed++;
+
+    this.page = null;
+
     await this.refreshActivePage();
+
+    return this.page;
   }
 
   //==================================================
@@ -653,28 +689,42 @@ class BrowserController {
     while (Date.now() - started < timeout) {
       const frames = await this.getFrames();
 
-      const frame = frames.find(predicate);
+      const found = frames.find(predicate);
 
-      if (frame) return frame;
+      if (found) {
+        return found;
+      }
 
-      await this.wait(200);
+      await this.sleep(250);
     }
 
     throw new Error("Frame not found.");
+  }
+
+  async evaluateInFrame(frame, fn, arg = null) {
+    if (!frame) {
+      throw new Error("Frame is required.");
+    }
+
+    return await frame.evaluate(fn, arg);
   }
 
   //==================================================
   // BROWSER UTILITIES
   //==================================================
 
-  async evaluate(fn, arg) {
+  async evaluate(fn, arg = null) {
     const page = await this.getPage();
+
+    this.stats.evaluations++;
 
     return await page.evaluate(fn, arg);
   }
 
-  async evaluateHandle(fn, arg) {
+  async evaluateHandle(fn, arg = null) {
     const page = await this.getPage();
+
+    this.stats.evaluations++;
 
     return await page.evaluateHandle(fn, arg);
   }
@@ -683,6 +733,8 @@ class BrowserController {
     const page = await this.getPage();
 
     await page.bringToFront();
+
+    return page;
   }
 
   async focus() {
@@ -699,6 +751,10 @@ class BrowserController {
     });
   }
 
+  //==================================================
+  // COOKIES
+  //==================================================
+
   async cookies() {
     await this.ensureConnected();
 
@@ -712,29 +768,240 @@ class BrowserController {
   }
 
   //==================================================
-  // SAFE EXECUTION
+  // DOWNLOADS
   //==================================================
 
-  async safe(action) {
-    try {
-      return await action();
-    } catch (err) {
-      this.error(err);
+  getLastDownload() {
+    return this.lastDownload;
+  }
 
-      return null;
+  clearDownload() {
+    this.lastDownload = null;
+  }
+
+  //==================================================
+  // DIALOGS
+  //==================================================
+
+  getLastDialog() {
+    return this.lastDialog;
+  }
+
+  clearDialog() {
+    this.lastDialog = null;
+  }
+
+  //==================================================
+  // EVENT MANAGER
+  //==================================================
+
+  attachContextEvents() {
+    if (!this.context) {
+      return;
+    }
+
+    this.context.on("page", (page) => {
+      this.stats.popups++;
+
+      this.log("New page detected:", page.url());
+
+      this.attachPageEvents(page);
+
+      //--------------------------------------------------
+      // Automatically switch to new page
+      //--------------------------------------------------
+
+      this.page = page;
+
+      this.lastURL = page.url();
+    });
+  }
+
+  attachEventsToAllPages() {
+    if (!this.context) {
+      return;
+    }
+
+    for (const page of this.context.pages()) {
+      this.attachPageEvents(page);
     }
   }
 
-  async retry(action, retries = 3) {
-    let lastError;
+  attachPageEvents(page) {
+    if (!page || page.isClosed() || this.attachedPages.has(page)) {
+      return;
+    }
 
-    for (let i = 0; i < retries; i++) {
+    this.attachedPages.add(page);
+
+    //--------------------------------------------------
+    // Download
+    //--------------------------------------------------
+
+    page.on("download", (download) => {
+      this.lastDownload = download;
+
+      this.stats.downloads++;
+
+      this.log("Download started:", download.suggestedFilename());
+    });
+
+    //--------------------------------------------------
+    // Dialog
+    //--------------------------------------------------
+
+    page.on("dialog", async (dialog) => {
+      this.lastDialog = dialog;
+
+      this.stats.dialogs++;
+
+      this.log("Dialog:", dialog.type(), dialog.message());
+
+      //--------------------------------------------------
+      // Do NOT automatically accept here.
+      //
+      // Resolver / Planner can decide whether to
+      // accept or dismiss.
+      //--------------------------------------------------
+    });
+
+    //--------------------------------------------------
+    // Navigation
+    //--------------------------------------------------
+
+    page.on("framenavigated", (frame) => {
+      if (frame === page.mainFrame()) {
+        this.lastURL = frame.url();
+
+        this.log("Navigated:", this.lastURL);
+      }
+    });
+
+    //--------------------------------------------------
+    // Crash
+    //--------------------------------------------------
+
+    page.on("crash", () => {
+      this.stats.crashes++;
+
+      if (page === this.page) {
+        this.connected = false;
+      }
+
+      this.warn("Page crashed.");
+    });
+
+    //--------------------------------------------------
+    // Close
+    //--------------------------------------------------
+
+    page.on("close", () => {
+      this.stats.pageCloses++;
+
+      if (page === this.page) {
+        this.page = null;
+
+        this.connected = false;
+      }
+
+      this.warn("Page closed.");
+    });
+  }
+
+  //==================================================
+  // WAIT HELPERS
+  //==================================================
+
+  async wait(milliseconds = 1000) {
+    await this.sleep(milliseconds);
+
+    return {
+      success: true,
+
+      action: "wait",
+
+      milliseconds,
+    };
+  }
+
+  async waitForSelector(selector, options = {}) {
+    const page = await this.getPage();
+
+    return await page.waitForSelector(selector, options);
+  }
+
+  async waitForFunction(fn, arg = null, options = {}) {
+    const page = await this.getPage();
+
+    return await page.waitForFunction(fn, arg, options);
+  }
+
+  async waitForURL(matcher, options = {}) {
+    const page = await this.getPage();
+
+    await page.waitForURL(matcher, options);
+
+    this.lastURL = page.url();
+
+    return this.lastURL;
+  }
+
+  async waitForLoadState(state = "networkidle") {
+    const page = await this.getPage();
+
+    await page.waitForLoadState(state);
+
+    return true;
+  }
+
+  //==================================================
+  // SAFE EXECUTION
+  //==================================================
+
+  async safe(action, fallback = null) {
+    if (typeof action !== "function") {
+      throw new TypeError("safe() requires a function.");
+    }
+
+    try {
+      return await action();
+    } catch (err) {
+      this.error("Safe execution failed:", err.message);
+
+      return fallback;
+    }
+  }
+
+  //==================================================
+  // RETRY
+  //==================================================
+
+  async retry(action, retries = 3, delay = 500) {
+    if (typeof action !== "function") {
+      throw new TypeError("retry() requires a function.");
+    }
+
+    const attempts = Math.max(1, Number(retries) || 1);
+
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= attempts; attempt++) {
       try {
         return await action();
       } catch (err) {
         lastError = err;
 
-        await this.wait(500);
+        this.stats.retries++;
+
+        this.warn(
+          `Retry ${attempt}/${attempts}:`,
+
+          err.message,
+        );
+
+        if (attempt < attempts) {
+          await this.sleep(delay);
+        }
       }
     }
 
@@ -742,27 +1009,21 @@ class BrowserController {
   }
 
   //==================================================
+  // INTERNAL SLEEP
+  //==================================================
+
+  async sleep(milliseconds) {
+    return new Promise((resolve) =>
+      setTimeout(resolve, Math.max(0, milliseconds || 0)),
+    );
+  }
+
+  //==================================================
   // STATISTICS
   //==================================================
 
   resetStatistics() {
-    this.stats = {
-      reconnects: 0,
-
-      pageSwitches: 0,
-
-      navigations: 0,
-
-      downloads: 0,
-
-      dialogs: 0,
-
-      crashes: 0,
-
-      healthChecks: 0,
-
-      screenshots: 0,
-    };
+    this.stats = this.createStatistics();
   }
 
   getStatistics() {
@@ -775,11 +1036,13 @@ class BrowserController {
 
       context: !!this.context,
 
-      page: !!this.page,
+      page: !!this.page && !this.page.isClosed(),
 
       currentURL: this.lastURL,
 
-      pages: this.context ? this.context.pages().length : 0,
+      pages: this.context
+        ? this.context.pages().filter((page) => !page.isClosed()).length
+        : 0,
 
       lastConnected: this.lastConnected,
     };
@@ -789,5 +1052,17 @@ class BrowserController {
     console.table(this.getStatistics());
   }
 }
+
+//==========================================================
+// SINGLETON EXPORT
+//==========================================================
+//
+// IMPORTANT:
+//
+// Keep this as a singleton because resolver.js,
+// tool-map.js and server.js can share the same
+// BrowserController instance.
+//
+//==========================================================
 
 export default new BrowserController();
