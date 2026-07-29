@@ -3,11 +3,18 @@
  *
  * Ultra Intelligent Planner Normalizer
  *
+ * Phase 1 — Understanding Layer
+ *
  * Responsibilities
  * ----------------
  * ✔ Normalize planner / LLM / regex output
+ * ✔ Normalize raw user command structures
  * ✔ Normalize action names
  * ✔ Normalize payload fields
+ * ✔ Normalize target / value / element type
+ * ✔ Normalize modifiers
+ * ✔ Normalize entities
+ * ✔ Normalize browser context
  * ✔ Normalize confidence scores
  * ✔ Normalize steps
  * ✔ Normalize aliases
@@ -21,22 +28,29 @@
  * User Command
  *      │
  *      ▼
- * Intent Parser
- *      │
- *      ▼
  * Normalizer
  *      │
  *      ├── action
  *      ├── target
  *      ├── value
+ *      ├── elementType
+ *      ├── modifiers
+ *      ├── entities
+ *      ├── context
  *      ├── selector
- *      ├── confidence
+ *      └── multi-step
+ *      │
+ *      ▼
+ * Intent Parser
  *      │
  *      ▼
  * Scoring Engine
  *      │
  *      ▼
- * Planner / ToolMap
+ * Resolver
+ *      │
+ *      ▼
+ * Executor
  *
  * IMPORTANT
  * ---------
@@ -44,12 +58,16 @@
  * ❌ No DOM scoring
  * ❌ No browser execution
  * ❌ No selector ranking
+ * ❌ No Playwright calls
  *
  * Fuzzy matching belongs to:
  *     scoring-engine.js
  *
- * Browser execution belongs to:
+ * Browser resolution belongs to:
  *     resolver.js
+ *
+ * Browser execution belongs to:
+ *     executor.js
  *
  *==========================================================
  */
@@ -67,6 +85,8 @@ class Normalizer {
 
       maxSteps: 100,
 
+      preserveUnknownFields: true,
+
       debug: false,
 
       ...options,
@@ -74,6 +94,8 @@ class Normalizer {
 
     this.stats = {
       normalized: 0,
+
+      commands: 0,
 
       arrays: 0,
 
@@ -123,7 +145,10 @@ class Normalizer {
       // Parse input
       //----------------------------------------------------
 
-      const data = typeof input === "string" ? this._safeParse(input) : input;
+      const data =
+        typeof input === "string"
+          ? (this._safeParse(input) ?? this._normalizeRawCommand(input))
+          : input;
 
       if (data === null || data === undefined) {
         this.stats.invalid++;
@@ -140,21 +165,11 @@ class Normalizer {
 
         const steps = data
           .slice(0, this.options.maxSteps)
-          .map((item) => this._normalizeItem(item));
+          .map((item, index) => this._normalizeItem(item, index));
 
         this.stats.steps += steps.length;
 
-        return {
-          type: "plan",
-
-          steps,
-
-          confidence: this._calculatePlanConfidence(steps),
-
-          payload: {
-            steps,
-          },
-        };
+        return this._createPlanResult(steps);
       }
 
       //----------------------------------------------------
@@ -164,7 +179,7 @@ class Normalizer {
       if (Array.isArray(data.steps)) {
         const steps = data.steps
           .slice(0, this.options.maxSteps)
-          .map((item) => this._normalizeItem(item));
+          .map((item, index) => this._normalizeItem(item, index));
 
         this.stats.steps += steps.length;
 
@@ -176,6 +191,7 @@ class Normalizer {
           confidence: this._normalizeConfidence(
             data.confidence ??
               data.score ??
+              data.probability ??
               this._calculatePlanConfidence(steps),
           ),
 
@@ -193,7 +209,11 @@ class Normalizer {
 
       this.stats.normalized++;
 
-      return this._normalizeItem(data);
+      const result = this._normalizeItem(data);
+
+      this.stats.commands++;
+
+      return result;
     } catch (err) {
       this.stats.errors++;
 
@@ -204,10 +224,243 @@ class Normalizer {
   }
 
   //========================================================
+  // RAW NATURAL LANGUAGE COMMAND
+  //========================================================
+  //
+  // IMPORTANT:
+  //
+  // This method does NOT perform fuzzy matching.
+  //
+  // It only performs lightweight structural extraction.
+  //
+  // Example:
+  //
+  // "Click Punch In button"
+  //
+  // becomes:
+  //
+  // {
+  //   action: "click",
+  //   target: "Punch In",
+  //   elementType: "button"
+  // }
+  //
+  // The Scoring Engine later decides whether:
+  //
+  // "Punh In"
+  //
+  // matches:
+  //
+  // "Punch In"
+  //
+  //========================================================
+
+  _normalizeRawCommand(command) {
+    if (typeof command !== "string") {
+      return null;
+    }
+
+    const text = this._cleanText(command);
+
+    if (!text) {
+      return null;
+    }
+
+    const lower = text.toLowerCase();
+
+    //------------------------------------------------------
+    // Detect action
+    //------------------------------------------------------
+
+    let action = "";
+
+    const actionPatterns = [
+      ["navigate", /^(open|go to|goto|visit|navigate to|browse to)\b/i],
+      ["click", /^(click|press|tap)\b/i],
+      ["type", /^(type|write|enter|input)\b/i],
+      ["type", /^(fill)\b/i],
+      ["select", /^(select|choose)\b/i],
+      ["checkbox", /^(check)\b/i],
+      ["uncheck", /^(uncheck)\b/i],
+      ["hover", /^(hover|mouseover)\b/i],
+      ["scroll", /^(scroll)\b/i],
+      ["wait", /^(wait|sleep|pause|delay)\b/i],
+      ["reload", /^(reload|refresh)\b/i],
+      ["back", /^(back|go back)\b/i],
+      ["forward", /^(forward|go forward)\b/i],
+      ["screenshot", /^(screenshot|capture)\b/i],
+    ];
+
+    for (const [candidateAction, pattern] of actionPatterns) {
+      if (pattern.test(text)) {
+        action = candidateAction;
+        break;
+      }
+    }
+
+    //------------------------------------------------------
+    // Remove command verb
+    //------------------------------------------------------
+
+    let remainder = text;
+
+    if (action) {
+      remainder = remainder
+        .replace(
+          /^(open|go\s+to|goto|visit|navigate\s+to|browse\s+to|click|press|tap|type|write|enter|input|fill|select|choose|check|uncheck|hover|mouseover|scroll|wait|sleep|pause|delay|reload|refresh|back|go\s+back|forward|go\s+forward|screenshot|capture)\b/i,
+          "",
+        )
+        .trim();
+    }
+
+    //------------------------------------------------------
+    // Extract value
+    //
+    // Example:
+    //
+    // Fill email with test@gmail.com
+    //
+    //------------------------------------------------------
+
+    let value = null;
+
+    const valueMatch = remainder.match(/^(.*?)\s+(?:with|as|to)\s+(.+)$/i);
+
+    if (valueMatch && ["type", "select"].includes(action)) {
+      remainder = valueMatch[1].trim();
+
+      value = this._stripQuotes(valueMatch[2].trim());
+    }
+
+    //------------------------------------------------------
+    // Extract element type
+    //------------------------------------------------------
+
+    const elementTypes = [
+      "button",
+      "link",
+      "input",
+      "textbox",
+      "text field",
+      "field",
+      "checkbox",
+      "radio",
+      "dropdown",
+      "select",
+      "menu",
+      "tab",
+      "image",
+      "heading",
+      "icon",
+    ];
+
+    let elementType = null;
+
+    for (const type of elementTypes) {
+      const pattern = new RegExp(`\\s+${this._escapeRegExp(type)}$`, "i");
+
+      if (pattern.test(remainder)) {
+        elementType = type;
+
+        remainder = remainder.replace(pattern, "").trim();
+
+        break;
+      }
+    }
+
+    //------------------------------------------------------
+    // Extract browser context
+    //------------------------------------------------------
+
+    const context = this._extractContext(text);
+
+    //------------------------------------------------------
+    // Clean target
+    //------------------------------------------------------
+
+    let target = remainder;
+
+    if (action === "navigate") {
+      target = remainder;
+    }
+
+    if (
+      action === "scroll" ||
+      action === "wait" ||
+      action === "reload" ||
+      action === "back" ||
+      action === "forward" ||
+      action === "screenshot"
+    ) {
+      target = null;
+    }
+
+    //------------------------------------------------------
+    // Build normalized command
+    //------------------------------------------------------
+
+    return {
+      action: this._mapType(this._normalizeActionName(action)),
+
+      target: target ? this._cleanText(target) : null,
+
+      value,
+
+      elementType: elementType ? this._normalizeElementType(elementType) : null,
+
+      modifiers: this._extractModifiers(text),
+
+      entities: this._extractEntities(text),
+
+      context,
+
+      rawCommand: text,
+    };
+  }
+
+  //========================================================
+  // CREATE PLAN RESULT
+  //========================================================
+
+  _createPlanResult(steps) {
+    return {
+      type: "plan",
+
+      steps,
+
+      confidence: this._calculatePlanConfidence(steps),
+
+      payload: {
+        steps,
+      },
+    };
+  }
+
+  //========================================================
   // NORMALIZE SINGLE ITEM
   //========================================================
 
-  _normalizeItem(item) {
+  _normalizeItem(item, index = 0) {
+    //------------------------------------------------------
+    // Raw string step
+    //------------------------------------------------------
+
+    if (typeof item === "string") {
+      const rawCommand = this._normalizeRawCommand(item);
+
+      if (!rawCommand) {
+        this.stats.invalid++;
+
+        return this._empty("invalid_command");
+      }
+
+      return this._normalizeItem(rawCommand, index);
+    }
+
+    //------------------------------------------------------
+    // Invalid item
+    //------------------------------------------------------
+
     if (!item || typeof item !== "object" || Array.isArray(item)) {
       this.stats.invalid++;
 
@@ -229,13 +482,34 @@ class Normalizer {
     const type = this._mapType(this._normalizeActionName(rawType));
 
     //------------------------------------------------------
-    // Base result
+    // Normalize payload
+    //------------------------------------------------------
+
+    const payload = this._normalizePayload(item);
+
+    //------------------------------------------------------
+    // Ensure normalized core fields
     //------------------------------------------------------
 
     const normalized = {
       type,
 
-      payload: this._normalizePayload(item),
+      action: type,
+
+      target:
+        payload.target ?? payload.text ?? payload.label ?? payload.name ?? null,
+
+      value: payload.value ?? payload.inputValue ?? null,
+
+      elementType: payload.elementType ?? payload.role ?? null,
+
+      modifiers: payload.modifiers ?? [],
+
+      entities: payload.entities ?? {},
+
+      context: payload.context ?? {},
+
+      payload,
 
       confidence: this._normalizeConfidence(
         item.confidence ?? item.score ?? item.probability,
@@ -252,6 +526,8 @@ class Normalizer {
 
     if (item.step !== undefined) {
       normalized.step = item.step;
+    } else if (index !== undefined) {
+      normalized.step = index;
     }
 
     if (item.reason !== undefined) {
@@ -268,6 +544,16 @@ class Normalizer {
 
     if (item.requiresConfirmation !== undefined) {
       normalized.requiresConfirmation = Boolean(item.requiresConfirmation);
+    }
+
+    //------------------------------------------------------
+    // Preserve raw input
+    //------------------------------------------------------
+
+    if (this.options.preserveUnknownFields) {
+      normalized.raw = {
+        ...item,
+      };
     }
 
     return normalized;
@@ -445,6 +731,18 @@ class Normalizer {
       capture: "screenshot",
 
       //----------------------------------------------------
+      // Upload
+      //----------------------------------------------------
+
+      upload: "upload",
+
+      upload_file: "upload",
+
+      attach: "upload",
+
+      attach_file: "upload",
+
+      //----------------------------------------------------
       // Browser
       //----------------------------------------------------
 
@@ -492,7 +790,7 @@ class Normalizer {
     }
 
     //------------------------------------------------------
-    // Merge possible payload containers
+    // Merge payload containers
     //------------------------------------------------------
 
     const payload = {
@@ -599,6 +897,52 @@ class Normalizer {
     }
 
     //------------------------------------------------------
+    // Element Type
+    //------------------------------------------------------
+
+    const elementType =
+      payload.elementType ??
+      payload.element_type ??
+      payload.element ??
+      item.elementType ??
+      item.element_type;
+
+    if (elementType !== undefined && elementType !== null) {
+      normalized.elementType = this._normalizeElementType(elementType);
+    }
+
+    //------------------------------------------------------
+    // Modifiers
+    //------------------------------------------------------
+
+    if (Array.isArray(payload.modifiers)) {
+      normalized.modifiers = payload.modifiers
+        .map((modifier) => this._cleanText(modifier))
+        .filter(Boolean);
+    } else if (typeof payload.modifiers === "string") {
+      normalized.modifiers = payload.modifiers
+        .split(/[,\s]+/)
+        .map((modifier) => this._cleanText(modifier))
+        .filter(Boolean);
+    }
+
+    //------------------------------------------------------
+    // Entities
+    //------------------------------------------------------
+
+    if (payload.entities && typeof payload.entities === "object") {
+      normalized.entities = payload.entities;
+    }
+
+    //------------------------------------------------------
+    // Context
+    //------------------------------------------------------
+
+    if (payload.context && typeof payload.context === "object") {
+      normalized.context = this._normalizeContext(payload.context);
+    }
+
+    //------------------------------------------------------
     // Wait time
     //------------------------------------------------------
 
@@ -686,15 +1030,122 @@ class Normalizer {
     }
 
     //------------------------------------------------------
+    // File
+    //------------------------------------------------------
+
+    const file =
+      payload.file ??
+      payload.filePath ??
+      payload.file_path ??
+      item.file ??
+      item.filePath ??
+      item.file_path;
+
+    if (file !== undefined && file !== null) {
+      normalized.file = String(file).trim();
+    }
+
+    //------------------------------------------------------
     // Preserve raw payload
-    //
-    // This is useful for future tools while keeping
-    // normalized fields at the top level.
     //------------------------------------------------------
 
     normalized.raw = {
       ...payload,
     };
+
+    return normalized;
+  }
+
+  //========================================================
+  // CONTEXT NORMALIZATION
+  //========================================================
+
+  _normalizeContext(context = {}) {
+    if (!context || typeof context !== "object") {
+      return {};
+    }
+
+    const normalized = {};
+
+    //------------------------------------------------------
+    // Frame
+    //------------------------------------------------------
+
+    if (context.frame !== undefined) {
+      normalized.frame = this._normalizeFrame(context.frame);
+    }
+
+    //------------------------------------------------------
+    // Tab
+    //------------------------------------------------------
+
+    if (context.tab !== undefined) {
+      normalized.tab = this._toNumber(context.tab, 0);
+    }
+
+    //------------------------------------------------------
+    // Shadow DOM
+    //------------------------------------------------------
+
+    if (
+      context.shadowDom !== undefined ||
+      context.shadowDOM !== undefined ||
+      context.shadow_dom !== undefined
+    ) {
+      normalized.shadowDom = Boolean(
+        context.shadowDom ?? context.shadowDOM ?? context.shadow_dom,
+      );
+    }
+
+    //------------------------------------------------------
+    // Popup
+    //------------------------------------------------------
+
+    if (context.popup !== undefined) {
+      normalized.popup = Boolean(context.popup);
+    }
+
+    //------------------------------------------------------
+    // New tab
+    //------------------------------------------------------
+
+    if (context.newTab !== undefined || context.new_tab !== undefined) {
+      normalized.newTab = Boolean(context.newTab ?? context.new_tab);
+    }
+
+    //------------------------------------------------------
+    // Active tab
+    //------------------------------------------------------
+
+    if (context.activeTab !== undefined || context.active_tab !== undefined) {
+      normalized.activeTab = Boolean(context.activeTab ?? context.active_tab);
+    }
+
+    //------------------------------------------------------
+    // Parent
+    //------------------------------------------------------
+
+    if (context.parent !== undefined) {
+      normalized.parent = this._cleanText(context.parent);
+    }
+
+    //------------------------------------------------------
+    // Section
+    //------------------------------------------------------
+
+    if (context.section !== undefined) {
+      normalized.section = this._cleanText(context.section);
+    }
+
+    //------------------------------------------------------
+    // Preserve unknown context fields
+    //------------------------------------------------------
+
+    if (this.options.preserveUnknownFields) {
+      normalized.raw = {
+        ...context,
+      };
+    }
 
     return normalized;
   }
@@ -732,6 +1183,170 @@ class Normalizer {
     }
 
     return {};
+  }
+
+  //========================================================
+  // ELEMENT TYPE NORMALIZATION
+  //========================================================
+
+  _normalizeElementType(type) {
+    if (type === null || type === undefined) {
+      return null;
+    }
+
+    const value = String(type)
+      .trim()
+      .toLowerCase()
+      .replace(/[\s_-]+/g, " ");
+
+    const map = {
+      button: "button",
+
+      btn: "button",
+
+      link: "link",
+
+      anchor: "link",
+
+      input: "input",
+
+      textbox: "textbox",
+
+      "text field": "textbox",
+
+      field: "textbox",
+
+      checkbox: "checkbox",
+
+      check: "checkbox",
+
+      radio: "radio",
+
+      dropdown: "select",
+
+      select: "select",
+
+      menu: "menu",
+
+      tab: "tab",
+
+      image: "image",
+
+      img: "image",
+
+      heading: "heading",
+
+      icon: "icon",
+    };
+
+    return map[value] || value;
+  }
+
+  //========================================================
+  // CONTEXT EXTRACTION
+  //========================================================
+
+  _extractContext(text) {
+    const context = {};
+
+    if (
+      /\binside\s+(?:the\s+)?iframe\b/i.test(text) ||
+      /\bwithin\s+(?:the\s+)?iframe\b/i.test(text)
+    ) {
+      context.frame = {
+        target: "iframe",
+      };
+    }
+
+    if (/\bshadow\s+dom\b/i.test(text) || /\bshadow\s+root\b/i.test(text)) {
+      context.shadowDom = true;
+    }
+
+    if (/\bpopup\b/i.test(text) || /\bpop-up\b/i.test(text)) {
+      context.popup = true;
+    }
+
+    if (/\bnew\s+tab\b/i.test(text)) {
+      context.newTab = true;
+    }
+
+    if (/\bcurrent\s+tab\b/i.test(text) || /\bactive\s+tab\b/i.test(text)) {
+      context.activeTab = true;
+    }
+
+    return context;
+  }
+
+  //========================================================
+  // MODIFIER EXTRACTION
+  //========================================================
+
+  _extractModifiers(text) {
+    const modifiers = [];
+
+    const modifierPatterns = [
+      ["first", /\bfirst\b/i],
+      ["last", /\blast\b/i],
+      ["next", /\bnext\b/i],
+      ["previous", /\bprevious\b/i],
+      ["visible", /\bvisible\b/i],
+      ["enabled", /\benabled\b/i],
+      ["disabled", /\bdisabled\b/i],
+      ["exact", /\bexact(?:ly)?\b/i],
+      ["inside", /\binside\b/i],
+      ["within", /\bwithin\b/i],
+      ["below", /\bbelow\b/i],
+      ["above", /\babove\b/i],
+      ["near", /\bnear\b/i],
+    ];
+
+    for (const [modifier, pattern] of modifierPatterns) {
+      if (pattern.test(text)) {
+        modifiers.push(modifier);
+      }
+    }
+
+    return modifiers;
+  }
+
+  //========================================================
+  // ENTITY EXTRACTION
+  //========================================================
+
+  _extractEntities(text) {
+    const entities = {};
+
+    //------------------------------------------------------
+    // Email
+    //------------------------------------------------------
+
+    const emailMatch = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+
+    if (emailMatch) {
+      entities.email = emailMatch[0];
+    }
+
+    //------------------------------------------------------
+    // URL
+    //------------------------------------------------------
+
+    const urlMatch = text.match(/https?:\/\/[^\s]+/i);
+
+    if (urlMatch) {
+      entities.url = urlMatch[0];
+    }
+
+    //------------------------------------------------------
+    // File path
+    //------------------------------------------------------
+
+    const fileMatch = text.match(/(?:[A-Z]:\\|\/)[^\s]+/i);
+
+    if (fileMatch) {
+      entities.filePath = fileMatch[0];
+    }
+
+    return entities;
   }
 
   //========================================================
@@ -909,7 +1524,7 @@ class Normalizer {
     //------------------------------------------------------
 
     if (number > 1 && number <= 100) {
-      number = number / 100;
+      number /= 100;
     }
 
     return Math.max(
@@ -973,6 +1588,26 @@ class Normalizer {
     return String(selector).trim();
   }
 
+  _stripQuotes(value) {
+    if (!value || value.length < 2) {
+      return value;
+    }
+
+    const first = value[0];
+
+    const last = value[value.length - 1];
+
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+      return value.slice(1, -1);
+    }
+
+    return value;
+  }
+
+  _escapeRegExp(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
   _toNumber(value, fallback = 0) {
     const number = Number(value);
 
@@ -986,6 +1621,20 @@ class Normalizer {
   _empty(reason, message = "") {
     return {
       type: "unknown",
+
+      action: "unknown",
+
+      target: null,
+
+      value: null,
+
+      elementType: null,
+
+      modifiers: [],
+
+      entities: {},
+
+      context: {},
 
       payload: {
         reason,
@@ -1028,6 +1677,8 @@ class Normalizer {
   resetStatistics() {
     this.stats = {
       normalized: 0,
+
+      commands: 0,
 
       arrays: 0,
 

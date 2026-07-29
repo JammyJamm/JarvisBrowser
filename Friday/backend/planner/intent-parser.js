@@ -1,54 +1,76 @@
 /**
- * ==========================================================
- *
  * backend/planner/intent-parser.js
  *
  * Ultra Intelligent Intent Parser
  *
+ * Responsibilities
+ * ----------------------------------------------------------
+ * ✔ Understand natural-language browser commands
+ * ✔ Extract action
+ * ✔ Extract target
+ * ✔ Extract value
+ * ✔ Extract modifiers
+ * ✔ Extract entities
+ * ✔ Parse multi-step commands
+ * ✔ Classify chat vs action
+ * ✔ Parse keyboard shortcuts
+ * ✔ Parse wait commands
+ * ✔ Parse scroll commands
+ * ✔ Parse upload commands
+ * ✔ Preserve original user wording
+ *
+ * IMPORTANT
+ * ----------------------------------------------------------
+ * ❌ NO fuzzy matching
+ * ❌ NO spelling correction
+ * ❌ NO DOM inspection
+ * ❌ NO DOM scoring
+ * ❌ NO selector ranking
+ * ❌ NO browser execution
+ * ❌ NO target guessing
+ *
+ * Spelling correction / fuzzy matching belongs ONLY to:
+ *
+ *     scoring-engine.js
+ *
+ * DOM resolution belongs to:
+ *
+ *     resolver.js
+ *
+ * Browser execution belongs to:
+ *
+ *     executor.js / Playwright / MCP
+ *
  * Architecture
  *
- * User Input
- *      │
- *      ▼
- * Normalizer
- *      │
- *      ▼
- * Multi-Step Splitter
+ * USER COMMAND
  *      │
  *      ▼
  * Intent Parser
  *      │
- *      ├── Action
- *      ├── Target
- *      ├── Value
- *      ├── Modifiers
- *      ├── Entities
- *      └── Confidence
+ *      ├── action
+ *      ├── target
+ *      ├── value
+ *      ├── modifiers
+ *      ├── entities
+ *      └── steps
+ *      │
+ *      ▼
+ * Scoring Engine
+ *      │
+ *      ├── exact match
+ *      ├── token match
+ *      ├── normalized match
+ *      ├── fuzzy match
+ *      ├── accessibility
+ *      ├── visibility
+ *      └── DOM context
  *      │
  *      ▼
  * Resolver
- *
- * ----------------------------------------------------------
- * Responsibilities
- * ----------------------------------------------------------
- * ✔ Extract actions
- * ✔ Extract targets
- * ✔ Extract values
- * ✔ Extract modifiers
- * ✔ Parse multi-step commands
- * ✔ Chat / Action classification
- * ✔ Keyboard shortcut parsing
- * ✔ Wait parsing
- * ✔ Scroll parsing
- * ✔ Upload parsing
- *
- * IMPORTANT
- * ----------------------------------------------------------
- * NEVER performs fuzzy matching.
- * NEVER fixes spelling.
- * NEVER guesses targets.
- *
- * Spelling correction belongs ONLY to ScoringEngine.
+ *      │
+ *      ▼
+ * Executor
  *
  * ==========================================================
  */
@@ -67,6 +89,10 @@ const DEFAULT_OPTIONS = {
   enableCommandParsing: true,
 
   enableEntityExtraction: true,
+
+  preserveElementTypeInTarget: true,
+
+  maxSteps: 100,
 };
 
 //==========================================================
@@ -74,19 +100,19 @@ const DEFAULT_OPTIONS = {
 //==========================================================
 
 const ACTIONS = {
-  click: ["click", "press", "tap", "choose", "select", "hit"],
+  click: ["click", "tap", "hit"],
 
   type: ["type", "enter", "fill", "write", "input", "insert"],
 
-  navigate: ["open", "visit", "goto", "go", "navigate", "launch"],
+  navigate: ["open", "visit", "goto", "navigate", "launch", "browse"],
 
-  search: ["search", "find", "lookup", "google"],
+  search: ["search", "lookup", "google"],
 
   scroll: ["scroll", "swipe"],
 
-  hover: ["hover", "move"],
+  hover: ["hover", "mouseover", "move"],
 
-  wait: ["wait", "pause", "sleep"],
+  wait: ["wait", "pause", "sleep", "delay"],
 
   check: ["check", "tick", "enable"],
 
@@ -96,7 +122,15 @@ const ACTIONS = {
 
   download: ["download", "save"],
 
-  press: ["presskey", "shortcut"],
+  press: ["presskey", "shortcut", "keypress", "key"],
+
+  select: ["select", "choose", "pick"],
+
+  reload: ["reload", "refresh"],
+
+  back: ["back"],
+
+  forward: ["forward"],
 };
 
 //==========================================================
@@ -184,39 +218,22 @@ const ELEMENT_TYPES = [
 
 const STOP_WORDS = new Set([
   "the",
-
   "a",
-
   "an",
-
   "please",
-
   "kindly",
-
   "into",
-
   "to",
-
   "in",
-
   "on",
-
   "at",
-
   "of",
-
   "for",
-
   "from",
-
   "my",
-
   "your",
-
   "our",
-
   "this",
-
   "that",
 ]);
 
@@ -224,19 +241,7 @@ const STOP_WORDS = new Set([
 // CONNECTORS
 //==========================================================
 
-const STEP_CONNECTORS = [
-  "and then",
-
-  "after that",
-
-  "after",
-
-  "next",
-
-  "then",
-
-  "and",
-];
+const STEP_CONNECTORS = ["and then", "after that", "next", "then"];
 
 //==========================================================
 // PARSER
@@ -246,7 +251,6 @@ export default class IntentParser {
   constructor(options = {}) {
     this.options = {
       ...DEFAULT_OPTIONS,
-
       ...options,
     };
 
@@ -267,12 +271,40 @@ export default class IntentParser {
 
       command: /^\/([a-zA-Z0-9_-]+)/,
 
-      connector: /\b(and then|after that|after|next|then|and)\b/i,
+      connector: /\b(and then|after that|next|then)\b/i,
 
       keyboard: /\b(ctrl|control|shift|alt|meta|cmd|command)\b/gi,
 
       timeout:
-        /(\d+)\s*(ms|milliseconds|sec|secs|second|seconds|min|minute|minutes)/i,
+        /(\d+(?:\.\d+)?)\s*(ms|milliseconds|sec|secs|second|seconds|min|minute|minutes)\b/i,
+
+      direction: /\b(up|down|left|right)\b/i,
+
+      rightClick: /\bright\s+click\b/i,
+
+      doubleClick: /\bdouble\s+click\b/i,
+
+      middleClick: /\bmiddle\s+click\b/i,
+
+      exact: /\bexact(?:ly)?\b/i,
+
+      visible: /\bvisible\b/i,
+
+      force: /\bforce\b/i,
+
+      optional: /\boptional\b/i,
+
+      iframe: /\b(?:inside|within|in)\s+(?:the\s+)?(?:iframe|frame)\b/i,
+
+      shadow: /\b(?:inside|within|in)\s+(?:the\s+)?shadow\s+dom\b/i,
+
+      newTab: /\b(?:new|another)\s+tab\b/i,
+
+      currentTab: /\b(?:current|this)\s+tab\b/i,
+
+      first: /\bfirst\b/i,
+
+      last: /\blast\b/i,
     };
 
     //--------------------------------------------------
@@ -295,40 +327,35 @@ export default class IntentParser {
       return;
     }
 
-    console.log(
-      "[IntentParser]",
-
-      ...args,
-    );
+    console.log("[IntentParser]", ...args);
   }
-
-  //======================================================
-  // PART 2
-  //
-  // • Main parse()
-  // • normalize()
-  // • splitIntoSteps()
-  // • parseSentence()
-  // • Chat / Action classifier
-  //
-  //======================================================
 
   //======================================================
   // MAIN PARSER
   //======================================================
 
   parse(input = "") {
-    input = this.normalize(input);
+    const rawInput = String(input ?? "");
 
-    if (!input) {
+    const normalizedInput = this.normalize(rawInput);
+
+    if (!normalizedInput) {
       return this.empty();
     }
 
-    this.log("Parsing:", input);
+    this.log("Parsing:", normalizedInput);
+
+    //--------------------------------------------------
+    // Split command into logical steps
+    //--------------------------------------------------
+
+    const sentences = this.splitIntoSteps(normalizedInput);
+
+    //--------------------------------------------------
+    // Parse each step
+    //--------------------------------------------------
 
     const steps = [];
-
-    const sentences = this.splitIntoSteps(input);
 
     for (const sentence of sentences) {
       const parsed = this.parseSentence(sentence);
@@ -338,10 +365,16 @@ export default class IntentParser {
       }
     }
 
+    //--------------------------------------------------
+    // Build result
+    //--------------------------------------------------
+
     return this.sanitize({
       mode: this.detectMode(steps),
 
-      raw: input,
+      raw: rawInput,
+
+      normalized: normalizedInput,
 
       confidence: this.computeConfidence(steps),
 
@@ -362,16 +395,16 @@ export default class IntentParser {
   //======================================================
 
   normalize(text = "") {
-    text = String(text);
+    text = String(text ?? "");
 
     //--------------------------------------------------
-    // Unicode
+    // Unicode normalization
     //--------------------------------------------------
 
     text = text.normalize("NFKC");
 
     //--------------------------------------------------
-    // Collapse whitespace
+    // Normalize whitespace
     //--------------------------------------------------
 
     if (this.options.normalizeWhitespace) {
@@ -382,67 +415,89 @@ export default class IntentParser {
     // Trim
     //--------------------------------------------------
 
-    text = text.trim();
-
-    return text;
+    return text.trim();
   }
 
   //======================================================
-  // MULTI STEP SPLITTER
+  // MULTI-STEP SPLITTER
   //======================================================
 
-  splitIntoSteps(text) {
+  splitIntoSteps(text = "") {
+    if (!text) {
+      return [];
+    }
+
     if (!this.options.enableMultiIntent) {
       return [text];
     }
 
     //--------------------------------------------------
-    // Preserve quoted text
+    // Protect quoted strings
     //--------------------------------------------------
 
     const placeholders = [];
 
-    text = text.replace(
-      this.patterns.quoted,
+    let protectedText = text.replace(this.patterns.quoted, (match) => {
+      const index = placeholders.length;
 
-      (match) => {
-        placeholders.push(match);
+      placeholders.push(match);
 
-        return `__Q${placeholders.length - 1}__`;
-      },
-    );
+      return `__JARVIS_QUOTE_${index}__`;
+    });
 
     //--------------------------------------------------
-    // Split
+    // Protect URLs
     //--------------------------------------------------
 
-    const regex = new RegExp(
-      "\\b(" + STEP_CONNECTORS.join("|") + ")\\b",
+    const urls = [];
 
-      "i",
-    );
+    protectedText = protectedText.replace(this.patterns.url, (match) => {
+      const index = urls.length;
 
-    const parts = text
+      urls.push(match);
 
-      .split(regex)
+      return `__JARVIS_URL_${index}__`;
+    });
 
+    //--------------------------------------------------
+    // Split only on strong step connectors
+    //
+    // IMPORTANT:
+    // Do NOT split on plain "and".
+    //
+    // Example:
+    //
+    // Click Save and Continue button
+    //
+    // must remain one command.
+    //--------------------------------------------------
+
+    const connectorPattern = /\s+(?:and then|after that|next|then)\s+/gi;
+
+    const parts = protectedText
+      .split(connectorPattern)
       .map((part) => part.trim())
-
-      .filter((part) => {
-        if (!part) return false;
-
-        return !STEP_CONNECTORS.includes(part.toLowerCase());
-      });
+      .filter(Boolean);
 
     //--------------------------------------------------
-    // Restore quotes
+    // Restore URLs
     //--------------------------------------------------
 
-    return parts.map((step) =>
-      step.replace(
-        /__Q(\d+)__/g,
+    const restoredUrls = parts.map((part) =>
+      part.replace(
+        /__JARVIS_URL_(\d+)__/g,
+        (_, index) => urls[Number(index)] || "",
+      ),
+    );
 
-        (_, index) => placeholders[Number(index)],
+    //--------------------------------------------------
+    // Restore quoted values
+    //--------------------------------------------------
+
+    return restoredUrls.map((part) =>
+      part.replace(
+        /__JARVIS_QUOTE_(\d+)__/g,
+        (_, index) => placeholders[Number(index)] || "",
       ),
     );
   }
@@ -451,26 +506,46 @@ export default class IntentParser {
   // PARSE SINGLE SENTENCE
   //======================================================
 
-  parseSentence(sentence) {
-    if (!sentence) return null;
+  parseSentence(sentence = "") {
+    if (!sentence) {
+      return null;
+    }
 
     sentence = sentence.trim();
+
+    if (!sentence) {
+      return null;
+    }
 
     const lower = sentence.toLowerCase();
 
     //--------------------------------------------------
-    // Detect Action
+    // Detect action
     //--------------------------------------------------
 
     const action = this.extractAction(lower);
 
     //--------------------------------------------------
-    // Chat
+    // Chat / unknown
     //--------------------------------------------------
 
     if (!action) {
       return {
         action: "chat",
+
+        target: "",
+
+        value: null,
+
+        modifiers: {},
+
+        entities: {
+          url: this.extractURL(sentence),
+
+          email: sentence.match(this.patterns.email)?.[0] || null,
+
+          command: this.extractCommand(sentence),
+        },
 
         message: sentence,
 
@@ -479,23 +554,27 @@ export default class IntentParser {
     }
 
     //--------------------------------------------------
-    // Build Step
+    // Extract target
+    //--------------------------------------------------
+
+    const target = this.extractTarget(sentence, action);
+
+    //--------------------------------------------------
+    // Extract value
+    //--------------------------------------------------
+
+    const value = this.extractValue(sentence, action);
+
+    //--------------------------------------------------
+    // Build step
     //--------------------------------------------------
 
     const step = {
       action,
 
-      target: this.extractTarget(
-        sentence,
+      target,
 
-        action,
-      ),
-
-      value: this.extractValue(
-        sentence,
-
-        action,
-      ),
+      value,
 
       modifiers: this.extractModifiers(sentence),
 
@@ -503,23 +582,23 @@ export default class IntentParser {
 
       url: this.extractURL(sentence),
 
-      confidence: 1,
+      confidence: this.computeStepConfidence(action, target, value),
     };
 
     //--------------------------------------------------
-    // Wait parsing
+    // Wait
     //--------------------------------------------------
 
     if (action === "wait") {
       const timeout = this.extractTimeout(sentence);
 
-      if (timeout) {
+      if (timeout !== null) {
         step.value = timeout;
       }
     }
 
     //--------------------------------------------------
-    // Keyboard shortcut
+    // Keyboard
     //--------------------------------------------------
 
     if (action === "press") {
@@ -527,11 +606,19 @@ export default class IntentParser {
     }
 
     //--------------------------------------------------
-    // Scroll direction
+    // Scroll
     //--------------------------------------------------
 
     if (action === "scroll") {
       step.direction = this.extractScrollDirection(sentence);
+    }
+
+    //--------------------------------------------------
+    // Upload
+    //--------------------------------------------------
+
+    if (action === "upload") {
+      step.file = this.extractUploadTarget(sentence);
     }
 
     return step;
@@ -542,11 +629,13 @@ export default class IntentParser {
   //======================================================
 
   detectMode(steps = []) {
-    if (!steps.length) {
+    if (!Array.isArray(steps) || !steps.length) {
       return "unknown";
     }
 
-    const actionable = steps.filter((step) => step.action !== "chat");
+    const actionable = steps.filter(
+      (step) => step && step.action && step.action !== "chat",
+    );
 
     return actionable.length ? "action" : "chat";
   }
@@ -555,72 +644,81 @@ export default class IntentParser {
   // IS ACTIONABLE
   //======================================================
 
-  isActionable(input) {
+  isActionable(input = "") {
     const result = this.parse(input);
 
     return result.mode === "action";
   }
 
   //======================================================
-  // PART 3
-  //
-  // • extractAction()
-  // • extractTarget()
-  // • removeActionPrefix()
-  // • removeElementWords()
-  // • cleanTarget()
-  //
-  //======================================================
-  //======================================================
   // ACTION EXTRACTION
   //======================================================
 
   extractAction(text = "") {
-    text = text.toLowerCase().trim();
+    const normalized = String(text).toLowerCase().trim();
+
+    if (!normalized) {
+      return null;
+    }
 
     //--------------------------------------------------
-    // Exact first-word lookup
+    // Strong phrase detection first
     //--------------------------------------------------
 
-    const firstWord = text.split(/\s+/)[0];
+    if (/^go\s+to\b/i.test(normalized)) {
+      return "navigate";
+    }
+
+    if (/^right\s+click\b/i.test(normalized)) {
+      return "click";
+    }
+
+    if (/^double\s+click\b/i.test(normalized)) {
+      return "click";
+    }
+
+    if (/^middle\s+click\b/i.test(normalized)) {
+      return "click";
+    }
+
+    if (/^press\s+(?:enter|tab|escape|esc|space)\b/i.test(normalized)) {
+      return "press";
+    }
+
+    if (/^(?:ctrl|control|shift|alt|cmd|command|meta)\+/i.test(normalized)) {
+      return "press";
+    }
+
+    //--------------------------------------------------
+    // First word lookup
+    //
+    // Action should normally be at the beginning.
+    // This avoids detecting words inside targets.
+    //--------------------------------------------------
+
+    const firstWord = normalized.split(/\s+/)[0];
 
     if (this.actionLookup[firstWord]) {
       return this.actionLookup[firstWord];
     }
 
     //--------------------------------------------------
-    // Search every token
+    // Special multi-word action
     //--------------------------------------------------
 
-    const words = text.split(/\s+/);
-
-    for (const word of words) {
-      if (this.actionLookup[word]) {
-        return this.actionLookup[word];
-      }
+    if (/^navigate\s+to\b/i.test(normalized)) {
+      return "navigate";
     }
 
     //--------------------------------------------------
-    // Phrase detection
+    // Do not scan arbitrary target words.
+    //
+    // Example:
+    //
+    // "Click the Search button"
+    //
+    // Search is target text, not action.
     //--------------------------------------------------
-
-    if (/go\s+to/i.test(text)) return "navigate";
-
-    if (/right\s+click/i.test(text)) return "click";
-
-    if (/double\s+click/i.test(text)) return "click";
-
-    if (/press\s+enter/i.test(text)) return "press";
-
-    if (/press\s+tab/i.test(text)) return "press";
-
-    if (/press\s+escape/i.test(text)) return "press";
-
-    if (/ctrl\+/i.test(text)) return "press";
-
-    if (/command\+/i.test(text)) return "press";
-
-    if (/shift\+/i.test(text)) return "press";
 
     return null;
   }
@@ -631,13 +729,31 @@ export default class IntentParser {
 
   extractTarget(text = "", action = "") {
     //--------------------------------------------------
-    // Quoted target
+    // For navigation, URL is the primary target.
+    //--------------------------------------------------
+
+    if (action === "navigate") {
+      const url = this.extractURL(text);
+
+      if (url) {
+        return url;
+      }
+    }
+
+    //--------------------------------------------------
+    // For quoted commands:
+    //
+    // Click "Punch In"
+    //
+    // Fill "Email" with "test@gmail.com"
+    //
+    // The parser must distinguish target/value.
     //--------------------------------------------------
 
     const quoted = [...text.matchAll(this.patterns.quoted)];
 
-    if (quoted.length) {
-      return this.cleanTarget(quoted[0][1] || quoted[0][2]);
+    if (quoted.length && action !== "type") {
+      return this.cleanTarget(quoted[0][1] || quoted[0][2] || "");
     }
 
     //--------------------------------------------------
@@ -647,13 +763,11 @@ export default class IntentParser {
     let target = this.removeActionPrefix(text, action);
 
     //--------------------------------------------------
-    // Remove extracted value
+    // Remove value phrase
     //--------------------------------------------------
 
-    const value = this.extractValue(text);
-
-    if (value && target.includes(value)) {
-      target = target.replace(value, "");
+    if (action === "type" || action === "select") {
+      target = this.removeValuePhrase(target, text);
     }
 
     //--------------------------------------------------
@@ -667,29 +781,32 @@ export default class IntentParser {
     }
 
     //--------------------------------------------------
-    // Remove connector words
+    // Remove natural-language connectors
+    //
+    // IMPORTANT:
+    // Do not remove element words.
+    //
+    // "Punch In button"
+    //
+    // should remain:
+    //
+    // target: "Punch In"
+    // elementType: "button"
+    //
+    // The target cleaner below handles this
+    // through element metadata.
     //--------------------------------------------------
 
-    target = target
-
-      .replace(/\binto\b/gi, "")
-
-      .replace(/\bwith\b/gi, "")
-
-      .replace(/\busing\b/gi, "")
-
-      .replace(/\bcalled\b/gi, "")
-
-      .replace(/\bnamed\b/gi, "");
+    target = target.replace(/\b(?:into|using|called|named)\b/gi, "");
 
     //--------------------------------------------------
-    // Remove element words
+    // Remove value-leading phrases
     //--------------------------------------------------
 
-    target = this.removeElementWords(target);
+    target = target.replace(/\bwith\s*$/i, "").replace(/\bto\s*$/i, "");
 
     //--------------------------------------------------
-    // Cleanup
+    // Clean target
     //--------------------------------------------------
 
     return this.cleanTarget(target);
@@ -699,100 +816,138 @@ export default class IntentParser {
   // REMOVE ACTION PREFIX
   //======================================================
 
-  removeActionPrefix(text, action) {
-    if (!text) return "";
+  removeActionPrefix(text = "", action = "") {
+    if (!text) {
+      return "";
+    }
 
     let result = text.trim();
 
-    const aliases = ACTIONS[action] || [];
-
     //--------------------------------------------------
-    // Remove aliases
+    // Special prefixes
     //--------------------------------------------------
 
-    for (const alias of aliases) {
-      const regex = new RegExp(
-        "^" +
-          alias.replace(
-            /\s+/g,
+    const prefixes = [
+      /^go\s+to\b/i,
 
-            "\\s+",
-          ) +
-          "\\b",
+      /^navigate\s+to\b/i,
 
-        "i",
-      );
+      /^open\b/i,
 
+      /^visit\b/i,
+
+      /^goto\b/i,
+
+      /^click\b/i,
+
+      /^tap\b/i,
+
+      /^hit\b/i,
+
+      /^type\b/i,
+
+      /^fill\b/i,
+
+      /^enter\b/i,
+
+      /^write\b/i,
+
+      /^input\b/i,
+
+      /^insert\b/i,
+
+      /^select\b/i,
+
+      /^choose\b/i,
+
+      /^pick\b/i,
+
+      /^search\b/i,
+
+      /^lookup\b/i,
+
+      /^scroll\b/i,
+
+      /^swipe\b/i,
+
+      /^hover\b/i,
+
+      /^wait\b/i,
+
+      /^pause\b/i,
+
+      /^sleep\b/i,
+
+      /^upload\b/i,
+
+      /^attach\b/i,
+
+      /^download\b/i,
+
+      /^save\b/i,
+
+      /^check\b/i,
+
+      /^uncheck\b/i,
+
+      /^untick\b/i,
+
+      /^enable\b/i,
+
+      /^disable\b/i,
+
+      /^presskey\b/i,
+
+      /^keypress\b/i,
+
+      /^shortcut\b/i,
+
+      /^reload\b/i,
+
+      /^refresh\b/i,
+
+      /^back\b/i,
+
+      /^forward\b/i,
+    ];
+
+    for (const regex of prefixes) {
       result = result.replace(regex, "");
     }
 
-    //--------------------------------------------------
-    // Common prefixes
-    //--------------------------------------------------
-
-    result = result
-
-      .replace(/^go\s+to\b/i, "")
-
-      .replace(/^navigate\s+to\b/i, "")
-
-      .replace(/^open\b/i, "")
-
-      .replace(/^visit\b/i, "")
-
-      .replace(/^click\b/i, "")
-
-      .replace(/^press\b/i, "")
-
-      .replace(/^tap\b/i, "")
-
-      .replace(/^type\b/i, "")
-
-      .replace(/^fill\b/i, "")
-
-      .replace(/^enter\b/i, "")
-
-      .trim();
-
-    return result;
+    return result.trim();
   }
 
   //======================================================
-  // REMOVE ELEMENT WORDS
+  // REMOVE ELEMENT WORD
+  //
+  // IMPORTANT:
+  // This function is NOT used to destroy target data.
+  //
+  // It is only available as a helper for callers that
+  // explicitly need a semantic target without the
+  // element type.
   //======================================================
 
-  removeElementWords(text) {
-    if (!text) return "";
+  removeElementWords(text = "") {
+    if (!text) {
+      return "";
+    }
 
     let cleaned = text;
 
-    //--------------------------------------------------
-    // Remove element types
-    //--------------------------------------------------
+    const sorted = [...ELEMENT_TYPES].sort((a, b) => b.length - a.length);
 
-    for (const type of ELEMENT_TYPES) {
+    for (const type of sorted) {
       const regex = new RegExp(
-        "\\b" +
-          type.replace(
-            /\s+/g,
-
-            "\\s+",
-          ) +
-          "\\b",
-
+        `\\b${this.escapeRegex(type).replace(/\s+/g, "\\s+")}\\b`,
         "ig",
       );
 
       cleaned = cleaned.replace(regex, "");
     }
 
-    //--------------------------------------------------
-    // Remove duplicate spaces
-    //--------------------------------------------------
-
-    cleaned = cleaned.replace(/\s+/g, " ");
-
-    return cleaned.trim();
+    return cleaned.replace(/\s+/g, " ").trim();
   }
 
   //======================================================
@@ -800,47 +955,34 @@ export default class IntentParser {
   //======================================================
 
   cleanTarget(target = "") {
-    if (!target) return "";
+    if (!target) {
+      return "";
+    }
 
-    let text = target;
+    let text = String(target);
 
     //--------------------------------------------------
-    // Remove punctuation
+    // Remove leading natural-language punctuation
     //--------------------------------------------------
 
-    text = text.replace(
-      /^[,:;.\- ]+/,
+    text = text.replace(/^[,:;.\- ]+/, "");
 
-      "",
-    );
-
-    text = text.replace(
-      /[,:;.\- ]+$/,
-
-      "",
-    );
+    text = text.replace(/[,:;.\- ]+$/, "");
 
     //--------------------------------------------------
     // Normalize whitespace
     //--------------------------------------------------
 
-    text = text
-
-      .replace(/\s+/g, " ")
-
-      .trim();
+    text = text.replace(/\s+/g, " ").trim();
 
     //--------------------------------------------------
-    // Optional stop word removal
+    // Optional stop words
     //--------------------------------------------------
 
     if (this.options.removeStopWords) {
       text = text
-
-        .split(" ")
-
+        .split(/\s+/)
         .filter((word) => !this.stopWords.has(word.toLowerCase()))
-
         .join(" ");
     }
 
@@ -848,42 +990,74 @@ export default class IntentParser {
   }
 
   //======================================================
-  // PART 4
-  //
-  // • extractValue()
-  // • extractModifiers()
-  // • extractEntities()
-  // • extractURL()
-  // • extractCommand()
-  //
-  //======================================================
-  //======================================================
   // VALUE EXTRACTION
   //======================================================
 
   extractValue(text = "", action = "") {
     //--------------------------------------------------
-    // Quoted strings
+    // Quoted values
     //--------------------------------------------------
 
     const quoted = [...text.matchAll(this.patterns.quoted)];
 
-    if (quoted.length) {
-      return quoted[0][1] || quoted[0][2];
+    //--------------------------------------------------
+    // Type / Fill
+    //
+    // Fill email with test@gmail.com
+    // Type "hello"
+    //--------------------------------------------------
+
+    if (action === "type") {
+      const email = text.match(this.patterns.email);
+
+      if (email) {
+        return email[0];
+      }
+
+      if (quoted.length >= 2) {
+        return quoted[1][1] || quoted[1][2];
+      }
+
+      if (quoted.length === 1) {
+        return quoted[0][1] || quoted[0][2];
+      }
+
+      const withValue = text.match(/\b(?:with|as)\s+(.+)$/i);
+
+      if (withValue) {
+        return this.cleanValue(withValue[1]);
+      }
     }
 
     //--------------------------------------------------
-    // Email
+    // Select
+    //
+    // Select India from Country dropdown
+    //
+    // value = India
+    // target = Country
     //--------------------------------------------------
 
-    const email = text.match(this.patterns.email);
+    if (action === "select") {
+      if (quoted.length >= 1) {
+        return quoted[0][1] || quoted[0][2];
+      }
 
-    if (email) {
-      return email[0];
+      const selectMatch = text.match(/\bselect\s+(.+?)\s+from\s+/i);
+
+      if (selectMatch) {
+        return this.cleanValue(selectMatch[1]);
+      }
+
+      const chooseMatch = text.match(/\b(?:choose|pick)\s+(.+?)\s+from\s+/i);
+
+      if (chooseMatch) {
+        return this.cleanValue(chooseMatch[1]);
+      }
     }
 
     //--------------------------------------------------
-    // URL
+    // Navigation URL
     //--------------------------------------------------
 
     const url = this.extractURL(text);
@@ -893,16 +1067,81 @@ export default class IntentParser {
     }
 
     //--------------------------------------------------
+    // Wait
+    //--------------------------------------------------
+
+    if (action === "wait") {
+      return this.extractTimeout(text);
+    }
+
+    //--------------------------------------------------
     // Number
     //--------------------------------------------------
 
-    const number = text.match(this.patterns.number);
+    if (action === "scroll") {
+      const number = text.match(this.patterns.number);
 
-    if (number) {
-      return Number(number[0]);
+      if (number) {
+        return Number(number[0]);
+      }
     }
 
     return null;
+  }
+
+  //======================================================
+  // REMOVE VALUE PHRASE
+  //======================================================
+
+  removeValuePhrase(target = "", originalText = "") {
+    if (!target) {
+      return "";
+    }
+
+    let result = target;
+
+    //--------------------------------------------------
+    // Remove select value
+    //--------------------------------------------------
+
+    const selectMatch = originalText.match(
+      /\b(?:select|choose|pick)\s+(.+?)\s+from\s+/i,
+    );
+
+    if (selectMatch) {
+      const value = this.cleanValue(selectMatch[1]);
+
+      result = result.replace(value, "");
+    }
+
+    //--------------------------------------------------
+    // Remove "with value"
+    //--------------------------------------------------
+
+    const withMatch = originalText.match(/\bwith\s+(.+)$/i);
+
+    if (withMatch) {
+      const value = this.cleanValue(withMatch[1]);
+
+      result = result.replace(value, "");
+    }
+
+    return result.trim();
+  }
+
+  //======================================================
+  // CLEAN VALUE
+  //======================================================
+
+  cleanValue(value = "") {
+    if (value === null || value === undefined) {
+      return null;
+    }
+
+    return String(value)
+      .replace(/^[\s,:;]+/, "")
+      .replace(/[\s,:;]+$/, "")
+      .trim();
   }
 
   //======================================================
@@ -918,22 +1157,22 @@ export default class IntentParser {
     // Element type
     //--------------------------------------------------
 
-    for (const type of ELEMENT_TYPES) {
-      if (lower.includes(type)) {
-        modifiers.elementType = type;
+    const elementType = this.extractElementType(lower);
 
-        break;
-      }
+    if (elementType) {
+      modifiers.elementType = elementType;
     }
 
     //--------------------------------------------------
     // Mouse button
     //--------------------------------------------------
 
-    if (/\bright click\b/i.test(text)) {
+    if (this.patterns.rightClick.test(text)) {
       modifiers.mouseButton = "right";
-    } else if (/\bdouble click\b/i.test(text)) {
+    } else if (this.patterns.doubleClick.test(text)) {
       modifiers.mouseButton = "double";
+    } else if (this.patterns.middleClick.test(text)) {
+      modifiers.mouseButton = "middle";
     } else {
       modifiers.mouseButton = "left";
     }
@@ -964,9 +1203,9 @@ export default class IntentParser {
     // Position
     //--------------------------------------------------
 
-    if (/\bfirst\b/i.test(text)) {
+    if (this.patterns.first.test(text)) {
       modifiers.position = "first";
-    } else if (/\blast\b/i.test(text)) {
+    } else if (this.patterns.last.test(text)) {
       modifiers.position = "last";
     } else {
       const ordinal = lower.match(this.patterns.ordinal);
@@ -980,27 +1219,26 @@ export default class IntentParser {
     // Visibility
     //--------------------------------------------------
 
-    modifiers.visibleOnly = /\bvisible\b/i.test(text);
+    modifiers.visibleOnly = this.patterns.visible.test(text);
 
     //--------------------------------------------------
-    // Exact match
+    // Exact
     //--------------------------------------------------
 
-    modifiers.exact = this.patterns.quoted.test(text);
-
-    this.patterns.quoted.lastIndex = 0;
+    modifiers.exact =
+      this.patterns.exact.test(text) || this.hasQuotedText(text);
 
     //--------------------------------------------------
     // Force
     //--------------------------------------------------
 
-    modifiers.force = /\bforce\b/i.test(text);
+    modifiers.force = this.patterns.force.test(text);
 
     //--------------------------------------------------
     // Optional
     //--------------------------------------------------
 
-    modifiers.optional = /\boptional\b/i.test(text);
+    modifiers.optional = this.patterns.optional.test(text);
 
     //--------------------------------------------------
     // Timeout
@@ -1008,11 +1246,58 @@ export default class IntentParser {
 
     const timeout = this.extractTimeout(text);
 
-    if (timeout) {
+    if (timeout !== null) {
       modifiers.timeout = timeout;
     }
 
+    //--------------------------------------------------
+    // Frame
+    //--------------------------------------------------
+
+    if (this.patterns.iframe.test(text)) {
+      modifiers.context = "iframe";
+    }
+
+    //--------------------------------------------------
+    // Shadow DOM
+    //--------------------------------------------------
+
+    if (this.patterns.shadow.test(text)) {
+      modifiers.context = "shadow-dom";
+    }
+
+    //--------------------------------------------------
+    // Tab
+    //--------------------------------------------------
+
+    if (this.patterns.newTab.test(text)) {
+      modifiers.tab = "new";
+    } else if (this.patterns.currentTab.test(text)) {
+      modifiers.tab = "current";
+    }
+
     return modifiers;
+  }
+
+  //======================================================
+  // ELEMENT TYPE EXTRACTION
+  //======================================================
+
+  extractElementType(text = "") {
+    const sorted = [...ELEMENT_TYPES].sort((a, b) => b.length - a.length);
+
+    for (const type of sorted) {
+      const regex = new RegExp(
+        `\\b${this.escapeRegex(type).replace(/\s+/g, "\\s+")}\\b`,
+        "i",
+      );
+
+      if (regex.test(text)) {
+        return type;
+      }
+    }
+
+    return null;
   }
 
   //======================================================
@@ -1027,11 +1312,11 @@ export default class IntentParser {
     return {
       url: this.extractURL(text),
 
-      value: this.extractValue(text),
+      email: text.match(this.patterns.email)?.[0] || null,
 
       command: this.extractCommand(text),
 
-      email: text.match(this.patterns.email)?.[0] || null,
+      elementType: this.extractElementType(text),
     };
   }
 
@@ -1047,6 +1332,16 @@ export default class IntentParser {
     }
 
     let url = match[0];
+
+    //--------------------------------------------------
+    // Remove common trailing punctuation
+    //--------------------------------------------------
+
+    url = url.replace(/[.,!?;:]+$/, "");
+
+    //--------------------------------------------------
+    // Add protocol
+    //--------------------------------------------------
 
     if (!/^https?:\/\//i.test(url)) {
       url = "https://" + url;
@@ -1074,61 +1369,91 @@ export default class IntentParser {
   }
 
   //======================================================
-  // PART 5
-  //
-  // • computeConfidence()
-  // • validateStep()
-  // • sanitize()
-  // • empty()
-  // • classify()
-  //
+  // UPLOAD TARGET
   //======================================================
+
+  extractUploadTarget(text = "") {
+    const quoted = [...text.matchAll(this.patterns.quoted)];
+
+    if (quoted.length) {
+      return quoted[0][1] || quoted[0][2];
+    }
+
+    const fileMatch = text.match(/\b(?:upload|attach)\s+(.+)$/i);
+
+    if (fileMatch) {
+      return this.cleanValue(fileMatch[1]);
+    }
+
+    return null;
+  }
+
   //======================================================
   // CONFIDENCE
   //======================================================
 
   computeConfidence(steps = []) {
-    if (!steps.length) {
+    if (!Array.isArray(steps) || !steps.length) {
       return 0;
     }
 
     let total = 0;
 
     for (const step of steps) {
-      let score = 0.4;
-
-      if (step.action && step.action !== "chat") {
-        score += 0.25;
-      }
-
-      if (step.target) {
-        score += 0.15;
-      }
-
-      if (step.value !== null && step.value !== undefined) {
-        score += 0.05;
-      }
-
-      if (step.modifiers?.elementType) {
-        score += 0.05;
-      }
-
-      if (step.url) {
-        score += 0.05;
-      }
-
-      if (step.entities?.email) {
-        score += 0.03;
-      }
-
-      if (step.entities?.command) {
-        score += 0.02;
-      }
-
-      total += Math.min(score, 1);
+      total += this.computeStepConfidence(step.action, step.target, step.value);
     }
 
     return Number((total / steps.length).toFixed(2));
+  }
+
+  //======================================================
+  // STEP CONFIDENCE
+  //
+  // This is intent confidence only.
+  //
+  // It is NOT DOM confidence.
+  //======================================================
+
+  computeStepConfidence(action, target, value) {
+    if (!action) {
+      return 0;
+    }
+
+    if (action === "chat") {
+      return 0.35;
+    }
+
+    let score = 0.5;
+
+    //--------------------------------------------------
+    // Known action
+    //--------------------------------------------------
+
+    if (ACTIONS[action]) {
+      score += 0.2;
+    }
+
+    //--------------------------------------------------
+    // Target
+    //--------------------------------------------------
+
+    if (target) {
+      score += 0.15;
+    }
+
+    //--------------------------------------------------
+    // Value
+    //--------------------------------------------------
+
+    if (value !== null && value !== undefined) {
+      score += 0.1;
+    }
+
+    //--------------------------------------------------
+    // Cap
+    //--------------------------------------------------
+
+    return Number(Math.min(score, 1).toFixed(2));
   }
 
   //======================================================
@@ -1136,7 +1461,7 @@ export default class IntentParser {
   //======================================================
 
   validateStep(step) {
-    if (!step) {
+    if (!step || typeof step !== "object") {
       return false;
     }
 
@@ -1149,19 +1474,14 @@ export default class IntentParser {
         return Boolean(step.url || step.target);
 
       case "click":
-
       case "hover":
-
       case "check":
-
       case "uncheck":
-
       case "search":
-
       case "upload":
-
       case "download":
-        return Boolean(step.target);
+      case "select":
+        return Boolean(step.target || step.value);
 
       case "type":
         return Boolean(step.target || step.value);
@@ -1170,8 +1490,10 @@ export default class IntentParser {
         return Boolean(step.keys?.length || step.value || step.target);
 
       case "wait":
-
       case "scroll":
+      case "reload":
+      case "back":
+      case "forward":
         return true;
 
       case "chat":
@@ -1195,9 +1517,23 @@ export default class IntentParser {
       plan.steps = [];
     }
 
-    plan.steps = plan.steps.filter((step) => this.validateStep(step));
+    //--------------------------------------------------
+    // Limit steps
+    //--------------------------------------------------
+
+    plan.steps = plan.steps
+      .slice(0, this.options.maxSteps)
+      .filter((step) => this.validateStep(step));
+
+    //--------------------------------------------------
+    // Recalculate intent confidence
+    //--------------------------------------------------
 
     plan.confidence = this.computeConfidence(plan.steps);
+
+    //--------------------------------------------------
+    // Mode
+    //--------------------------------------------------
 
     if (!plan.mode) {
       plan.mode = this.detectMode(plan.steps);
@@ -1215,6 +1551,8 @@ export default class IntentParser {
       mode: "unknown",
 
       raw: "",
+
+      normalized: "",
 
       confidence: 0,
 
@@ -1283,7 +1621,6 @@ export default class IntentParser {
       for (const key of matches) {
         switch (key.toLowerCase()) {
           case "ctrl":
-
           case "control":
             keys.push("Control");
             break;
@@ -1297,9 +1634,7 @@ export default class IntentParser {
             break;
 
           case "cmd":
-
           case "command":
-
           case "meta":
             keys.push("Meta");
             break;
@@ -1307,12 +1642,22 @@ export default class IntentParser {
       }
     }
 
+    //--------------------------------------------------
+    // Special keys
+    //--------------------------------------------------
+
     const special = text.match(
       /\b(tab|enter|escape|esc|space|delete|backspace|home|end|arrowup|arrowdown|arrowleft|arrowright)\b/i,
     );
 
     if (special) {
-      keys.push(special[1]);
+      let key = special[1];
+
+      if (key.toLowerCase() === "esc") {
+        key = "Escape";
+      }
+
+      keys.push(key);
     }
 
     return [...new Set(keys)];
@@ -1325,23 +1670,45 @@ export default class IntentParser {
   extractScrollDirection(text = "") {
     const lower = text.toLowerCase();
 
-    if (lower.includes("up")) {
+    if (/\bup\b/.test(lower)) {
       return "up";
     }
 
-    if (lower.includes("down")) {
+    if (/\bdown\b/.test(lower)) {
       return "down";
     }
 
-    if (lower.includes("left")) {
+    if (/\bleft\b/.test(lower)) {
       return "left";
     }
 
-    if (lower.includes("right")) {
+    if (/\bright\b/.test(lower)) {
       return "right";
     }
 
     return "down";
+  }
+
+  //======================================================
+  // QUOTED TEXT
+  //======================================================
+
+  hasQuotedText(text = "") {
+    this.patterns.quoted.lastIndex = 0;
+
+    const result = this.patterns.quoted.test(text);
+
+    this.patterns.quoted.lastIndex = 0;
+
+    return result;
+  }
+
+  //======================================================
+  // ESCAPE REGEX
+  //======================================================
+
+  escapeRegex(value = "") {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 
   //======================================================

@@ -4,21 +4,105 @@
  *
  * Ultra Intelligent Scoring Engine
  *
- * Version 3.0
+ * Version 4.0
+ *
+ * Architecture
+ * ----------------------------------------------------------
+ *
+ * User Command
+ *      │
+ *      ▼
+ * Intent Parser
+ *      │
+ *      │  action = click
+ *      │  target = punch in
+ *      ▼
+ * Scoring Engine
+ *      │
+ *      ├── Normalization
+ *      ├── Synonym Expansion
+ *      ├── Token Matching
+ *      ├── Fuzzy Matching
+ *      ├── Typo Detection
+ *      ├── Semantic Matching
+ *      ├── Accessibility
+ *      ├── Visibility
+ *      ├── Actionability
+ *      ├── Learning
+ *      └── Candidate Ranking
+ *      │
+ *      ├── High Confidence
+ *      │       └── Auto Execute
+ *      │
+ *      └── Low / Ambiguous
+ *              └── Planner
  *
  * Responsibilities
  * ----------------
  * ✔ Normalize text
+ * ✔ Remove command noise
+ * ✔ Expand synonyms
  * ✔ Build searchable DOM index
- * ✔ Multi-algorithm scoring
+ * ✔ Multi-field scoring
+ * ✔ Exact matching
+ * ✔ Prefix matching
+ * ✔ Token matching
+ * ✔ Token-level fuzzy matching
+ * ✔ Jaro-Winkler
+ * ✔ Levenshtein
+ * ✔ Dice coefficient
+ * ✔ Cosine similarity
+ * ✔ Semantic scoring
+ * ✔ Accessibility scoring
+ * ✔ Visibility scoring
+ * ✔ Actionability scoring
  * ✔ Candidate ranking
  * ✔ Confidence calculation
+ * ✔ Ambiguity detection
  * ✔ Learning engine
  * ✔ Planner decision logic
+ * ✔ LRU score cache
  *
- * NOTE:
+ * IMPORTANT
+ * ----------------------------------------------------------
  * Planner NEVER performs fuzzy matching.
- * All scoring happens inside this engine.
+ *
+ * All fuzzy matching and candidate ranking happens here.
+ *
+ * Example
+ * ----------------------------------------------------------
+ *
+ * Input:
+ *   "Click Punch In"
+ *
+ * DOM:
+ *   <button>Punch In</button>
+ *
+ * Result:
+ *   confidence ≈ 100
+ *   plannerRequired = false
+ *   autoExecute = true
+ *
+ * Input:
+ *   "Click Punh In"
+ *
+ * DOM:
+ *   <button>Punch In</button>
+ *
+ * Result:
+ *   high fuzzy confidence
+ *   plannerRequired = false
+ *   autoExecute = true
+ *
+ * Input:
+ *   "Click Punch Inn"
+ *
+ * DOM:
+ *   <button>Punch In</button>
+ *
+ * Result:
+ *   high fuzzy confidence
+ *
  * ==========================================================
  */
 
@@ -46,6 +130,14 @@ const DEFAULT_OPTIONS = {
   visibilityWeight: 5,
 
   //--------------------------------------------------
+  // Advanced Weights
+  //--------------------------------------------------
+
+  actionabilityWeight: 8,
+
+  fieldWeight: 10,
+
+  //--------------------------------------------------
   // Thresholds
   //--------------------------------------------------
 
@@ -54,6 +146,14 @@ const DEFAULT_OPTIONS = {
   autoExecuteThreshold: 95,
 
   minimumConfidence: 60,
+
+  //--------------------------------------------------
+  // Ambiguity
+  //--------------------------------------------------
+
+  ambiguityMargin: 5,
+
+  strongMatchMargin: 12,
 
   //--------------------------------------------------
   // Features
@@ -66,6 +166,10 @@ const DEFAULT_OPTIONS = {
   enableSemantic: true,
 
   enableAccessibility: true,
+
+  enableActionability: true,
+
+  enableTokenFuzzy: true,
 
   debug: false,
 };
@@ -80,11 +184,28 @@ const STOP_WORDS = new Set([
   "an",
 
   "button",
+  "buttons",
+
   "link",
+  "links",
+
   "tab",
+  "tabs",
+
   "menu",
+  "menus",
+
   "option",
+  "options",
+
   "item",
+  "items",
+
+  "element",
+  "elements",
+
+  "control",
+  "controls",
 
   "please",
   "kindly",
@@ -107,6 +228,44 @@ const STOP_WORDS = new Set([
   "click",
   "press",
   "tap",
+
+  "select",
+  "choose",
+  "pick",
+
+  "type",
+  "enter",
+  "input",
+
+  "fill",
+]);
+
+//==========================================================
+// COMMAND WORDS
+//==========================================================
+
+const COMMAND_WORDS = new Set([
+  "click",
+  "press",
+  "tap",
+  "select",
+  "choose",
+  "pick",
+  "type",
+  "enter",
+  "fill",
+  "write",
+  "input",
+  "check",
+  "uncheck",
+  "tick",
+  "untick",
+  "open",
+  "close",
+  "submit",
+  "save",
+  "delete",
+  "remove",
 ]);
 
 //==========================================================
@@ -114,6 +273,10 @@ const STOP_WORDS = new Set([
 //==========================================================
 
 const SYNONYMS = new Map([
+  //--------------------------------------------------
+  // Authentication
+  //--------------------------------------------------
+
   ["signin", "login"],
   ["sign in", "login"],
   ["log in", "login"],
@@ -122,8 +285,14 @@ const SYNONYMS = new Map([
   ["sign up", "register"],
 
   ["logout", "sign out"],
+  ["log out", "sign out"],
+
+  //--------------------------------------------------
+  // Actions
+  //--------------------------------------------------
 
   ["submit", "save"],
+
   ["confirm", "ok"],
   ["okay", "ok"],
 
@@ -148,11 +317,55 @@ const SYNONYMS = new Map([
   ["tick", "check"],
   ["untick", "uncheck"],
 
-  ["clock in", "punch in"],
-  ["punch in", "clock in"],
+  //--------------------------------------------------
+  // Attendance
+  //--------------------------------------------------
 
+  ["clock in", "punch in"],
   ["clock out", "punch out"],
-  ["punch out", "clock out"],
+
+  //--------------------------------------------------
+  // Common UI
+  //--------------------------------------------------
+
+  ["hamburger", "menu"],
+  ["settings", "setting"],
+  ["preferences", "setting"],
+]);
+
+//==========================================================
+// ACTION ALIASES
+//==========================================================
+
+const ACTION_ALIASES = new Map([
+  ["click", "click"],
+  ["press", "click"],
+  ["tap", "click"],
+
+  ["select", "select"],
+  ["choose", "select"],
+  ["pick", "select"],
+
+  ["type", "type"],
+  ["enter", "type"],
+  ["fill", "type"],
+  ["write", "type"],
+  ["input", "type"],
+
+  ["check", "check"],
+  ["tick", "check"],
+
+  ["uncheck", "uncheck"],
+  ["untick", "uncheck"],
+
+  ["open", "open"],
+  ["close", "close"],
+
+  ["submit", "submit"],
+  ["save", "save"],
+
+  ["delete", "delete"],
+  ["remove", "delete"],
 ]);
 
 //==========================================================
@@ -161,7 +374,7 @@ const SYNONYMS = new Map([
 
 class LRUCache {
   constructor(limit = 5000) {
-    this.limit = limit;
+    this.limit = Math.max(1, Number(limit) || 5000);
 
     this.map = new Map();
   }
@@ -171,9 +384,15 @@ class LRUCache {
   }
 
   get(key) {
-    if (!this.map.has(key)) return null;
+    if (!this.map.has(key)) {
+      return null;
+    }
 
     const value = this.map.get(key);
+
+    //--------------------------------------------------
+    // Refresh LRU position
+    //--------------------------------------------------
 
     this.map.delete(key);
 
@@ -259,12 +478,20 @@ export default class ScoringEngine {
       learnedMatches: 0,
 
       plannerRequests: 0,
+
+      exactMatches: 0,
+
+      fuzzyMatches: 0,
+
+      ambiguousMatches: 0,
+
+      autoExecutions: 0,
     };
   }
 
-  //==================================================
+  //========================================================
   // LOGGING
-  //==================================================
+  //========================================================
 
   log(...args) {
     if (this.options.debug) {
@@ -280,127 +507,202 @@ export default class ScoringEngine {
     console.error("[ScoringEngine]", ...args);
   }
 
-  //==================================================
-  // Part 1B
-  // Normalization
-  // Tokenization
-  // Synonym Expansion
-  // Text Utilities
-  //==================================================
-  //==================================================
+  //========================================================
   // NORMALIZATION
-  //==================================================
+  //========================================================
 
   normalize(text = "") {
-    if (text === null || text === undefined) return "";
+    if (text === null || text === undefined) {
+      return "";
+    }
 
-    text = String(text)
+    let value = String(text)
       .toLowerCase()
       .normalize("NFKD")
       .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[_-]+/g, " ")
       .replace(/[^\w\s]/g, " ")
       .replace(/\s+/g, " ")
       .trim();
 
     //--------------------------------------------------
-    // Expand synonyms
+    // Expand multi-word synonyms first
     //--------------------------------------------------
 
-    for (const [from, to] of SYNONYMS) {
-      text = text.replaceAll(from, to);
+    const synonymEntries = [...SYNONYMS.entries()].sort(
+      (a, b) => b[0].length - a[0].length,
+    );
+
+    for (const [from, to] of synonymEntries) {
+      const escaped = from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+      value = value.replace(new RegExp(`\\b${escaped}\\b`, "gi"), to);
     }
 
-    return text;
+    //--------------------------------------------------
+    // Final whitespace cleanup
+    //--------------------------------------------------
+
+    return value.replace(/\s+/g, " ").trim();
   }
 
-  //==================================================
+  //========================================================
+  // EXTRACT ACTION
+  //========================================================
+
+  extractAction(text = "") {
+    const normalized = this.normalize(text);
+
+    if (!normalized) {
+      return {
+        action: "",
+        target: "",
+      };
+    }
+
+    const tokens = normalized.split(" ");
+
+    const actionIndex = tokens.findIndex((token) => ACTION_ALIASES.has(token));
+
+    if (actionIndex === -1) {
+      return {
+        action: "",
+        target: normalized,
+      };
+    }
+
+    const rawAction = tokens[actionIndex];
+
+    const action = ACTION_ALIASES.get(rawAction) || rawAction;
+
+    const targetTokens = tokens.filter((_, index) => index !== actionIndex);
+
+    return {
+      action,
+
+      target: targetTokens.join(" ").trim(),
+    };
+  }
+
+  //========================================================
+  // REMOVE COMMAND WORDS
+  //========================================================
+
+  removeCommandWords(text = "") {
+    return this.normalize(text)
+      .split(" ")
+      .filter(Boolean)
+      .filter((token) => !COMMAND_WORDS.has(token))
+      .join(" ")
+      .trim();
+  }
+
+  //========================================================
   // TOKENIZATION
-  //==================================================
+  //========================================================
 
   tokenize(text = "") {
     return this.normalize(text)
-
       .split(" ")
-
       .map((token) => token.trim())
-
       .filter(Boolean)
-
       .filter((token) => !STOP_WORDS.has(token));
   }
 
-  //==================================================
+  //========================================================
   // UNIQUE TOKENS
-  //==================================================
+  //========================================================
 
   uniqueTokens(text = "") {
     return [...new Set(this.tokenize(text))];
   }
 
-  //==================================================
-  // STEMMING (LIGHTWEIGHT)
-  //==================================================
+  //========================================================
+  // LIGHTWEIGHT STEMMING
+  //========================================================
 
   stem(word = "") {
     word = this.normalize(word);
 
-    return word
+    if (!word) {
+      return "";
+    }
 
-      .replace(/ing$/i, "")
+    //--------------------------------------------------
+    // Keep short words untouched
+    //--------------------------------------------------
 
-      .replace(/ed$/i, "")
+    if (word.length <= 3) {
+      return word;
+    }
 
-      .replace(/es$/i, "")
+    //--------------------------------------------------
+    // Conservative stemming
+    //--------------------------------------------------
 
-      .replace(/s$/i, "");
+    if (word.endsWith("ing") && word.length > 5) {
+      return word.slice(0, -3);
+    }
+
+    if (word.endsWith("ed") && word.length > 4) {
+      return word.slice(0, -2);
+    }
+
+    if (word.endsWith("es") && word.length > 4) {
+      return word.slice(0, -2);
+    }
+
+    if (word.endsWith("s") && word.length > 3) {
+      return word.slice(0, -1);
+    }
+
+    return word;
   }
+
+  //========================================================
+  // STEM TOKENS
+  //========================================================
 
   stemTokens(text = "") {
     return this.tokenize(text)
-
       .map((token) => this.stem(token))
-
       .filter(Boolean);
   }
 
-  //==================================================
+  //========================================================
   // TEXT CLEANER
-  //==================================================
+  //========================================================
 
   clean(text = "") {
     return this.normalize(text);
   }
 
-  //==================================================
+  //========================================================
   // CANONICAL TEXT
-  //==================================================
+  //========================================================
 
   canonical(text = "") {
-    return this.stemTokens(text)
-
-      .join(" ");
+    return this.stemTokens(text).join(" ");
   }
 
-  //==================================================
+  //========================================================
   // CACHE KEY
-  //==================================================
+  //========================================================
 
   createCacheKey(query, candidate) {
-    return this.canonical(query) + "::" + this.canonical(candidate);
+    return [this.canonical(query), this.canonical(candidate)].join("::");
   }
 
-  //==================================================
-  // CACHE HELPERS
-  //==================================================
+  //========================================================
+  // CACHE GET
+  //========================================================
 
   getCachedScore(query, candidate) {
-    if (!this.options.enableCache) return null;
+    if (!this.options.enableCache) {
+      return null;
+    }
 
-    const key = this.createCacheKey(
-      query,
-
-      candidate,
-    );
+    const key = this.createCacheKey(query, candidate);
 
     const value = this.cache.get(key);
 
@@ -415,53 +717,75 @@ export default class ScoringEngine {
     return null;
   }
 
+  //========================================================
+  // CACHE SET
+  //========================================================
+
   setCachedScore(query, candidate, value) {
-    if (!this.options.enableCache) return;
+    if (!this.options.enableCache) {
+      return;
+    }
 
-    const key = this.createCacheKey(
-      query,
-
-      candidate,
-    );
+    const key = this.createCacheKey(query, candidate);
 
     this.cache.set(key, value);
   }
+
+  //========================================================
+  // CLEAR CACHE
+  //========================================================
 
   clearCache() {
     this.cache.clear();
   }
 
-  //==================================================
+  //========================================================
   // LEARNING
-  //==================================================
+  //========================================================
 
   remember(query, candidate) {
     if (!this.options.enableLearning || !candidate) {
       return;
     }
 
-    query = this.canonical(query);
+    const canonicalQuery = this.canonical(query);
 
-    this.previousSuccess.set(
-      query,
+    if (!canonicalQuery) {
+      return;
+    }
 
-      candidate,
-    );
+    this.previousSuccess.set(canonicalQuery, candidate);
 
     this.metrics.learnedMatches = this.previousSuccess.size;
   }
+
+  //========================================================
+  // LEARN
+  //========================================================
 
   learn(query, candidate) {
     this.remember(query, candidate);
   }
 
+  //========================================================
+  // RECALL
+  //========================================================
+
   recall(query) {
     return this.previousSuccess.get(this.canonical(query)) || null;
   }
 
+  //========================================================
+  // FORGET
+  //========================================================
+
   forget(query) {
     this.previousSuccess.delete(this.canonical(query));
   }
+
+  //========================================================
+  // CLEAR LEARNING
+  //========================================================
 
   clearLearning() {
     this.previousSuccess.clear();
@@ -469,87 +793,113 @@ export default class ScoringEngine {
     this.metrics.learnedMatches = 0;
   }
 
-  //==================================================
-  // Part 1C
-  // DOM Index
-  // Candidate Creation
-  // Search Index
-  //==================================================
-  //==================================================
+  //========================================================
   // BUILD DOM INDEX
-  //==================================================
+  //========================================================
 
   buildIndex(elements = []) {
     this.domIndex = [];
 
     for (const element of elements) {
+      if (!element) {
+        continue;
+      }
+
       this.domIndex.push(this.createCandidate(element));
     }
 
     this.metrics.indexedElements = this.domIndex.length;
+
+    //--------------------------------------------------
+    // DOM changed → cached ranking may be stale
+    //--------------------------------------------------
+
+    this.clearCache();
 
     this.log(`Indexed ${this.domIndex.length} elements.`);
 
     return this.domIndex;
   }
 
-  //==================================================
+  //========================================================
+  // CANDIDATE KEY
+  //========================================================
+
+  getCandidateKey(candidate) {
+    if (!candidate) {
+      return "";
+    }
+
+    return (
+      candidate.id ||
+      candidate.testid ||
+      candidate.text ||
+      candidate.aria ||
+      [candidate.tag, candidate.role, candidate.x, candidate.y].join(":")
+    );
+  }
+
+  //========================================================
   // UPDATE DOM INDEX
-  //==================================================
+  //========================================================
 
   updateIndex(elements = []) {
     const lookup = new Map();
 
     //--------------------------------------------------
-    // Existing
+    // Existing candidates
     //--------------------------------------------------
 
     for (const candidate of this.domIndex) {
-      const key =
-        candidate.id ||
-        candidate.testid ||
-        candidate.text ||
-        `${candidate.tag}:${candidate.role}`;
+      const key = this.getCandidateKey(candidate);
 
-      lookup.set(key, candidate);
+      if (key) {
+        lookup.set(key, candidate);
+      }
     }
 
     //--------------------------------------------------
-    // Merge new elements
+    // New candidates
     //--------------------------------------------------
 
     for (const element of elements) {
+      if (!element) {
+        continue;
+      }
+
       const candidate = this.createCandidate(element);
 
-      const key =
-        candidate.id ||
-        candidate.testid ||
-        candidate.text ||
-        `${candidate.tag}:${candidate.role}`;
+      const key = this.getCandidateKey(candidate);
 
-      lookup.set(key, candidate);
+      if (key) {
+        lookup.set(key, candidate);
+      }
     }
 
     this.domIndex = [...lookup.values()];
 
     this.metrics.indexedElements = this.domIndex.length;
 
+    this.clearCache();
+
     return this.domIndex;
   }
 
-  //==================================================
+  //========================================================
   // CLEAR INDEX
-  //==================================================
+  //========================================================
 
   clearIndex() {
     this.domIndex = [];
 
     this.metrics.indexedElements = 0;
+
+    this.clearCache();
   }
 
-  //==================================================
+  //========================================================
   // DOM ACCESS
-  //==================================================
+  //========================================================
 
   getIndex() {
     return this.domIndex;
@@ -563,14 +913,16 @@ export default class ScoringEngine {
     return this.domIndex.length;
   }
 
-  //==================================================
+  //========================================================
   // CREATE SEARCHABLE CANDIDATE
-  //==================================================
+  //========================================================
 
   createCandidate(node = {}) {
+    const tag = (node.tagName || node.tag || "").toLowerCase();
+
     return {
       //--------------------------------------------------
-      // Original
+      // Original element
       //--------------------------------------------------
 
       element: node,
@@ -579,14 +931,14 @@ export default class ScoringEngine {
       // Identity
       //--------------------------------------------------
 
-      id: node.id || "",
+      id: String(node.id || ""),
 
       role: this.normalize(node.role || ""),
 
-      tag: (node.tagName || node.tag || "").toLowerCase(),
+      tag,
 
       //--------------------------------------------------
-      // Searchable Text
+      // Searchable text
       //--------------------------------------------------
 
       text: this.normalize(node.text || node.innerText || node.label || ""),
@@ -643,39 +995,35 @@ export default class ScoringEngine {
     };
   }
 
-  //==================================================
+  //========================================================
   // SEARCHABLE FIELDS
-  //==================================================
+  //========================================================
 
   getSearchableFields(candidate) {
-    return [
-      candidate.text,
+    if (!candidate) {
+      return [];
+    }
 
-      candidate.aria,
+    const fields = [
+      ["text", candidate.text],
+      ["aria", candidate.aria],
+      ["placeholder", candidate.placeholder],
+      ["title", candidate.title],
+      ["alt", candidate.alt],
+      ["testid", candidate.testid],
+      ["name", candidate.name],
+      ["value", candidate.value],
+      ["id", candidate.id],
+      ["role", candidate.role],
+      ["tag", candidate.tag],
+    ];
 
-      candidate.placeholder,
-
-      candidate.title,
-
-      candidate.alt,
-
-      candidate.testid,
-
-      candidate.name,
-
-      candidate.value,
-
-      candidate.id,
-
-      candidate.role,
-
-      candidate.tag,
-    ].filter(Boolean);
+    return fields.filter(([, value]) => Boolean(value));
   }
 
-  //==================================================
+  //========================================================
   // INDEX SUMMARY
-  //==================================================
+  //========================================================
 
   getIndexSummary() {
     return {
@@ -685,91 +1033,193 @@ export default class ScoringEngine {
 
       enabled: this.domIndex.filter((item) => item.enabled).length,
 
+      actionable: this.domIndex.filter((item) =>
+        this.isActionableCandidate(item),
+      ).length,
+
       learned: this.previousSuccess.size,
 
       cache: this.cache.size(),
     };
   }
 
-  //==================================================
-  // PART 2
-  // Exact Score
-  // Prefix Score
-  // Token Score
-  // Jaro-Winkler
-  // Levenshtein
-  // Dice
-  // Cosine
-  //==================================================
-
-  //==================================================
+  //========================================================
   // EXACT MATCH
-  //==================================================
+  //========================================================
 
   exactScore(query, candidate) {
     query = this.normalize(query);
+
     candidate = this.normalize(candidate);
 
-    if (!query || !candidate) return 0;
+    if (!query || !candidate) {
+      return 0;
+    }
 
-    if (query === candidate) return 100;
+    if (query === candidate) {
+      return 100;
+    }
+
+    //--------------------------------------------------
+    // Canonical equality
+    //--------------------------------------------------
+
+    if (this.canonical(query) === this.canonical(candidate)) {
+      return 100;
+    }
 
     return 0;
   }
 
-  //==================================================
+  //========================================================
+  // CONTAINS SCORE
+  //========================================================
+
+  containsScore(query, candidate) {
+    query = this.normalize(query);
+
+    candidate = this.normalize(candidate);
+
+    if (!query || !candidate) {
+      return 0;
+    }
+
+    if (candidate === query) {
+      return 100;
+    }
+
+    if (candidate.includes(query)) {
+      return 92;
+    }
+
+    return 0;
+  }
+
+  //========================================================
   // PREFIX SCORE
-  //==================================================
+  //========================================================
 
   prefixScore(query, candidate) {
     query = this.normalize(query);
+
     candidate = this.normalize(candidate);
 
-    if (!query || !candidate) return 0;
+    if (!query || !candidate) {
+      return 0;
+    }
 
-    if (candidate.startsWith(query)) return 95;
+    if (candidate.startsWith(query)) {
+      return 95;
+    }
 
-    if (query.startsWith(candidate)) return 90;
+    if (query.startsWith(candidate)) {
+      return 90;
+    }
 
     return 0;
   }
 
-  //==================================================
+  //========================================================
   // TOKEN OVERLAP SCORE
-  //==================================================
+  //========================================================
 
   tokenScore(query, candidate) {
     const q = this.uniqueTokens(query);
 
     const c = this.uniqueTokens(candidate);
 
-    if (!q.length || !c.length) return 0;
+    if (!q.length || !c.length) {
+      return 0;
+    }
 
     let matches = 0;
 
     for (const token of q) {
-      if (c.includes(token)) matches++;
+      if (c.includes(token)) {
+        matches++;
+      }
     }
 
     return (matches / q.length) * 100;
   }
 
-  //==================================================
+  //========================================================
+  // TOKEN FUZZY SCORE
+  //
+  // This is important for:
+  //
+  // "Punh In"
+  //      ↓
+  // "Punch In"
+  //
+  // Planner does NOT do this.
+  // ScoringEngine does.
+  //========================================================
+
+  tokenFuzzyScore(query, candidate) {
+    if (!this.options.enableTokenFuzzy) {
+      return 0;
+    }
+
+    const queryTokens = this.uniqueTokens(query);
+
+    const candidateTokens = this.uniqueTokens(candidate);
+
+    if (!queryTokens.length || !candidateTokens.length) {
+      return 0;
+    }
+
+    let total = 0;
+
+    for (const queryToken of queryTokens) {
+      let best = 0;
+
+      for (const candidateToken of candidateTokens) {
+        const jaro = this.jaroWinklerScore(queryToken, candidateToken);
+
+        const levenshtein = this.levenshteinScore(queryToken, candidateToken);
+
+        const dice = this.diceScore(queryToken, candidateToken);
+
+        best = Math.max(best, jaro, levenshtein, dice);
+      }
+
+      total += best;
+    }
+
+    return total / queryTokens.length;
+  }
+
+  //========================================================
   // JARO-WINKLER
-  //==================================================
+  //========================================================
 
   jaroWinklerScore(a, b) {
     a = this.normalize(a);
+
     b = this.normalize(b);
 
-    if (!a || !b) return 0;
+    if (!a || !b) {
+      return 0;
+    }
 
-    if (a === b) return 100;
+    if (a === b) {
+      return 100;
+    }
 
     const len1 = a.length;
+
     const len2 = b.length;
 
-    const matchDistance = Math.floor(Math.max(len1, len2) / 2) - 1;
+    if (!len1 || !len2) {
+      return 0;
+    }
+
+    //--------------------------------------------------
+    // Prevent negative match distance
+    //--------------------------------------------------
+
+    const matchDistance = Math.max(0, Math.floor(Math.max(len1, len2) / 2) - 1);
 
     const aMatch = new Array(len1).fill(false);
 
@@ -783,11 +1233,16 @@ export default class ScoringEngine {
       const end = Math.min(i + matchDistance + 1, len2);
 
       for (let j = start; j < end; j++) {
-        if (bMatch[j]) continue;
+        if (bMatch[j]) {
+          continue;
+        }
 
-        if (a[i] !== b[j]) continue;
+        if (a[i] !== b[j]) {
+          continue;
+        }
 
         aMatch[i] = true;
+
         bMatch[j] = true;
 
         matches++;
@@ -796,17 +1251,26 @@ export default class ScoringEngine {
       }
     }
 
-    if (!matches) return 0;
+    if (!matches) {
+      return 0;
+    }
 
     let transpositions = 0;
+
     let k = 0;
 
     for (let i = 0; i < len1; i++) {
-      if (!aMatch[i]) continue;
+      if (!aMatch[i]) {
+        continue;
+      }
 
-      while (!bMatch[k]) k++;
+      while (k < len2 && !bMatch[k]) {
+        k++;
+      }
 
-      if (a[i] !== b[k]) transpositions++;
+      if (k < len2 && a[i] !== b[k]) {
+        transpositions++;
+      }
 
       k++;
     }
@@ -817,11 +1281,18 @@ export default class ScoringEngine {
       (matches / len1 + matches / len2 + (matches - transpositions) / matches) /
       3;
 
+    //--------------------------------------------------
+    // Prefix boost
+    //--------------------------------------------------
+
     let prefix = 0;
 
     for (let i = 0; i < Math.min(4, len1, len2); i++) {
-      if (a[i] === b[i]) prefix++;
-      else break;
+      if (a[i] === b[i]) {
+        prefix++;
+      } else {
+        break;
+      }
     }
 
     score += prefix * 0.1 * (1 - score);
@@ -829,26 +1300,41 @@ export default class ScoringEngine {
     return Math.min(100, score * 100);
   }
 
-  //==================================================
+  //========================================================
   // LEVENSHTEIN
-  //==================================================
+  //========================================================
 
   levenshteinScore(a, b) {
     a = this.normalize(a);
+
     b = this.normalize(b);
 
-    if (!a || !b) return 0;
+    if (!a || !b) {
+      return 0;
+    }
 
-    if (a === b) return 100;
+    if (a === b) {
+      return 100;
+    }
 
     const rows = b.length + 1;
+
     const cols = a.length + 1;
 
-    const matrix = Array.from({ length: rows }, () => new Array(cols).fill(0));
+    const matrix = Array.from(
+      {
+        length: rows,
+      },
+      () => new Array(cols).fill(0),
+    );
 
-    for (let i = 0; i < rows; i++) matrix[i][0] = i;
+    for (let i = 0; i < rows; i++) {
+      matrix[i][0] = i;
+    }
 
-    for (let j = 0; j < cols; j++) matrix[0][j] = j;
+    for (let j = 0; j < cols; j++) {
+      matrix[0][j] = j;
+    }
 
     for (let i = 1; i < rows; i++) {
       for (let j = 1; j < cols; j++) {
@@ -870,24 +1356,25 @@ export default class ScoringEngine {
 
     const longest = Math.max(a.length, b.length);
 
-    return Math.max(
-      0,
-
-      (1 - distance / longest) * 100,
-    );
+    return Math.max(0, (1 - distance / longest) * 100);
   }
 
-  //==================================================
+  //========================================================
   // DICE COEFFICIENT
-  //==================================================
+  //========================================================
 
   diceScore(a, b) {
     a = this.normalize(a);
+
     b = this.normalize(b);
 
-    if (!a || !b) return 0;
+    if (!a || !b) {
+      return 0;
+    }
 
-    if (a === b) return 100;
+    if (a === b) {
+      return 100;
+    }
 
     if (a.length < 2 || b.length < 2) {
       return 0;
@@ -898,11 +1385,7 @@ export default class ScoringEngine {
     for (let i = 0; i < a.length - 1; i++) {
       const gram = a.substring(i, i + 2);
 
-      map.set(
-        gram,
-
-        (map.get(gram) || 0) + 1,
-      );
+      map.set(gram, (map.get(gram) || 0) + 1);
     }
 
     let matches = 0;
@@ -912,7 +1395,9 @@ export default class ScoringEngine {
 
       const count = map.get(gram);
 
-      if (!count) continue;
+      if (!count) {
+        continue;
+      }
 
       map.set(gram, count - 1);
 
@@ -922,9 +1407,9 @@ export default class ScoringEngine {
     return ((2 * matches) / (a.length - 1 + (b.length - 1))) * 100;
   }
 
-  //==================================================
+  //========================================================
   // COSINE SIMILARITY
-  //==================================================
+  //========================================================
 
   cosineScore(a, b) {
     const wordsA = this.stemTokens(a);
@@ -938,7 +1423,9 @@ export default class ScoringEngine {
     const vocabulary = [...new Set([...wordsA, ...wordsB])];
 
     let dot = 0;
+
     let magA = 0;
+
     let magB = 0;
 
     for (const word of vocabulary) {
@@ -953,60 +1440,50 @@ export default class ScoringEngine {
       magB += countB * countB;
     }
 
-    if (!magA || !magB) return 0;
+    if (!magA || !magB) {
+      return 0;
+    }
 
     return (dot / (Math.sqrt(magA) * Math.sqrt(magB))) * 100;
   }
 
-  //==================================================
-  // PART 3
-  // Semantic Score
-  // Accessibility Score
-  // Visibility Score
-  // Combined Weighted Score
-  //==================================================
-  //==================================================
+  //========================================================
   // SEMANTIC SCORE
-  //==================================================
+  //========================================================
 
   semanticScore(query, candidate) {
-    if (!this.options.enableSemantic) return 0;
+    if (!this.options.enableSemantic) {
+      return 0;
+    }
 
-    query = this.canonical(query);
-    candidate = this.canonical(candidate);
+    const originalQuery = this.normalize(query);
 
-    if (!query || !candidate) return 0;
+    const originalCandidate = this.normalize(candidate);
 
-    //--------------------------------------------------
-    // Learned mapping gets maximum confidence
-    //--------------------------------------------------
+    if (!originalQuery || !originalCandidate) {
+      return 0;
+    }
 
-    const learned = this.recall(query);
+    const canonicalQuery = this.canonical(originalQuery);
 
-    if (learned && learned.text === candidate) {
+    const canonicalCandidate = this.canonical(originalCandidate);
+
+    if (canonicalQuery === canonicalCandidate) {
       return 100;
     }
 
-    //--------------------------------------------------
-    // Canonical equality
-    //--------------------------------------------------
+    const cosine = this.cosineScore(canonicalQuery, canonicalCandidate);
 
-    if (query === candidate) return 100;
+    const token = this.tokenScore(canonicalQuery, canonicalCandidate);
 
-    //--------------------------------------------------
-    // Average semantic similarity
-    //--------------------------------------------------
+    const tokenFuzzy = this.tokenFuzzyScore(canonicalQuery, canonicalCandidate);
 
-    const cosine = this.cosineScore(query, candidate);
-
-    const token = this.tokenScore(query, candidate);
-
-    return cosine * 0.7 + token * 0.3;
+    return Math.min(100, cosine * 0.45 + token * 0.25 + tokenFuzzy * 0.3);
   }
 
-  //==================================================
+  //========================================================
   // ACCESSIBILITY SCORE
-  //==================================================
+  //========================================================
 
   accessibilityScore(candidate) {
     if (!this.options.enableAccessibility) {
@@ -1015,63 +1492,236 @@ export default class ScoringEngine {
 
     let score = 0;
 
-    if (candidate.role) score += 25;
+    if (candidate.role) {
+      score += 20;
+    }
 
-    if (candidate.aria) score += 25;
+    if (candidate.aria) {
+      score += 25;
+    }
 
-    if (candidate.name) score += 20;
+    if (candidate.name) {
+      score += 20;
+    }
 
-    if (candidate.title) score += 10;
+    if (candidate.title) {
+      score += 10;
+    }
 
-    if (candidate.placeholder) score += 10;
+    if (candidate.placeholder) {
+      score += 10;
+    }
 
-    if (candidate.testid) score += 10;
+    if (candidate.testid) {
+      score += 15;
+    }
 
     return Math.min(100, score);
   }
 
-  //==================================================
+  //========================================================
   // VISIBILITY SCORE
-  //==================================================
+  //========================================================
 
   visibilityScore(candidate) {
     let score = 0;
 
-    if (candidate.visible) score += 70;
+    if (candidate.visible) {
+      score += 70;
+    }
 
-    if (candidate.enabled) score += 30;
+    if (candidate.enabled) {
+      score += 30;
+    }
 
     return score;
   }
 
-  //==================================================
-  // SCORE SINGLE CANDIDATE
-  //==================================================
+  //========================================================
+  // ACTIONABLE CANDIDATE
+  //========================================================
 
-  scoreCandidate(query, candidate) {
+  isActionableCandidate(candidate, action = "click") {
+    if (!candidate) {
+      return false;
+    }
+
+    const tag = candidate.tag;
+
+    const role = candidate.role;
+
+    if (action === "type") {
+      return (
+        candidate.editable ||
+        tag === "input" ||
+        tag === "textarea" ||
+        tag === "select" ||
+        role === "textbox" ||
+        role === "combobox"
+      );
+    }
+
+    if (action === "check" || action === "uncheck") {
+      return tag === "input" || role === "checkbox" || role === "switch";
+    }
+
+    if (action === "select") {
+      return (
+        tag === "select" ||
+        role === "option" ||
+        role === "combobox" ||
+        tag === "button"
+      );
+    }
+
+    if (
+      action === "click" ||
+      action === "open" ||
+      action === "close" ||
+      action === "submit" ||
+      action === "save" ||
+      action === "delete"
+    ) {
+      return (
+        tag === "button" ||
+        tag === "a" ||
+        tag === "input" ||
+        role === "button" ||
+        role === "link" ||
+        role === "tab" ||
+        role === "menuitem"
+      );
+    }
+
+    return true;
+  }
+
+  //========================================================
+  // ACTIONABILITY SCORE
+  //========================================================
+
+  actionabilityScore(candidate, action = "click") {
+    if (!this.options.enableActionability) {
+      return 0;
+    }
+
+    if (!this.isActionableCandidate(candidate, action)) {
+      return 0;
+    }
+
+    let score = 60;
+
+    const tag = candidate.tag;
+
+    const role = candidate.role;
+
+    if (action === "click") {
+      if (tag === "button") {
+        score += 30;
+      }
+
+      if (role === "button" || role === "link") {
+        score += 20;
+      }
+
+      if (tag === "a") {
+        score += 20;
+      }
+    }
+
+    if (action === "type") {
+      if (tag === "input" || tag === "textarea") {
+        score += 30;
+      }
+
+      if (candidate.editable) {
+        score += 10;
+      }
+    }
+
+    if (action === "select") {
+      if (tag === "select" || role === "combobox") {
+        score += 30;
+      }
+    }
+
+    return Math.min(100, score);
+  }
+
+  //========================================================
+  // FIELD PRIORITY
+  //========================================================
+
+  getFieldPriority(fieldName) {
+    const priorities = {
+      text: 100,
+
+      aria: 98,
+
+      name: 95,
+
+      title: 90,
+
+      placeholder: 88,
+
+      testid: 85,
+
+      value: 80,
+
+      alt: 75,
+
+      id: 70,
+
+      role: 60,
+
+      tag: 40,
+    };
+
+    return priorities[fieldName] || 0;
+  }
+
+  //========================================================
+  // SCORE SINGLE CANDIDATE
+  //========================================================
+
+  scoreCandidate(query, candidate, context = {}) {
     query = this.normalize(query);
 
-    const text = candidate.text || "";
+    const text = this.normalize(candidate?.text || "");
+
+    if (!query || !text) {
+      return {
+        score: 0,
+
+        details: null,
+      };
+    }
 
     //--------------------------------------------------
     // Cache
     //--------------------------------------------------
 
-    const cached = this.getCachedScore(query, text);
+    const cacheCandidate = [text, context.action || ""].join("::");
 
-    if (cached) {
+    const cached = this.getCachedScore(query, cacheCandidate);
+
+    if (cached !== null) {
       return cached;
     }
 
     //--------------------------------------------------
-    // Individual Scores
+    // Individual scores
     //--------------------------------------------------
 
     const exact = this.exactScore(query, text);
 
+    const contains = this.containsScore(query, text);
+
     const prefix = this.prefixScore(query, text);
 
     const token = this.tokenScore(query, text);
+
+    const tokenFuzzy = this.tokenFuzzyScore(query, text);
 
     const jaro = this.jaroWinklerScore(query, text);
 
@@ -1087,47 +1737,150 @@ export default class ScoringEngine {
 
     const visibility = this.visibilityScore(candidate);
 
-    //--------------------------------------------------
-    // Best fuzzy algorithm
-    //--------------------------------------------------
-
-    const fuzzy = Math.max(
-      prefix,
-
-      jaro,
-
-      levenshtein,
-
-      dice,
+    const actionability = this.actionabilityScore(
+      candidate,
+      context.action || "click",
     );
+
+    //--------------------------------------------------
+    // Best fuzzy score
+    //--------------------------------------------------
+
+    const fuzzy = Math.max(prefix, tokenFuzzy, jaro, levenshtein, dice);
+
+    //--------------------------------------------------
+    // Exact match override
+    //
+    // This guarantees:
+    //
+    // "Punch In"
+    //      ↓
+    // "Punch In"
+    //      ↓
+    // 100%
+    //--------------------------------------------------
+
+    if (exact === 100) {
+      const exactResult = {
+        score: 100,
+
+        details: {
+          exact,
+
+          contains,
+
+          prefix,
+
+          token,
+
+          tokenFuzzy,
+
+          jaro,
+
+          levenshtein,
+
+          dice,
+
+          cosine,
+
+          semantic,
+
+          accessibility,
+
+          visibility,
+
+          actionability,
+
+          exactOverride: true,
+        },
+      };
+
+      this.setCachedScore(query, cacheCandidate, exactResult);
+
+      return exactResult;
+    }
 
     //--------------------------------------------------
     // Weighted score
     //--------------------------------------------------
 
-    const score =
+    const baseWeight =
+      this.options.exactWeight +
+      this.options.tokenWeight +
+      this.options.fuzzyWeight +
+      this.options.semanticWeight +
+      this.options.accessibilityWeight +
+      this.options.visibilityWeight;
+
+    const weightedScore =
       (exact * this.options.exactWeight +
         token * this.options.tokenWeight +
         fuzzy * this.options.fuzzyWeight +
         semantic * this.options.semanticWeight +
         accessibility * this.options.accessibilityWeight +
         visibility * this.options.visibilityWeight) /
-      (this.options.exactWeight +
-        this.options.tokenWeight +
-        this.options.fuzzyWeight +
-        this.options.semanticWeight +
-        this.options.accessibilityWeight +
-        this.options.visibilityWeight);
+      baseWeight;
+
+    //--------------------------------------------------
+    // Actionability adjustment
+    //--------------------------------------------------
+
+    const actionWeight = this.options.enableActionability
+      ? this.options.actionabilityWeight
+      : 0;
+
+    const totalWeight = baseWeight + actionWeight;
+
+    let score =
+      (weightedScore * baseWeight + actionability * actionWeight) / totalWeight;
+
+    //--------------------------------------------------
+    // Contains boost
+    //
+    // Helps:
+    //
+    // "Punch In"
+    // "Punch In Now"
+    //--------------------------------------------------
+
+    if (contains >= 92 && exact < 100) {
+      score = Math.max(score, contains);
+    }
+
+    //--------------------------------------------------
+    // Token fuzzy boost
+    //
+    // Helps typo:
+    //
+    // "Punh In"
+    // "Punch In"
+    //--------------------------------------------------
+
+    if (tokenFuzzy >= 85 && token >= 40) {
+      score = Math.max(score, tokenFuzzy);
+    }
+
+    //--------------------------------------------------
+    // Strong fuzzy correction
+    //--------------------------------------------------
+
+    if (fuzzy >= 90 && tokenFuzzy >= 85) {
+      score = Math.max(score, 90);
+    }
 
     const result = {
-      score,
+      score: Math.min(100, Number(score.toFixed(4))),
 
       details: {
         exact,
 
+        contains,
+
         prefix,
 
         token,
+
+        tokenFuzzy,
 
         jaro,
 
@@ -1142,26 +1895,24 @@ export default class ScoringEngine {
         accessibility,
 
         visibility,
+
+        actionability,
+
+        exactOverride: false,
       },
     };
 
-    this.setCachedScore(
-      query,
-
-      text,
-
-      result,
-    );
+    this.setCachedScore(query, cacheCandidate, result);
 
     return result;
   }
 
-  //==================================================
+  //========================================================
   // SCORE SEARCHABLE FIELD
-  //==================================================
+  //========================================================
 
-  scoreField(query, candidate, field) {
-    const value = candidate[field];
+  scoreField(query, candidate, field, context = {}) {
+    const value = candidate?.[field];
 
     if (!value) {
       return {
@@ -1173,39 +1924,48 @@ export default class ScoringEngine {
 
     return this.scoreCandidate(
       query,
-
       {
         ...candidate,
 
         text: value,
       },
+      context,
     );
   }
 
-  //==================================================
-  // PART 4
-  // Candidate Ranking
-  // Search
-  // Planner Decision
-  // Resolution
-  //==================================================
-
-  //==================================================
+  //========================================================
   // RANK CANDIDATES
-  //==================================================
+  //========================================================
 
-  rankCandidates(query, candidates = this.domIndex) {
-    this.metrics.searches++;
-
+  rankCandidates(query, candidates = this.domIndex, context = {}) {
     const ranked = [];
 
     //--------------------------------------------------
-    // Learned result first
+    // Learned result
     //--------------------------------------------------
 
     const learned = this.recall(query);
 
+    //--------------------------------------------------
+    // Extract action
+    //--------------------------------------------------
+
+    const extracted = this.extractAction(query);
+
+    const action = context.action || extracted.action || "click";
+
+    const target =
+      context.target || extracted.target || this.removeCommandWords(query);
+
+    //--------------------------------------------------
+    // Score each candidate
+    //--------------------------------------------------
+
     for (const candidate of candidates) {
+      if (!candidate) {
+        continue;
+      }
+
       let bestScore = 0;
 
       let bestField = "";
@@ -1216,7 +1976,12 @@ export default class ScoringEngine {
       // Learned boost
       //--------------------------------------------------
 
-      if (learned && (learned === candidate || learned.id === candidate.id)) {
+      const learnedMatches =
+        learned &&
+        (learned === candidate ||
+          (learned.id && candidate.id && learned.id === candidate.id));
+
+      if (learnedMatches) {
         bestScore = 100;
 
         bestField = "learned";
@@ -1227,44 +1992,83 @@ export default class ScoringEngine {
       }
 
       //--------------------------------------------------
-      // Search every field
+      // Score every searchable field
       //--------------------------------------------------
 
       const fields = this.getSearchableFields(candidate);
 
-      for (const field of fields) {
+      for (const [fieldName, fieldValue] of fields) {
         const result = this.scoreCandidate(
-          query,
-
+          target,
           {
             ...candidate,
 
-            text: field,
+            text: fieldValue,
+          },
+          {
+            ...context,
+
+            action,
           },
         );
 
-        if (result.score > bestScore) {
-          bestScore = result.score;
+        //--------------------------------------------------
+        // Small field priority tie-break
+        //--------------------------------------------------
 
-          bestField = field;
+        const fieldPriority = this.getFieldPriority(fieldName);
+
+        const adjustedScore = result.score + fieldPriority / 10000;
+
+        if (adjustedScore > bestScore) {
+          bestScore = adjustedScore;
+
+          bestField = fieldName;
 
           bestBreakdown = result.details;
         }
       }
 
+      //--------------------------------------------------
+      // Candidate actionability
+      //--------------------------------------------------
+
+      const candidateActionability = this.actionabilityScore(candidate, action);
+
+      //--------------------------------------------------
+      // Do not allow non-actionable
+      // elements to beat strong actionable
+      // candidates for action commands.
+      //--------------------------------------------------
+
+      if (
+        action === "click" &&
+        !this.isActionableCandidate(candidate, action)
+      ) {
+        bestScore *= 0.82;
+      }
+
+      //--------------------------------------------------
+      // Store result
+      //--------------------------------------------------
+
       ranked.push({
         ...candidate,
 
-        score: Number(bestScore.toFixed(2)),
+        score: Number(Math.min(100, bestScore).toFixed(2)),
 
         matchedField: bestField,
 
         breakdown: bestBreakdown,
+
+        action,
+
+        actionability: candidateActionability,
       });
     }
 
     //--------------------------------------------------
-    // Highest score first
+    // Sort
     //--------------------------------------------------
 
     ranked.sort((a, b) => {
@@ -1272,34 +2076,46 @@ export default class ScoringEngine {
         return b.score - a.score;
       }
 
-      //--------------------------------------------------
+      //------------------------------------------------
       // Prefer visible
-      //--------------------------------------------------
+      //------------------------------------------------
 
       if (a.visible !== b.visible) {
         return Number(b.visible) - Number(a.visible);
       }
 
-      //--------------------------------------------------
+      //------------------------------------------------
       // Prefer enabled
-      //--------------------------------------------------
+      //------------------------------------------------
 
       if (a.enabled !== b.enabled) {
         return Number(b.enabled) - Number(a.enabled);
       }
 
-      //--------------------------------------------------
-      // Prefer buttons
-      //--------------------------------------------------
+      //------------------------------------------------
+      // Prefer actionable
+      //------------------------------------------------
+
+      if (a.actionability !== b.actionability) {
+        return b.actionability - a.actionability;
+      }
+
+      //------------------------------------------------
+      // Tag priority
+      //------------------------------------------------
 
       const priority = {
-        button: 5,
+        button: 10,
 
-        a: 4,
+        a: 9,
 
-        input: 3,
+        input: 8,
 
-        select: 2,
+        textarea: 8,
+
+        select: 7,
+
+        option: 6,
 
         div: 1,
       };
@@ -1310,38 +2126,32 @@ export default class ScoringEngine {
     return ranked;
   }
 
-  //==================================================
+  //========================================================
   // SEARCH
-  //==================================================
+  //========================================================
 
-  search(query, candidates = this.domIndex) {
+  search(query, candidates = this.domIndex, context = {}) {
     query = this.normalize(query);
 
-    if (!query || !candidates.length) {
+    if (!query || !Array.isArray(candidates) || !candidates.length) {
       return [];
     }
 
-    const ranked = this.rankCandidates(
-      query,
+    this.metrics.searches++;
 
-      candidates,
-    );
+    const ranked = this.rankCandidates(query, candidates, context);
 
     return ranked.filter(
       (item) => item.score >= this.options.minimumConfidence,
     );
   }
 
-  //==================================================
+  //========================================================
   // FIND BEST CANDIDATE
-  //==================================================
+  //========================================================
 
-  findBestCandidate(query, candidates = this.domIndex) {
-    const ranked = this.rankCandidates(
-      query,
-
-      candidates,
-    );
+  findBestCandidate(query, candidates = this.domIndex, context = {}) {
+    const ranked = this.rankCandidates(query, candidates, context);
 
     if (!ranked.length) {
       return {
@@ -1357,6 +2167,8 @@ export default class ScoringEngine {
 
         autoExecute: false,
 
+        margin: 0,
+
         ranked: [],
       };
     }
@@ -1367,7 +2179,46 @@ export default class ScoringEngine {
 
     const confidence = best.score;
 
-    const ambiguous = second && Math.abs(best.score - second.score) < 5;
+    const margin = second ? best.score - second.score : 100;
+
+    //--------------------------------------------------
+    // Ambiguous only when both candidates are
+    // actually strong enough to be realistic.
+    //
+    // This avoids:
+    //
+    // Punch In = 100
+    // Login    = 98
+    //
+    // incorrectly becoming ambiguous in unrelated
+    // fields.
+    //--------------------------------------------------
+
+    const ambiguous =
+      !!second &&
+      best.score >= this.options.plannerThreshold &&
+      second.score >= this.options.plannerThreshold &&
+      margin < this.options.ambiguityMargin;
+
+    const plannerRequired =
+      confidence < this.options.plannerThreshold || ambiguous;
+
+    const autoExecute =
+      confidence >= this.options.autoExecuteThreshold && !ambiguous;
+
+    if (ambiguous) {
+      this.metrics.ambiguousMatches++;
+    }
+
+    if (autoExecute) {
+      this.metrics.autoExecutions++;
+    }
+
+    if (confidence >= this.options.autoExecuteThreshold) {
+      this.metrics.exactMatches++;
+    } else if (confidence >= this.options.plannerThreshold) {
+      this.metrics.fuzzyMatches++;
+    }
 
     return {
       found: confidence >= this.options.plannerThreshold,
@@ -1378,25 +2229,32 @@ export default class ScoringEngine {
 
       ambiguous,
 
-      plannerRequired: confidence < this.options.plannerThreshold || ambiguous,
+      plannerRequired,
 
-      autoExecute:
-        confidence >= this.options.autoExecuteThreshold && !ambiguous,
+      autoExecute,
+
+      margin,
 
       ranked,
     };
   }
 
-  //==================================================
+  //========================================================
   // SHOULD USE PLANNER
-  //==================================================
+  //========================================================
 
   shouldUsePlanner(result) {
-    if (!result) return true;
+    if (!result) {
+      return true;
+    }
 
-    if (!result.found) return true;
+    if (!result.found) {
+      return true;
+    }
 
-    if (result.ambiguous) return true;
+    if (result.ambiguous) {
+      return true;
+    }
 
     if (result.confidence < this.options.plannerThreshold) {
       return true;
@@ -1405,31 +2263,38 @@ export default class ScoringEngine {
     return false;
   }
 
-  //==================================================
+  //========================================================
   // PLANNER REQUEST
-  //==================================================
+  //========================================================
 
   requestPlanner() {
     this.metrics.plannerRequests++;
   }
 
-  //==================================================
-  // PART 4B
-  // Resolve
-  // Statistics
-  // Metrics
-  // Export Helpers
-  //==================================================
-  //==================================================
+  //========================================================
   // RESOLVE
-  //==================================================
+  //
+  // IMPORTANT FIX:
+  //
+  // Old code:
+  //
+  // const decision = this.findBestCandidate(...)
+  //
+  // if (decision.best)
+  //
+  // But findBestCandidate returns:
+  //
+  // candidate
+  //
+  // Therefore decision.best was always undefined.
+  //
+  // This version uses decision.candidate.
+  //========================================================
 
-  resolve(query, candidates = this.domIndex) {
-    this.metrics.searches++;
+  resolve(query, candidates = this.domIndex, context = {}) {
+    query = this.normalize(query);
 
-    const ranked = this.search(query, candidates);
-
-    if (!ranked.length) {
+    if (!query || !Array.isArray(candidates) || !candidates.length) {
       this.metrics.plannerRequests++;
 
       return {
@@ -1449,18 +2314,39 @@ export default class ScoringEngine {
       };
     }
 
-    const decision = this.findBestCandidate(query, ranked);
+    //--------------------------------------------------
+    // Find best directly.
+    //
+    // Do NOT call search() first because that would:
+    //
+    // 1. Filter candidates
+    // 2. Rank once
+    // 3. Rank again
+    // 4. Increment search metrics twice
+    //--------------------------------------------------
 
-    if (decision.best && decision.autoExecute && this.options.enableLearning) {
-      this.learn(query, decision.best);
+    const decision = this.findBestCandidate(query, candidates, context);
+
+    const best = decision.candidate;
+
+    //--------------------------------------------------
+    // Learn only strong successful candidate
+    //--------------------------------------------------
+
+    if (best && decision.autoExecute && this.options.enableLearning) {
+      this.learn(query, best);
     }
+
+    //--------------------------------------------------
+    // Planner fallback
+    //--------------------------------------------------
 
     if (decision.plannerRequired) {
       this.metrics.plannerRequests++;
     }
 
     return {
-      success: !!decision.best,
+      success: !!best && decision.found,
 
       confidence: decision.confidence,
 
@@ -1470,41 +2356,45 @@ export default class ScoringEngine {
 
       ambiguous: decision.ambiguous,
 
-      best: decision.best,
+      margin: decision.margin,
+
+      best,
 
       candidates: decision.ranked.slice(0, 10),
     };
   }
 
-  //==================================================
+  //========================================================
   // EXECUTION SUCCESS
-  //==================================================
+  //========================================================
 
   recordSuccess(query, candidate) {
-    if (!candidate) return;
+    if (!candidate) {
+      return;
+    }
 
     this.learn(query, candidate);
   }
 
-  //==================================================
+  //========================================================
   // EXECUTION FAILURE
-  //==================================================
+  //========================================================
 
   recordFailure(query) {
     this.forget(query);
   }
 
-  //==================================================
+  //========================================================
   // REMOVE LEARNED ENTRY
-  //==================================================
+  //========================================================
 
   removeLearned(query) {
     this.forget(query);
   }
 
-  //==================================================
+  //========================================================
   // RESET ENGINE
-  //==================================================
+  //========================================================
 
   reset() {
     this.clearIndex();
@@ -1516,9 +2406,9 @@ export default class ScoringEngine {
     this.resetMetrics();
   }
 
-  //==================================================
+  //========================================================
   // RESET METRICS
-  //==================================================
+  //========================================================
 
   resetMetrics() {
     this.metrics = {
@@ -1533,14 +2423,25 @@ export default class ScoringEngine {
       learnedMatches: 0,
 
       plannerRequests: 0,
+
+      exactMatches: 0,
+
+      fuzzyMatches: 0,
+
+      ambiguousMatches: 0,
+
+      autoExecutions: 0,
     };
   }
 
-  //==================================================
+  //========================================================
   // METRICS
-  //==================================================
+  //========================================================
 
   getMetrics() {
+    const totalCacheRequests =
+      this.metrics.cacheHits + this.metrics.cacheMisses;
+
     return {
       ...this.metrics,
 
@@ -1550,18 +2451,15 @@ export default class ScoringEngine {
 
       indexedElements: this.domIndex.length,
 
-      cacheHitRate:
-        this.metrics.cacheHits + this.metrics.cacheMisses
-          ? (this.metrics.cacheHits /
-              (this.metrics.cacheHits + this.metrics.cacheMisses)) *
-            100
-          : 0,
+      cacheHitRate: totalCacheRequests
+        ? (this.metrics.cacheHits / totalCacheRequests) * 100
+        : 0,
     };
   }
 
-  //==================================================
+  //========================================================
   // STATS
-  //==================================================
+  //========================================================
 
   stats() {
     return {
@@ -1577,15 +2475,17 @@ export default class ScoringEngine {
         autoExecute: this.options.autoExecuteThreshold,
 
         minimumConfidence: this.options.minimumConfidence,
+
+        ambiguityMargin: this.options.ambiguityMargin,
       },
 
       metrics: this.getMetrics(),
     };
   }
 
-  //==================================================
-  // EXPORT
-  //==================================================
+  //========================================================
+  // EXPORT LEARNING
+  //========================================================
 
   exportLearning() {
     return {
@@ -1595,25 +2495,27 @@ export default class ScoringEngine {
     };
   }
 
-  //==================================================
-  // IMPORT
-  //==================================================
+  //========================================================
+  // IMPORT LEARNING
+  //========================================================
 
   importLearning(data = {}) {
     this.clearLearning();
 
     if (Array.isArray(data.learned)) {
       for (const [query, candidate] of data.learned) {
-        this.previousSuccess.set(query, candidate);
+        if (query && candidate) {
+          this.previousSuccess.set(query, candidate);
+        }
       }
     }
 
     this.metrics.learnedMatches = this.previousSuccess.size;
   }
 
-  //==================================================
-  // DEBUG
-  //==================================================
+  //========================================================
+  // DEBUG SUMMARY
+  //========================================================
 
   debugSummary() {
     return {

@@ -2,7 +2,8 @@
 //
 // backend/planner/action-parser.js
 //
-// Ultra Intelligent Action Parser for Jarvis Browser
+// Ultra Intelligent Deterministic Action Parser
+// for Jarvis Browser
 //
 // Pipeline
 //
@@ -10,6 +11,9 @@
 //      │
 //      ▼
 // IntentParser
+//      │
+//      ▼
+// TargetParser
 //      │
 //      ▼
 // ActionParser
@@ -43,13 +47,14 @@
 // ----------------------------------------------------------
 // ❌ NEVER performs fuzzy matching
 // ❌ NEVER performs spelling correction
-// ❌ NEVER guesses target elements
+// ❌ NEVER guesses DOM targets
+// ❌ NEVER performs DOM lookup
 // ❌ NEVER calls an LLM
 //
 // Responsibilities
 // ----------------------------------------------------------
-// ✔ Fast deterministic action parsing
-// ✔ Consistent action schema
+// ✔ Deterministic action parsing
+// ✔ Fast rule-based classification
 // ✔ Multi-step command parsing
 // ✔ Target/value extraction
 // ✔ Modifier extraction
@@ -58,14 +63,15 @@
 // ✔ Wait duration normalization
 // ✔ Safe parsing
 // ✔ Extensible rule registry
+// ✔ ScoringEngine-ready output
 //
 // ==========================================================
 
 class ActionParser {
   constructor(options = {}) {
-    //======================================================
+    //========================================================
     // CONFIGURATION
-    //======================================================
+    //========================================================
 
     this.options = {
       debug: false,
@@ -78,23 +84,25 @@ class ActionParser {
 
       fallbackConfidence: 0.35,
 
+      preserveQuotes: false,
+
       ...options,
     };
 
-    this.debug = this.options.debug;
+    this.debug = Boolean(this.options.debug);
 
-    //======================================================
+    //========================================================
     // ACTION ALIASES
-    //======================================================
+    //========================================================
 
     this.actionAliases = {
       navigate: ["open", "visit", "goto", "go", "navigate", "launch"],
 
-      click: ["click", "press", "tap", "hit", "choose"],
+      click: ["click", "tap", "hit"],
 
       type: ["type", "enter", "fill", "write", "input", "insert"],
 
-      search: ["search", "google", "find", "lookup"],
+      search: ["search", "google", "find", "lookup", "look"],
 
       scroll: ["scroll", "swipe"],
 
@@ -106,7 +114,7 @@ class ActionParser {
 
       uncheck: ["uncheck", "untick", "disable"],
 
-      select: ["select", "choose"],
+      select: ["select"],
 
       upload: ["upload", "attach", "browse"],
 
@@ -123,9 +131,9 @@ class ActionParser {
       screenshot: ["screenshot", "capture"],
     };
 
-    //======================================================
+    //========================================================
     // FAST ACTION LOOKUP
-    //======================================================
+    //========================================================
 
     this.actionLookup = Object.create(null);
 
@@ -135,11 +143,38 @@ class ActionParser {
       }
     }
 
-    //======================================================
-    // INTENT RULES
-    //======================================================
+    //========================================================
+    // RULES
+    //========================================================
 
     this.intentRules = this.createDefaultRules();
+
+    //========================================================
+    // ACTION PRIORITY
+    //========================================================
+
+    this.actionPriority = [
+      "sequence",
+      "navigate",
+      "search",
+      "rightClick",
+      "doubleClick",
+      "click",
+      "type",
+      "scroll",
+      "wait",
+      "hover",
+      "check",
+      "uncheck",
+      "select",
+      "upload",
+      "download",
+      "press",
+      "reload",
+      "back",
+      "forward",
+      "screenshot",
+    ];
   }
 
   //========================================================
@@ -164,19 +199,19 @@ class ActionParser {
 
   createDefaultRules() {
     return [
-      //====================================================
-      // NAVIGATION
-      //====================================================
+      //======================================================
+      // NAVIGATE
+      //======================================================
 
       {
         name: "navigate",
 
         patterns: [
           /^(?:go\s+to)\s+(.+)$/i,
+          /^(?:goto)\s+(.+)$/i,
           /^(?:navigate\s+to)\s+(.+)$/i,
           /^(?:open)\s+(.+)$/i,
           /^(?:visit)\s+(.+)$/i,
-          /^(?:goto)\s+(.+)$/i,
           /^(?:launch)\s+(.+)$/i,
         ],
 
@@ -184,15 +219,18 @@ class ActionParser {
           const target = this.cleanTarget(match[1]);
 
           return {
-            url: this.normalizeUrl(target),
             target,
+
+            url: this.normalizeUrl(target),
+
+            isDirectUrl: this.isDirectUrl(target),
           };
         },
       },
 
-      //====================================================
+      //======================================================
       // SEARCH
-      //====================================================
+      //======================================================
 
       {
         name: "search",
@@ -207,35 +245,13 @@ class ActionParser {
         ],
 
         build: (match) => ({
-          query: this.cleanTarget(match[1]),
+          query: this.cleanValue(match[1]),
         }),
       },
 
-      //====================================================
-      // CLICK
-      //====================================================
-
-      {
-        name: "click",
-
-        patterns: [
-          /^(?:click)\s+(.+)$/i,
-          /^(?:tap)\s+(.+)$/i,
-          /^(?:hit)\s+(.+)$/i,
-          /^(?:choose)\s+(.+)$/i,
-          /^(?:press)\s+(.+)$/i,
-        ],
-
-        build: (match, text) => ({
-          target: this.cleanTarget(match[1]),
-
-          modifiers: this.extractClickModifiers(text),
-        }),
-      },
-
-      //====================================================
+      //======================================================
       // RIGHT CLICK
-      //====================================================
+      //======================================================
 
       {
         name: "click",
@@ -251,9 +267,9 @@ class ActionParser {
         }),
       },
 
-      //====================================================
+      //======================================================
       // DOUBLE CLICK
-      //====================================================
+      //======================================================
 
       {
         name: "click",
@@ -272,56 +288,86 @@ class ActionParser {
         }),
       },
 
-      //====================================================
-      // TYPE
-      //====================================================
+      //======================================================
+      // CLICK
+      //======================================================
+
+      {
+        name: "click",
+
+        patterns: [
+          /^(?:click)\s+(.+)$/i,
+          /^(?:tap)\s+(.+)$/i,
+          /^(?:hit)\s+(.+)$/i,
+        ],
+
+        build: (match, text) => ({
+          target: this.cleanTarget(match[1]),
+
+          modifiers: this.extractClickModifiers(text),
+        }),
+      },
+
+      //======================================================
+      // TYPE INTO TARGET
+      //======================================================
 
       {
         name: "type",
 
         patterns: [
-          /^(?:type)\s+(.+?)\s+(?:in|into)\s+(.+)$/i,
-          /^(?:enter)\s+(.+?)\s+(?:in|into)\s+(.+)$/i,
-          /^(?:fill)\s+(.+?)\s+(?:in|into)\s+(.+)$/i,
-          /^(?:write)\s+(.+?)\s+(?:in|into)\s+(.+)$/i,
-          /^(?:input)\s+(.+?)\s+(?:in|into)\s+(.+)$/i,
+          /^(?:type|enter|fill|write|input|insert)\s+(.+?)\s+(?:in|into)\s+(.+)$/i,
         ],
 
-        build: (match) => ({
-          text: this.cleanValue(match[1]),
+        build: (match) => {
+          const value = this.cleanValue(match[1]);
 
-          value: this.cleanValue(match[1]),
+          const target = this.cleanTarget(match[2]);
 
-          target: this.cleanTarget(match[2]),
-        }),
+          return {
+            text: value,
+
+            value,
+
+            target,
+          };
+        },
       },
 
-      //====================================================
-      // TYPE INTO TARGET
-      //====================================================
+      //======================================================
+      // TYPE VALUE ONLY
+      //======================================================
 
       {
         name: "type",
 
         patterns: [/^(?:type\s+in)\s+(.+)$/i, /^(?:enter\s+in)\s+(.+)$/i],
 
-        build: (match) => ({
-          text: this.cleanValue(match[1]),
+        build: (match) => {
+          const value = this.cleanValue(match[1]);
 
-          value: this.cleanValue(match[1]),
-        }),
+          return {
+            text: value,
+
+            value,
+
+            target: "",
+          };
+        },
       },
 
-      //====================================================
+      //======================================================
       // SCROLL
-      //====================================================
+      //======================================================
 
       {
         name: "scroll",
 
         patterns: [
-          /^(?:scroll)\s+(up|down|left|right|top|bottom)(?:\s+(\d+))?$/i,
+          /^(?:scroll)\s+(up|down|left|right|top|bottom)\s+(\d+(?:\.\d+)?)$/i,
+
           /^(?:scroll)\s+(up|down|left|right|top|bottom)$/i,
+
           /^(?:scroll)$/i,
         ],
 
@@ -332,15 +378,15 @@ class ActionParser {
         }),
       },
 
-      //====================================================
+      //======================================================
       // WAIT
-      //====================================================
+      //======================================================
 
       {
         name: "wait",
 
         patterns: [
-          /^(?:wait|pause|sleep|delay)\s+(\d+)\s*(ms|milliseconds|s|sec|secs|seconds|m|min|mins|minutes)?$/i,
+          /^(?:wait|pause|sleep|delay)\s+(\d+(?:\.\d+)?)\s*(ms|milliseconds|s|sec|secs|second|seconds|m|min|mins|minute|minutes)?$/i,
         ],
 
         build: (match) => {
@@ -358,9 +404,9 @@ class ActionParser {
         },
       },
 
-      //====================================================
+      //======================================================
       // HOVER
-      //====================================================
+      //======================================================
 
       {
         name: "hover",
@@ -375,9 +421,9 @@ class ActionParser {
         }),
       },
 
-      //====================================================
+      //======================================================
       // CHECK
-      //====================================================
+      //======================================================
 
       {
         name: "check",
@@ -389,9 +435,9 @@ class ActionParser {
         }),
       },
 
-      //====================================================
+      //======================================================
       // UNCHECK
-      //====================================================
+      //======================================================
 
       {
         name: "uncheck",
@@ -403,14 +449,14 @@ class ActionParser {
         }),
       },
 
-      //====================================================
+      //======================================================
       // SELECT
-      //====================================================
+      //======================================================
 
       {
         name: "select",
 
-        patterns: [/^(?:select|choose)\s+(.+?)\s+(?:from|in)\s+(.+)$/i],
+        patterns: [/^(?:select)\s+(.+?)\s+(?:from|in)\s+(.+)$/i],
 
         build: (match) => ({
           value: this.cleanValue(match[1]),
@@ -419,25 +465,33 @@ class ActionParser {
         }),
       },
 
-      //====================================================
+      //======================================================
       // UPLOAD
-      //====================================================
+      //======================================================
 
       {
         name: "upload",
 
-        patterns: [/^(?:upload|attach|browse)\s+(.+)$/i],
+        patterns: [
+          /^(?:upload|attach|browse)\s+(.+?)\s+(?:to|into)\s+(.+)$/i,
 
-        build: (match) => ({
-          path: this.cleanValue(match[1]),
+          /^(?:upload|attach|browse)\s+(.+)$/i,
+        ],
 
-          target: this.extractUploadTarget(match[1]),
-        }),
+        build: (match) => {
+          const path = this.cleanValue(match[1]);
+
+          return {
+            path,
+
+            target: match[2] ? this.cleanTarget(match[2]) : "",
+          };
+        },
       },
 
-      //====================================================
+      //======================================================
       // DOWNLOAD
-      //====================================================
+      //======================================================
 
       {
         name: "download",
@@ -449,16 +503,18 @@ class ActionParser {
         }),
       },
 
-      //====================================================
+      //======================================================
       // KEYBOARD SHORTCUT
-      //====================================================
+      //======================================================
 
       {
         name: "press",
 
         patterns: [
           /^(?:presskey|shortcut)\s+(.+)$/i,
+
           /^(?:press)\s+(ctrl|control|shift|alt|meta|cmd|command)\s*\+\s*(.+)$/i,
+
           /^(?:press)\s+(enter|tab|escape|esc|space|delete|backspace|home|end|arrowup|arrowdown|arrowleft|arrowright)$/i,
         ],
 
@@ -469,9 +525,9 @@ class ActionParser {
         }),
       },
 
-      //====================================================
+      //======================================================
       // RELOAD
-      //====================================================
+      //======================================================
 
       {
         name: "reload",
@@ -486,9 +542,9 @@ class ActionParser {
         build: () => ({}),
       },
 
-      //====================================================
+      //======================================================
       // BACK
-      //====================================================
+      //======================================================
 
       {
         name: "back",
@@ -498,9 +554,9 @@ class ActionParser {
         build: () => ({}),
       },
 
-      //====================================================
+      //======================================================
       // FORWARD
-      //====================================================
+      //======================================================
 
       {
         name: "forward",
@@ -510,16 +566,18 @@ class ActionParser {
         build: () => ({}),
       },
 
-      //====================================================
+      //======================================================
       // SCREENSHOT
-      //====================================================
+      //======================================================
 
       {
         name: "screenshot",
 
         patterns: [
           /^take\s+(?:a\s+)?screenshot$/i,
+
           /^capture\s+(?:the\s+)?screen$/i,
+
           /^take\s+(?:a\s+)?screen\s*shot$/i,
         ],
 
@@ -548,19 +606,19 @@ class ActionParser {
     this.log("Parsing:", raw);
 
     //======================================================
-    // MULTI-STEP FIRST
+    // SEQUENCE
     //======================================================
 
     if (this.options.enableSequences && this.hasSequence(cleaned)) {
-      const sequence = this._parseSequence(raw);
+      const sequence = this._parseSequence(cleaned, 0);
 
-      if (sequence && sequence.actions.length > 1) {
+      if (sequence && sequence.actions && sequence.actions.length > 1) {
         return sequence;
       }
     }
 
     //======================================================
-    // FAST RULE PATH
+    // FAST DETERMINISTIC RULES
     //======================================================
 
     for (const rule of this.intentRules) {
@@ -572,6 +630,9 @@ class ActionParser {
         if (!(pattern instanceof RegExp)) {
           continue;
         }
+
+        // Reset global regex state
+        pattern.lastIndex = 0;
 
         const match = cleaned.match(pattern);
 
@@ -614,16 +675,29 @@ class ActionParser {
   //========================================================
 
   createAction(type, payload = {}, raw = "", confidence = 0.5) {
+    const normalizedPayload = payload || {};
+
     return {
       type,
 
       action: type,
 
-      payload: payload || {},
+      payload: normalizedPayload,
 
       raw,
 
       confidence: this.normalizeConfidence(confidence),
+
+      // Useful for ScoringEngine
+      target: normalizedPayload.target || "",
+
+      value:
+        normalizedPayload.value ||
+        normalizedPayload.text ||
+        normalizedPayload.query ||
+        "",
+
+      source: "action-parser",
     };
   }
 
@@ -632,12 +706,14 @@ class ActionParser {
   //========================================================
 
   hasSequence(text) {
-    if (!text) return false;
+    if (!text) {
+      return false;
+    }
 
     return (
+      /\band\s+then\b/i.test(text) ||
+      /\bafter\s+that\b/i.test(text) ||
       /\bthen\b/i.test(text) ||
-      /\band then\b/i.test(text) ||
-      /\bafter that\b/i.test(text) ||
       /\bnext\b/i.test(text)
     );
   }
@@ -667,8 +743,11 @@ class ActionParser {
     const actions = [];
 
     for (const part of parts) {
-      if (!part) continue;
+      if (!part) {
+        continue;
+      }
 
+      // Avoid unnecessary sequence recursion
       const action = this.parse(part);
 
       actions.push(action);
@@ -688,25 +767,39 @@ class ActionParser {
       raw: text,
 
       confidence: this.computeSequenceConfidence(actions),
+
+      source: "action-parser",
     };
   }
 
   //========================================================
   // SEQUENCE SPLITTER
   //
-  // Preserves quoted strings.
+  // Protects:
+  // ✔ Double quotes
+  // ✔ Single quotes
+  // ✔ Backticks
+  //
+  // Example:
+  //
+  // click "Login and then Continue"
+  //
+  // remains one action.
   //========================================================
 
   splitSequence(text) {
     const placeholders = [];
 
-    let protectedText = text.replace(/"([^"]*)"|'([^']*)'/g, (match) => {
-      const index = placeholders.length;
+    const protectedText = text.replace(
+      /(["'`])(?:\\.|(?!\1)[\s\S])*?\1/g,
+      (match) => {
+        const index = placeholders.length;
 
-      placeholders.push(match);
+        placeholders.push(match);
 
-      return `__QUOTE_${index}__`;
-    });
+        return `__QUOTE_${index}__`;
+      },
+    );
 
     const parts = protectedText
       .split(/\s+(?:and\s+then|after\s+that|then|next)\s+/i)
@@ -725,21 +818,24 @@ class ActionParser {
   // FALLBACK PARSER
   //
   // IMPORTANT:
-  // This does NOT fuzzy-match.
-  // It only detects explicit action keywords.
+  // No fuzzy matching.
+  // No spelling correction.
+  // No DOM lookup.
   //========================================================
 
   _fallbackParse(cleaned, raw) {
     const tokens = cleaned.split(/\s+/);
 
-    const firstWord = tokens[0] || "";
+    const firstWord = (tokens[0] || "").toLowerCase();
+
+    const action = this.actionLookup[firstWord];
 
     //======================================================
     // NAVIGATION
     //======================================================
 
-    if (this.actionLookup[firstWord] === "navigate") {
-      const target = tokens.slice(1).join(" ");
+    if (action === "navigate") {
+      const target = tokens.slice(1).join(" ").trim();
 
       return this.createAction(
         "navigate",
@@ -747,6 +843,8 @@ class ActionParser {
           target,
 
           url: this.normalizeUrl(target),
+
+          isDirectUrl: this.isDirectUrl(target),
         },
         raw,
         0.65,
@@ -757,11 +855,13 @@ class ActionParser {
     // CLICK
     //======================================================
 
-    if (this.actionLookup[firstWord] === "click") {
+    if (action === "click") {
       return this.createAction(
         "click",
         {
           target: tokens.slice(1).join(" ").trim(),
+
+          modifiers: this.extractClickModifiers(cleaned),
         },
         raw,
         0.65,
@@ -772,11 +872,15 @@ class ActionParser {
     // TYPE
     //======================================================
 
-    if (this.actionLookup[firstWord] === "type") {
+    if (action === "type") {
+      const value = tokens.slice(1).join(" ").trim();
+
       return this.createAction(
         "type",
         {
-          text: tokens.slice(1).join(" ").trim(),
+          text: value,
+
+          value,
         },
         raw,
         0.6,
@@ -787,7 +891,7 @@ class ActionParser {
     // SEARCH
     //======================================================
 
-    if (this.actionLookup[firstWord] === "search") {
+    if (action === "search") {
       return this.createAction(
         "search",
         {
@@ -802,11 +906,13 @@ class ActionParser {
     // SCROLL
     //======================================================
 
-    if (this.actionLookup[firstWord] === "scroll") {
+    if (action === "scroll") {
       return this.createAction(
         "scroll",
         {
           direction: this.extractScrollDirection(cleaned),
+
+          amount: this.extractScrollAmount(cleaned),
         },
         raw,
         0.65,
@@ -817,14 +923,77 @@ class ActionParser {
     // WAIT
     //======================================================
 
-    if (this.actionLookup[firstWord] === "wait") {
-      const timeout = this.extractDuration(cleaned);
-
-      return this.createAction("wait", timeout, raw, 0.65);
+    if (action === "wait") {
+      return this.createAction(
+        "wait",
+        this.extractDuration(cleaned),
+        raw,
+        0.65,
+      );
     }
 
     //======================================================
-    // EXPLICIT KEYBOARD COMMAND
+    // HOVER
+    //======================================================
+
+    if (action === "hover") {
+      return this.createAction(
+        "hover",
+        {
+          target: tokens.slice(1).join(" ").trim(),
+        },
+        raw,
+        0.65,
+      );
+    }
+
+    //======================================================
+    // CHECK
+    //======================================================
+
+    if (action === "check") {
+      return this.createAction(
+        "check",
+        {
+          target: tokens.slice(1).join(" ").trim(),
+        },
+        raw,
+        0.65,
+      );
+    }
+
+    //======================================================
+    // UNCHECK
+    //======================================================
+
+    if (action === "uncheck") {
+      return this.createAction(
+        "uncheck",
+        {
+          target: tokens.slice(1).join(" ").trim(),
+        },
+        raw,
+        0.65,
+      );
+    }
+
+    //======================================================
+    // DOWNLOAD
+    //======================================================
+
+    if (action === "download") {
+      return this.createAction(
+        "download",
+        {
+          target: tokens.slice(1).join(" ").trim(),
+        },
+        raw,
+        0.65,
+      );
+    }
+
+    //======================================================
+    // EXPLICIT KEYBOARD
     //======================================================
 
     if (
@@ -859,7 +1028,6 @@ class ActionParser {
 
     let value = String(url).trim();
 
-    // Remove surrounding quotes
     value = value.replace(/^["']|["']$/g, "");
 
     if (/^https?:\/\//i.test(value)) {
@@ -870,13 +1038,27 @@ class ActionParser {
       return `https://${value}`;
     }
 
-    // Domain
     if (/^[a-z0-9.-]+\.[a-z]{2,}(\/.*)?$/i.test(value)) {
       return `https://${value}`;
     }
 
-    // Search query
     return "https://www.google.com/search?q=" + encodeURIComponent(value);
+  }
+
+  //========================================================
+  // DIRECT URL CHECK
+  //========================================================
+
+  isDirectUrl(value) {
+    if (!value) {
+      return false;
+    }
+
+    return (
+      /^https?:\/\//i.test(value) ||
+      /^www\./i.test(value) ||
+      /^[a-z0-9.-]+\.[a-z]{2,}(\/.*)?$/i.test(value)
+    );
   }
 
   //========================================================
@@ -891,6 +1073,7 @@ class ActionParser {
     return String(value)
       .trim()
       .replace(/^["']|["']$/g, "")
+      .replace(/^(?:the|a|an)\s+/i, "")
       .replace(/\s+/g, " ")
       .trim();
   }
@@ -904,9 +1087,13 @@ class ActionParser {
       return "";
     }
 
-    return String(value)
-      .trim()
-      .replace(/^["']|["']$/g, "");
+    const cleaned = String(value).trim();
+
+    if (this.options.preserveQuotes) {
+      return cleaned;
+    }
+
+    return cleaned.replace(/^["']|["']$/g, "");
   }
 
   //========================================================
@@ -946,20 +1133,6 @@ class ActionParser {
   }
 
   //========================================================
-  // UPLOAD TARGET
-  //========================================================
-
-  extractUploadTarget(text = "") {
-    const match = text.match(/(.+?)\s+(?:to|into)\s+(.+)$/i);
-
-    if (!match) {
-      return "";
-    }
-
-    return this.cleanTarget(match[2]);
-  }
-
-  //========================================================
   // KEY EXTRACTION
   //========================================================
 
@@ -968,7 +1141,29 @@ class ActionParser {
 
     const source = typeof text === "string" ? text : "";
 
+    //======================================================
+    // Shortcut syntax
+    //======================================================
+
+    if (source.includes("+")) {
+      const shortcut = source
+        .split("+")
+        .map((key) => key.trim().toLowerCase())
+        .filter(Boolean);
+
+      for (const key of shortcut) {
+        const mapped = this.mapKey(key);
+
+        if (mapped) {
+          keys.push(mapped);
+        }
+      }
+    }
+
+    //======================================================
     // Modifier keys
+    //======================================================
+
     if (/\bctrl\b|\bcontrol\b/i.test(source)) {
       keys.push("Control");
     }
@@ -985,35 +1180,19 @@ class ActionParser {
       keys.push("Meta");
     }
 
+    //======================================================
     // Special keys
+    //======================================================
+
     const special = source.match(
       /\b(tab|enter|escape|esc|space|delete|backspace|home|end|arrowup|arrowdown|arrowleft|arrowright)\b/i,
     );
 
     if (special) {
-      let key = special[1];
-
-      if (key.toLowerCase() === "esc") {
-        key = "Escape";
-      }
-
-      keys.push(key);
+      keys.push(this.mapKey(special[1]));
     }
 
-    // Shortcut syntax
-    if (source.includes("+")) {
-      const shortcut = source.split("+").map((key) => key.trim().toLowerCase());
-
-      for (const key of shortcut) {
-        const mapped = this.mapKey(key);
-
-        if (mapped) {
-          keys.push(mapped);
-        }
-      }
-    }
-
-    return [...new Set(keys)];
+    return [...new Set(keys.filter(Boolean))];
   }
 
   //========================================================
@@ -1023,7 +1202,6 @@ class ActionParser {
   mapKey(key) {
     const map = {
       ctrl: "Control",
-
       control: "Control",
 
       shift: "Shift",
@@ -1031,9 +1209,7 @@ class ActionParser {
       alt: "Alt",
 
       meta: "Meta",
-
       cmd: "Meta",
-
       command: "Meta",
 
       enter: "Enter",
@@ -1041,7 +1217,6 @@ class ActionParser {
       tab: "Tab",
 
       escape: "Escape",
-
       esc: "Escape",
 
       space: "Space",
@@ -1094,6 +1269,20 @@ class ActionParser {
     }
 
     return "down";
+  }
+
+  //========================================================
+  // SCROLL AMOUNT
+  //========================================================
+
+  extractScrollAmount(text = "") {
+    const match = text.match(/\b(?:up|down|left|right)\s+(\d+(?:\.\d+)?)\b/i);
+
+    if (!match) {
+      return 1;
+    }
+
+    return Number(match[1]);
   }
 
   //========================================================
@@ -1189,18 +1378,26 @@ class ActionParser {
   //========================================================
 
   _unknown(input, cleaned = "") {
+    const value = cleaned || (typeof input === "string" ? input : "");
+
     return {
       type: "unknown",
 
       action: "unknown",
 
       payload: {
-        input: cleaned || input || "",
+        input: value,
       },
 
       raw: input,
 
       confidence: 0,
+
+      target: "",
+
+      value: "",
+
+      source: "action-parser",
     };
   }
 
@@ -1311,6 +1508,12 @@ class ActionParser {
 
       fuzzyMatching: false,
 
+      spellingCorrection: false,
+
+      domLookup: false,
+
+      targetGuessing: false,
+
       llm: false,
     };
   }
@@ -1318,19 +1521,6 @@ class ActionParser {
 
 //==========================================================
 // EXPORT
-//==========================================================
-//
-// Your project currently mixes ES modules and CommonJS.
-// This file is kept CommonJS-compatible to match the
-// original action-parser.js.
-//
-// If package.json contains:
-//   "type": "module"
-//
-// change the final export to:
-//
-// export default ActionParser;
-//
 //==========================================================
 
 export default ActionParser;

@@ -1,5 +1,3 @@
-//==========================================================
-//
 // backend/planner/planner.js
 //
 // Ultra Intelligent Planner
@@ -15,9 +13,7 @@
 // IntentParser
 //      │
 //      ├── Fast Intent Detection
-//      │
 //      ├── Multi-Step Parsing
-//      │
 //      └── Action Extraction
 //      │
 //      ▼
@@ -54,7 +50,7 @@
 // IMPORTANT
 // ----------------------------------------------------------
 // Planner NEVER performs fuzzy matching.
-// Fuzzy matching belongs to ScoringEngine.
+// Fuzzy matching belongs exclusively to ScoringEngine.
 //
 // Planner responsibilities:
 // ✔ Parse user intent
@@ -65,9 +61,11 @@
 // ✔ Repair invalid LLM JSON
 // ✔ Normalize plans
 // ✔ Validate plans
-// ✔ Prevent skipped steps
 // ✔ Preserve step ordering
+// ✔ Prevent skipped steps
 // ✔ Support chat and action modes
+// ✔ Resolve each step independently
+// ✔ Never silently drop failed steps
 //
 //==========================================================
 
@@ -77,7 +75,7 @@ import ScoringEngine from "./scoring-engine.js";
 export default class Planner {
   constructor(options = {}) {
     //--------------------------------------------------
-    // Configuration
+    // CONFIGURATION
     //--------------------------------------------------
 
     this.options = {
@@ -97,9 +95,13 @@ export default class Planner {
 
       autoExecuteThreshold: options.autoExecuteThreshold ?? 95,
 
+      minimumConfidence: options.minimumConfidence ?? 60,
+
       maxSteps: options.maxSteps || 20,
 
       maxContextLength: options.maxContextLength || 8000,
+
+      historyLimit: options.historyLimit || 100,
 
       debug: options.debug || false,
 
@@ -107,21 +109,25 @@ export default class Planner {
 
       enableLearning: options.enableLearning !== false,
 
+      enableLLMFallback: options.enableLLMFallback !== false,
+
       ...options,
     };
 
     //--------------------------------------------------
-    // Intent Parser
+    // INTENT PARSER
     //--------------------------------------------------
 
     this.intentParser =
       options.intentParser ||
       new IntentParser({
         debug: this.options.debug,
+
+        enableLLMFallback: false,
       });
 
     //--------------------------------------------------
-    // Scoring Engine
+    // SCORING ENGINE
     //--------------------------------------------------
 
     this.scoringEngine =
@@ -130,10 +136,16 @@ export default class Planner {
         plannerThreshold: this.options.plannerThreshold,
 
         autoExecuteThreshold: this.options.autoExecuteThreshold,
+
+        minimumConfidence: this.options.minimumConfidence,
+
+        enableLearning: this.options.enableLearning,
+
+        debug: this.options.debug,
       });
 
     //--------------------------------------------------
-    // Runtime State
+    // RUNTIME STATE
     //--------------------------------------------------
 
     this.lastPlan = null;
@@ -145,7 +157,7 @@ export default class Planner {
     this.history = [];
 
     //--------------------------------------------------
-    // Statistics
+    // STATISTICS
     //--------------------------------------------------
 
     this.stats = {
@@ -168,6 +180,12 @@ export default class Planner {
       successfulPlans: 0,
 
       failedPlans: 0,
+
+      skippedSteps: 0,
+
+      scoringRequests: 0,
+
+      ambiguousSteps: 0,
     };
   }
 
@@ -203,15 +221,17 @@ export default class Planner {
     this.lastError = null;
 
     //--------------------------------------------------
-    // Validate Input
+    // VALIDATE INPUT
     //--------------------------------------------------
 
     if (!this.lastInput) {
+      this.stats.failedPlans++;
+
       throw new Error("Planner requires a command.");
     }
 
     //--------------------------------------------------
-    // Normalize Context
+    // NORMALIZE CONTEXT
     //--------------------------------------------------
 
     const normalizedContext = this.normalizeContext(context);
@@ -231,13 +251,15 @@ export default class Planner {
     }
 
     //--------------------------------------------------
-    // Normalize Parsed Result
+    // NORMALIZE PARSED INTENT
     //--------------------------------------------------
 
     parsed = this.normalizeParsedIntent(parsed, this.lastInput);
 
+    this.log("Parsed intent:", JSON.stringify(parsed, null, 2));
+
     //--------------------------------------------------
-    // CHAT DETECTION
+    // CHAT MODE
     //--------------------------------------------------
 
     if (parsed.mode === "chat") {
@@ -255,6 +277,10 @@ export default class Planner {
     if (parsed.steps?.length) {
       const fastPlan = await this.evaluateFastPlan(parsed, normalizedContext);
 
+      //--------------------------------------------------
+      // ACCEPT FAST PLAN
+      //--------------------------------------------------
+
       if (fastPlan.accept) {
         this.stats.fastPathCalls++;
 
@@ -268,13 +294,22 @@ export default class Planner {
 
         return this.finalizePlan(fastPlan.plan, started);
       }
+
+      //--------------------------------------------------
+      // Keep validated information
+      // available for LLM context
+      //--------------------------------------------------
+
+      normalizedContext.ranked = fastPlan.ranked || normalizedContext.ranked;
+
+      normalizedContext.stepResults = fastPlan.stepResults || [];
     }
 
     //--------------------------------------------------
     // LLM FALLBACK
     //--------------------------------------------------
 
-    if (this.options.useLLM) {
+    if (this.options.useLLM && this.options.enableLLMFallback) {
       try {
         this.stats.llmCalls++;
 
@@ -284,10 +319,10 @@ export default class Planner {
           parsed,
         );
 
-        if (llmPlan) {
+        if (llmPlan && llmPlan.steps?.length) {
           this.stats.actionCalls++;
 
-          if (llmPlan.steps?.length > 1) {
+          if (llmPlan.steps.length > 1) {
             this.stats.multiStepCalls++;
           }
 
@@ -303,7 +338,10 @@ export default class Planner {
     }
 
     //--------------------------------------------------
-    // FINAL FALLBACK
+    // FINAL FAST FALLBACK
+    //
+    // Important:
+    // Never silently skip steps.
     //--------------------------------------------------
 
     if (parsed.steps?.length) {
@@ -311,13 +349,12 @@ export default class Planner {
 
       return this.finalizePlan(
         this.createFallbackPlan(parsed, this.lastInput),
-
         started,
       );
     }
 
     //--------------------------------------------------
-    // Nothing Resolved
+    // NOTHING RESOLVED
     //--------------------------------------------------
 
     this.stats.failedPlans++;
@@ -329,12 +366,12 @@ export default class Planner {
   // INTENT PARSER
   //======================================================
 
-  async parseIntent(input, context) {
+  async parseIntent(input, context = {}) {
     //--------------------------------------------------
-    // IntentParser should remain fast.
+    // IntentParser is intentionally fast.
     //
-    // No LLM.
     // No fuzzy matching.
+    // No LLM.
     //--------------------------------------------------
 
     if (typeof this.intentParser.parse === "function") {
@@ -359,28 +396,81 @@ export default class Planner {
 
         steps: [],
 
+        ranked: context.ranked || [],
+
+        stepResults: [],
+
         plan: null,
       };
     }
 
     //--------------------------------------------------
-    // Limit Steps
+    // LIMIT STEPS
     //--------------------------------------------------
 
     const limitedSteps = steps.slice(0, this.options.maxSteps);
 
     //--------------------------------------------------
-    // Validate Every Step
+    // Detect truncation
+    //--------------------------------------------------
+
+    if (steps.length > this.options.maxSteps) {
+      this.warn(
+        `Command contains ${steps.length} steps. ` +
+          `Maximum allowed is ${this.options.maxSteps}.`,
+      );
+    }
+
+    //--------------------------------------------------
+    // VALIDATE EVERY STEP
+    //
+    // Each step is resolved independently.
+    // This prevents step 1's result from
+    // accidentally being reused for step 2.
     //--------------------------------------------------
 
     const validatedSteps = [];
 
+    const stepResults = [];
+
     let requiresLLM = false;
+
+    let highestRanked = context.ranked || [];
 
     for (let index = 0; index < limitedSteps.length; index++) {
       const step = limitedSteps[index];
 
       const validation = await this.validateStep(step, context);
+
+      //--------------------------------------------------
+      // Store step result
+      //--------------------------------------------------
+
+      stepResults.push({
+        step: index + 1,
+
+        action: step.action,
+
+        target: step.target,
+
+        confidence: validation.confidence,
+
+        valid: validation.valid,
+
+        ambiguous: validation.ambiguous || false,
+
+        reason: validation.reason,
+
+        candidate: validation.candidate || null,
+      });
+
+      //--------------------------------------------------
+      // Track highest-ranked candidate set
+      //--------------------------------------------------
+
+      if (Array.isArray(validation.ranked) && validation.ranked.length) {
+        highestRanked = validation.ranked;
+      }
 
       //--------------------------------------------------
       // Invalid step
@@ -391,9 +481,18 @@ export default class Planner {
 
         this.log(
           `Step ${index + 1} requires planner fallback:`,
-
           validation.reason,
         );
+      }
+
+      //--------------------------------------------------
+      // Ambiguous step
+      //--------------------------------------------------
+
+      if (validation.ambiguous) {
+        requiresLLM = true;
+
+        this.stats.ambiguousSteps++;
       }
 
       //--------------------------------------------------
@@ -407,37 +506,51 @@ export default class Planner {
         requiresLLM = true;
       }
 
+      //--------------------------------------------------
+      // Preserve original step
+      // and attach resolution metadata
+      //--------------------------------------------------
+
       validatedSteps.push({
         ...step,
 
         confidence: validation.confidence,
 
+        candidate: validation.candidate || undefined,
+
+        matchedField: validation.matchedField || undefined,
+
         validation: validation.reason,
+
+        ambiguous: validation.ambiguous || false,
       });
     }
 
     //--------------------------------------------------
-    // If explicit multi-step command exists,
-    // preserve ALL steps.
-    //
-    // Never silently skip a step.
+    // MULTI-STEP PROTECTION
     //--------------------------------------------------
 
     if (validatedSteps.length > 1) {
-      this.log(
-        "Multi-step plan detected:",
-
-        validatedSteps.length,
-      );
-
-      this.stats.multiStepCalls++;
+      this.log("Multi-step plan detected:", validatedSteps.length);
     }
 
     //--------------------------------------------------
-    // High confidence direct path
+    // NEVER ACCEPT A PARTIAL PLAN
+    //--------------------------------------------------
+
+    const invalidCount = stepResults.filter((item) => !item.valid).length;
+
+    if (invalidCount > 0) {
+      requiresLLM = true;
+    }
+
+    //--------------------------------------------------
+    // HIGH CONFIDENCE DIRECT PATH
     //--------------------------------------------------
 
     if (!requiresLLM) {
+      const confidence = this.calculatePlanConfidence(validatedSteps);
+
       return {
         accept: true,
 
@@ -445,14 +558,18 @@ export default class Planner {
 
         steps: validatedSteps,
 
+        ranked: highestRanked,
+
+        stepResults,
+
         plan: {
           success: true,
 
           mode: "action",
 
-          source: "intent-parser",
+          source: "intent-parser+scoring-engine",
 
-          confidence: this.calculatePlanConfidence(validatedSteps),
+          confidence,
 
           steps: validatedSteps,
         },
@@ -460,7 +577,7 @@ export default class Planner {
     }
 
     //--------------------------------------------------
-    // Low confidence
+    // LOW CONFIDENCE / AMBIGUOUS
     //--------------------------------------------------
 
     return {
@@ -470,6 +587,10 @@ export default class Planner {
 
       steps: validatedSteps,
 
+      ranked: highestRanked,
+
+      stepResults,
+
       plan: null,
     };
   }
@@ -478,9 +599,9 @@ export default class Planner {
   // STEP VALIDATION
   //======================================================
 
-  async validateStep(step, context) {
+  async validateStep(step, context = {}) {
     //--------------------------------------------------
-    // Basic validation
+    // BASIC VALIDATION
     //--------------------------------------------------
 
     if (!step || typeof step !== "object") {
@@ -490,13 +611,31 @@ export default class Planner {
         confidence: 0,
 
         reason: "Invalid step.",
+
+        ambiguous: false,
       };
     }
 
     const action = this.normalizeAction(step.action || step.tool);
 
     //--------------------------------------------------
-    // Chat
+    // UNKNOWN ACTION
+    //--------------------------------------------------
+
+    if (!this.isSupportedAction(action)) {
+      return {
+        valid: false,
+
+        confidence: 0,
+
+        reason: `Unsupported action: ${action}`,
+
+        ambiguous: false,
+      };
+    }
+
+    //--------------------------------------------------
+    // CHAT
     //--------------------------------------------------
 
     if (action === "chat") {
@@ -506,21 +645,27 @@ export default class Planner {
         confidence: 100,
 
         reason: "Chat action.",
+
+        ambiguous: false,
       };
     }
 
     //--------------------------------------------------
-    // Navigation
+    // NAVIGATION
     //--------------------------------------------------
 
     if (action === "navigate") {
-      if (step.url || step.value || step.target) {
+      const url = step.url || step.value || step.target;
+
+      if (url) {
         return {
           valid: true,
 
           confidence: 100,
 
           reason: "Navigation target available.",
+
+          ambiguous: false,
         };
       }
 
@@ -530,41 +675,124 @@ export default class Planner {
         confidence: 0,
 
         reason: "Navigation URL missing.",
+
+        ambiguous: false,
       };
     }
 
     //--------------------------------------------------
-    // Wait
+    // BACK / FORWARD / RELOAD
     //--------------------------------------------------
 
-    if (action === "wait") {
+    if (["back", "forward", "reload"].includes(action)) {
       return {
         valid: true,
 
         confidence: 100,
 
-        reason: "Wait action.",
+        reason: `${action} action requires no target.`,
+
+        ambiguous: false,
       };
     }
 
     //--------------------------------------------------
-    // Keyboard
+    // WAIT
+    //--------------------------------------------------
+
+    if (action === "wait") {
+      const ms = Number(step.ms || step.value || step.duration || 0);
+
+      return {
+        valid: Number.isFinite(ms) && ms >= 0,
+
+        confidence: Number.isFinite(ms) && ms >= 0 ? 100 : 0,
+
+        reason:
+          Number.isFinite(ms) && ms >= 0
+            ? "Wait duration available."
+            : "Wait duration invalid.",
+
+        ambiguous: false,
+      };
+    }
+
+    //--------------------------------------------------
+    // KEYBOARD
     //--------------------------------------------------
 
     if (action === "press") {
-      if (step.key || step.value || step.target) {
+      const key = step.key || step.value || step.target;
+
+      if (key) {
         return {
           valid: true,
 
           confidence: 100,
 
           reason: "Keyboard key available.",
+
+          ambiguous: false,
         };
       }
+
+      return {
+        valid: false,
+
+        confidence: 0,
+
+        reason: "Keyboard key missing.",
+
+        ambiguous: false,
+      };
     }
 
     //--------------------------------------------------
-    // Actions requiring target
+    // SCROLL
+    //--------------------------------------------------
+
+    if (action === "scroll") {
+      return {
+        valid: true,
+
+        confidence: 100,
+
+        reason: "Scroll action available.",
+
+        ambiguous: false,
+      };
+    }
+
+    //--------------------------------------------------
+    // UPLOAD
+    //--------------------------------------------------
+
+    if (action === "upload") {
+      if (step.file || step.path || step.value || step.target) {
+        return {
+          valid: true,
+
+          confidence: 100,
+
+          reason: "Upload information available.",
+
+          ambiguous: false,
+        };
+      }
+
+      return {
+        valid: false,
+
+        confidence: 0,
+
+        reason: "Upload file information missing.",
+
+        ambiguous: false,
+      };
+    }
+
+    //--------------------------------------------------
+    // ACTIONS REQUIRING TARGET
     //--------------------------------------------------
 
     const query = step.target || step.label || step.text || step.selector;
@@ -576,15 +804,13 @@ export default class Planner {
         confidence: 0,
 
         reason: "Action target missing.",
+
+        ambiguous: false,
       };
     }
 
     //--------------------------------------------------
-    // Scoring Engine
-    //
-    // IMPORTANT:
-    // Planner does NOT perform fuzzy matching.
-    // ScoringEngine owns candidate ranking.
+    // SCORING DISABLED
     //--------------------------------------------------
 
     if (!this.options.enableScoring) {
@@ -594,30 +820,57 @@ export default class Planner {
         confidence: 70,
 
         reason: "Scoring disabled.",
+
+        ambiguous: false,
       };
     }
 
     //--------------------------------------------------
-    // Use provided ranked candidates
+    // GET STEP-SPECIFIC CANDIDATES
+    //
+    // Priority:
+    //
+    // 1. step.candidates
+    // 2. context.domCandidates
+    // 3. context.candidates
+    // 4. context.ranked
+    // 5. ScoringEngine index
     //--------------------------------------------------
 
-    let ranked = context.ranked;
+    const candidates = this.getCandidatesForStep(step, context);
 
-    if (!Array.isArray(ranked) || !ranked.length) {
-      try {
-        if (
-          this.scoringEngine &&
-          typeof this.scoringEngine.rankCandidates === "function"
-        ) {
-          ranked = this.scoringEngine.rankCandidates(query);
-        }
-      } catch (err) {
-        this.log("Scoring failed:", err.message);
+    //--------------------------------------------------
+    // SCORE REQUEST
+    //--------------------------------------------------
+
+    this.stats.scoringRequests++;
+
+    let ranked = [];
+
+    try {
+      if (Array.isArray(candidates) && candidates.length) {
+        ranked = this.scoringEngine.rankCandidates(query, candidates);
+      } else {
+        ranked = this.scoringEngine.rankCandidates(query);
       }
+    } catch (err) {
+      this.log("Scoring failed:", err.message);
+
+      return {
+        valid: true,
+
+        confidence: null,
+
+        reason: "Scoring engine unavailable; LLM may be required.",
+
+        ambiguous: false,
+
+        ranked: [],
+      };
     }
 
     //--------------------------------------------------
-    // No candidates
+    // NO CANDIDATES
     //--------------------------------------------------
 
     if (!ranked?.length) {
@@ -627,11 +880,15 @@ export default class Planner {
         confidence: null,
 
         reason: "No DOM candidates available; LLM may be required.",
+
+        ambiguous: false,
+
+        ranked: [],
       };
     }
 
     //--------------------------------------------------
-    // Best Candidate
+    // BEST CANDIDATE
     //--------------------------------------------------
 
     const best = ranked[0];
@@ -639,14 +896,51 @@ export default class Planner {
     const confidence = Number(best?.score ?? best?.confidence ?? 0);
 
     //--------------------------------------------------
-    // Ambiguous Candidates
+    // SECOND CANDIDATE
     //--------------------------------------------------
 
-    const second = ranked[1];
+    const second = ranked[1] || null;
 
     const secondScore = Number(second?.score ?? second?.confidence ?? 0);
 
-    const ambiguous = second && Math.abs(confidence - secondScore) < 5;
+    //--------------------------------------------------
+    // AMBIGUITY
+    //--------------------------------------------------
+
+    const ambiguityGap = confidence - secondScore;
+
+    const ambiguous =
+      !!second &&
+      confidence >= this.options.plannerThreshold &&
+      ambiguityGap < 5;
+
+    //--------------------------------------------------
+    // LOW CONFIDENCE
+    //--------------------------------------------------
+
+    if (confidence < this.options.plannerThreshold) {
+      return {
+        valid: true,
+
+        confidence,
+
+        candidate: best,
+
+        ranked,
+
+        ambiguous: false,
+
+        matchedField: best?.matchedField || "",
+
+        reason: `Best candidate confidence ${confidence.toFixed(
+          2,
+        )}% is below planner threshold ${this.options.plannerThreshold}%.`,
+      };
+    }
+
+    //--------------------------------------------------
+    // AMBIGUOUS
+    //--------------------------------------------------
 
     if (ambiguous) {
       return {
@@ -654,12 +948,22 @@ export default class Planner {
 
         confidence,
 
-        reason: "Top candidates are ambiguous.",
+        candidate: best,
+
+        ranked,
+
+        ambiguous: true,
+
+        matchedField: best?.matchedField || "",
+
+        reason: `Top candidates are ambiguous. Score gap: ${ambiguityGap.toFixed(
+          2,
+        )}.`,
       };
     }
 
     //--------------------------------------------------
-    // Successful candidate
+    // HIGH CONFIDENCE
     //--------------------------------------------------
 
     return {
@@ -671,11 +975,66 @@ export default class Planner {
 
       ranked,
 
+      ambiguous: false,
+
+      matchedField: best?.matchedField || "",
+
       reason:
-        confidence >= this.options.plannerThreshold
-          ? "Candidate confidence is sufficient."
-          : "Candidate confidence is below planner threshold.",
+        confidence >= this.options.autoExecuteThreshold
+          ? `High-confidence candidate resolved at ${confidence.toFixed(2)}%.`
+          : `Candidate confidence ${confidence.toFixed(2)}% is sufficient.`,
     };
+  }
+
+  //======================================================
+  // GET CANDIDATES FOR STEP
+  //======================================================
+
+  getCandidatesForStep(step, context = {}) {
+    //--------------------------------------------------
+    // Step-specific candidates
+    //--------------------------------------------------
+
+    if (Array.isArray(step.candidates)) {
+      return step.candidates;
+    }
+
+    //--------------------------------------------------
+    // DOM candidates
+    //--------------------------------------------------
+
+    if (Array.isArray(context.domCandidates)) {
+      return context.domCandidates;
+    }
+
+    //--------------------------------------------------
+    // Generic candidates
+    //--------------------------------------------------
+
+    if (Array.isArray(context.candidates)) {
+      return context.candidates;
+    }
+
+    //--------------------------------------------------
+    // Already ranked candidates
+    //--------------------------------------------------
+
+    if (Array.isArray(context.ranked)) {
+      return context.ranked;
+    }
+
+    //--------------------------------------------------
+    // ScoringEngine internal index
+    //--------------------------------------------------
+
+    if (
+      this.scoringEngine &&
+      typeof this.scoringEngine.getIndexedElements === "function"
+    ) {
+      return this.scoringEngine.getIndexedElements();
+    }
+
+    return [];
   }
 
   //======================================================
@@ -696,13 +1055,13 @@ export default class Planner {
     }
 
     //--------------------------------------------------
-    // Parse LLM response
+    // PARSE LLM RESPONSE
     //--------------------------------------------------
 
     let plan = this.parseLLMResponse(response);
 
     //--------------------------------------------------
-    // Repair JSON
+    // REPAIR JSON
     //--------------------------------------------------
 
     if (!plan) {
@@ -716,7 +1075,7 @@ export default class Planner {
     }
 
     //--------------------------------------------------
-    // Validate
+    // VALIDATE
     //--------------------------------------------------
 
     if (!plan) {
@@ -724,17 +1083,47 @@ export default class Planner {
     }
 
     //--------------------------------------------------
-    // Normalize
+    // NORMALIZE
     //--------------------------------------------------
 
     plan = this.normalizeLLMPlan(plan);
 
     //--------------------------------------------------
-    // Validate normalized plan
+    // VALIDATE NORMALIZED PLAN
     //--------------------------------------------------
 
-    if (!plan.steps.length) {
+    if (plan.mode === "action" && !plan.steps.length) {
       throw new Error("LLM plan contains no executable steps.");
+    }
+
+    //--------------------------------------------------
+    // IMPORTANT
+    //
+    // LLM is allowed to interpret intent,
+    // but not to perform fuzzy matching.
+    //
+    // Re-score all generated targets through
+    // ScoringEngine before final execution.
+    //--------------------------------------------------
+
+    if (plan.mode === "action") {
+      const validated = await this.evaluateFastPlan(
+        {
+          steps: plan.steps,
+        },
+        context,
+      );
+
+      //--------------------------------------------------
+      // If LLM generated a valid complete plan,
+      // keep the LLM ordering and targets.
+      //--------------------------------------------------
+
+      if (validated.steps.length === plan.steps.length) {
+        plan.steps = validated.steps;
+
+        plan.confidence = this.calculatePlanConfidence(plan.steps);
+      }
     }
 
     return plan;
@@ -747,11 +1136,7 @@ export default class Planner {
   async callOllama(prompt) {
     const controller = new AbortController();
 
-    const timeout = setTimeout(
-      () => controller.abort(),
-
-      this.options.timeout,
-    );
+    const timeout = setTimeout(() => controller.abort(), this.options.timeout);
 
     try {
       const response = await fetch(this.options.endpoint, {
@@ -787,7 +1172,7 @@ export default class Planner {
   }
 
   //======================================================
-  // OPENAI-COMPATIBLE
+  // OPENAI COMPATIBLE
   //======================================================
 
   async callOpenAICompatible(prompt) {
@@ -797,11 +1182,7 @@ export default class Planner {
 
     const controller = new AbortController();
 
-    const timeout = setTimeout(
-      () => controller.abort(),
-
-      this.options.timeout,
-    );
+    const timeout = setTimeout(() => controller.abort(), this.options.timeout);
 
     try {
       const response = await fetch(this.options.endpoint, {
@@ -857,18 +1238,23 @@ export default class Planner {
 
 Your job is to convert a user's command into a strict JSON execution plan.
 
-Rules:
+IMPORTANT ARCHITECTURE RULES:
 
 1. Return JSON only.
-2. Preserve the user's requested step order.
+2. Preserve the exact order of requested actions.
 3. Never skip a requested step.
-4. Never invent unrelated actions.
-5. Use only supported browser actions.
-6. Do not perform fuzzy matching.
-7. Do not guess selectors when a natural-language target is sufficient.
-8. Keep target text close to the user's original wording.
-9. For multiple actions, return every action as a separate ordered step.
-10. Use "chat" mode only for conversational requests.
+4. Never silently remove a step.
+5. Never invent unrelated actions.
+6. Use only supported browser actions.
+7. Do NOT perform fuzzy matching.
+8. Do NOT calculate similarity scores.
+9. Do NOT invent CSS selectors unless explicitly required.
+10. Keep natural-language target text close to the user's wording.
+11. ScoringEngine performs target matching after planning.
+12. Every requested action must become a separate ordered step.
+13. Use "chat" mode only for conversational requests.
+14. If the user gives multiple actions, return all actions.
+15. Never merge separate user actions into one step.
 
 Supported actions:
 
@@ -939,7 +1325,13 @@ Multi-step example:
           tag: candidate.tag,
 
           score: candidate.score,
+
+          matchedField: candidate.matchedField,
         }))
+      : [];
+
+    const stepResults = Array.isArray(context.stepResults)
+      ? context.stepResults
       : [];
 
     return `User command:
@@ -947,6 +1339,9 @@ ${input}
 
 Fast parsed intent:
 ${JSON.stringify(parsed || {}, null, 2)}
+
+Previous ScoringEngine results:
+${JSON.stringify(stepResults, null, 2)}
 
 Top scored DOM candidates:
 ${JSON.stringify(ranked, null, 2)}
@@ -1062,7 +1457,7 @@ Return a valid JSON execution plan only.`;
     const mode = plan.mode === "chat" ? "chat" : "action";
 
     //--------------------------------------------------
-    // Chat
+    // CHAT
     //--------------------------------------------------
 
     if (mode === "chat") {
@@ -1080,7 +1475,7 @@ Return a valid JSON execution plan only.`;
     }
 
     //--------------------------------------------------
-    // Steps
+    // STEPS
     //--------------------------------------------------
 
     const rawSteps = Array.isArray(plan.steps) ? plan.steps : [];
@@ -1109,28 +1504,40 @@ Return a valid JSON execution plan only.`;
       return {
         mode: "unknown",
 
+        raw: input,
+
         steps: [],
       };
     }
 
     //--------------------------------------------------
-    // Already structured
+    // Structured result
     //--------------------------------------------------
 
     if (typeof parsed === "object") {
-      const mode = parsed.mode || (parsed.steps?.length ? "action" : "unknown");
+      const steps = this.normalizeSteps(parsed.steps || []);
+
+      let mode = parsed.mode;
+
+      if (!mode) {
+        mode = steps.length ? "action" : "unknown";
+      }
 
       return {
         ...parsed,
 
         mode,
 
-        steps: this.normalizeSteps(parsed.steps || []),
+        raw: parsed.raw || input,
+
+        steps,
       };
     }
 
     return {
       mode: "unknown",
+
+      raw: input,
 
       steps: [],
     };
@@ -1146,7 +1553,6 @@ Return a valid JSON execution plan only.`;
     }
 
     return steps
-
       .map((step, index) => {
         if (!step || typeof step !== "object") {
           return null;
@@ -1170,9 +1576,7 @@ Return a valid JSON execution plan only.`;
           value: step.value ?? step.input ?? undefined,
         };
       })
-
       .filter(Boolean)
-
       .slice(0, this.options.maxSteps);
   }
 
@@ -1235,12 +1639,37 @@ Return a valid JSON execution plan only.`;
 
       check: "checkbox",
 
+      uncheck: "checkbox",
+
       upload: "upload",
 
       chat: "chat",
     };
 
     return aliases[normalized] || normalized;
+  }
+
+  //======================================================
+  // SUPPORTED ACTION CHECK
+  //======================================================
+
+  isSupportedAction(action) {
+    return [
+      "click",
+      "type",
+      "select",
+      "hover",
+      "press",
+      "wait",
+      "navigate",
+      "back",
+      "forward",
+      "reload",
+      "scroll",
+      "checkbox",
+      "upload",
+      "chat",
+    ].includes(action);
   }
 
   //======================================================
@@ -1274,6 +1703,8 @@ Return a valid JSON execution plan only.`;
       checkbox: "checkbox",
 
       upload: "upload",
+
+      chat: "chat",
     };
 
     return map[action] || action;
@@ -1311,7 +1742,7 @@ Return a valid JSON execution plan only.`;
 
       source: "fallback",
 
-      confidence: 50,
+      confidence: steps.length ? this.calculatePlanConfidence(steps) : 50,
 
       reply: steps.length ? undefined : `I understood: ${input}`,
 
@@ -1346,7 +1777,13 @@ Return a valid JSON execution plan only.`;
 
         ranked: [],
 
+        candidates: [],
+
+        domCandidates: [],
+
         query: "",
+
+        stepResults: [],
       };
     }
 
@@ -1359,6 +1796,16 @@ Return a valid JSON execution plan only.`;
       ),
 
       ranked: Array.isArray(context.ranked) ? context.ranked : [],
+
+      candidates: Array.isArray(context.candidates) ? context.candidates : [],
+
+      domCandidates: Array.isArray(context.domCandidates)
+        ? context.domCandidates
+        : [],
+
+      stepResults: Array.isArray(context.stepResults)
+        ? context.stepResults
+        : [],
     };
   }
 
@@ -1367,6 +1814,14 @@ Return a valid JSON execution plan only.`;
   //======================================================
 
   finalizePlan(plan, started) {
+    const normalizedSteps = this.normalizeSteps(plan?.steps || []);
+
+    //--------------------------------------------------
+    // Final step-count validation
+    //--------------------------------------------------
+
+    const requestedStepCount = normalizedSteps.length;
+
     const finalPlan = {
       success: plan?.success !== false,
 
@@ -1375,10 +1830,10 @@ Return a valid JSON execution plan only.`;
       source: plan?.source || "planner",
 
       confidence: Number(
-        plan?.confidence ?? this.calculatePlanConfidence(plan?.steps || []),
+        plan?.confidence ?? this.calculatePlanConfidence(normalizedSteps),
       ),
 
-      steps: this.normalizeSteps(plan?.steps || []),
+      steps: normalizedSteps,
 
       ...(plan?.reply !== undefined
         ? {
@@ -1391,12 +1846,14 @@ Return a valid JSON execution plan only.`;
 
         timestamp: Date.now(),
 
-        stepCount: plan?.steps?.length || 0,
+        stepCount: requestedStepCount,
+
+        maxSteps: this.options.maxSteps,
       },
     };
 
     //--------------------------------------------------
-    // Preserve chat response
+    // CHAT
     //--------------------------------------------------
 
     if (finalPlan.mode === "chat") {
@@ -1404,7 +1861,7 @@ Return a valid JSON execution plan only.`;
     }
 
     //--------------------------------------------------
-    // Store history
+    // STORE HISTORY
     //--------------------------------------------------
 
     this.lastPlan = finalPlan;
@@ -1418,12 +1875,16 @@ Return a valid JSON execution plan only.`;
     });
 
     //--------------------------------------------------
-    // Keep history bounded
+    // BOUNDED HISTORY
     //--------------------------------------------------
 
-    if (this.history.length > 100) {
+    if (this.history.length > this.options.historyLimit) {
       this.history.shift();
     }
+
+    //--------------------------------------------------
+    // STATISTICS
+    //--------------------------------------------------
 
     this.stats.successfulPlans++;
 
@@ -1465,6 +1926,14 @@ Return a valid JSON execution plan only.`;
       lastPlanMode: this.lastPlan?.mode || null,
 
       lastPlanSource: this.lastPlan?.source || null,
+
+      lastPlanConfidence: this.lastPlan?.confidence ?? null,
+
+      scoringMetrics:
+        this.scoringEngine &&
+        typeof this.scoringEngine.getMetrics === "function"
+          ? this.scoringEngine.getMetrics()
+          : null,
     };
   }
 
@@ -1480,5 +1949,33 @@ Return a valid JSON execution plan only.`;
     this.lastError = null;
 
     this.history = [];
+
+    this.stats = {
+      totalCalls: 0,
+
+      fastPathCalls: 0,
+
+      llmCalls: 0,
+
+      llmFailures: 0,
+
+      repairedPlans: 0,
+
+      chatCalls: 0,
+
+      actionCalls: 0,
+
+      multiStepCalls: 0,
+
+      successfulPlans: 0,
+
+      failedPlans: 0,
+
+      skippedSteps: 0,
+
+      scoringRequests: 0,
+
+      ambiguousSteps: 0,
+    };
   }
 }
