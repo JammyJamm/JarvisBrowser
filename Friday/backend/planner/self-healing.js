@@ -961,5 +961,4 @@ const selfHealing = new SelfHealing({
 // ============================================================
 
 export { SelfHealing };
-
 export default selfHealing;

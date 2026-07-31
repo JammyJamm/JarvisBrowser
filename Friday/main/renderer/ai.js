@@ -1,3 +1,4 @@
+//const BACKEND_URL = "http://localhost:9000";
 const form = document.getElementById("ai-form");
 const input = document.getElementById("cmd");
 
@@ -26,7 +27,7 @@ form.addEventListener("submit", async (e) => {
   startShimmer();
 
   try {
-    const res = await fetch("http://localhost:3001/run", {
+    const res = await fetch(`${BACKEND_URL}/run`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -73,7 +74,7 @@ form.addEventListener("submit", async (e) => {
 async function runStep(step) {
   logResp("STEP:\n" + JSON.stringify(step, null, 2));
 
-  const r = await fetch("http://localhost:3001/tool", {
+  const r = await fetch(`${BACKEND_URL}/tool`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

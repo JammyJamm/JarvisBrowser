@@ -6,7 +6,7 @@
     "start": "electron .",
     "backend": "node backend/server.js",
     "ollama": "ollama serve",
-    "dev": "concurrently \"npm run backend\" \"npm start\" \"ollama\""
+    "dev": "concurrently \"npm run backend\" \"npm start\" \"npm run ollama\""
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -20,6 +20,9 @@
     "type": "module"
   },
   "devDependencies": {
-    "concurrently": "^8.0.0"
+    "concurrently": "^8.0.0",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "electron": "^37.2.0"
   }
 }
