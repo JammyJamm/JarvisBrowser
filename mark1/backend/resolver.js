@@ -1735,7 +1735,169 @@ export default class Resolver {
   //==========================================================
   // TYPE SMART
   //==========================================================
+  /**
+   * Find an input using its visible label.
+   *
+   * IMPORTANT:
+   * - Does NOT use findSemanticInputCandidate()
+   * - Does NOT depend on input type
+   * - Does NOT depend on autocomplete
+   * - Does NOT depend on input id/name
+   *
+   * Strategy:
+   *   label text
+   *      ↓
+   *   walk N parents
+   *      ↓
+   *   find input inside parent
+   */
+  /**
+   * Find an input by its associated/visible label.
+   *
+   * Strategy:
+   *
+   *   Label
+   *     ↓
+   *   parent
+   *     ↓
+   *   parent / field container
+   *     ↓
+   *   input inside container
+   *
+   * This intentionally does NOT use findSemanticInputCandidate().
+   */
+  async findInputByLabel(labelText) {
+    if (!labelText) {
+      return null;
+    }
 
+    if (!this.page || this.page.isClosed()) {
+      throw new Error("Browser controller is closed");
+    }
+
+    const target = String(labelText).trim().toLowerCase();
+
+    const labelNodes = this.page.locator(
+      ".field-base__label, " +
+        ".field-base-label, " +
+        ".field-base-label-text, " +
+        "label, " +
+        "[class*='label']",
+    );
+
+    const count = await labelNodes.count();
+
+    for (let i = 0; i < count; i++) {
+      const label = labelNodes.nth(i);
+
+      try {
+        if (!(await label.isVisible())) {
+          continue;
+        }
+
+        const text = (await label.textContent())?.trim();
+
+        if (!text) {
+          continue;
+        }
+
+        const normalized = text.toLowerCase();
+
+        /*
+         * Exact label match.
+         *
+         * Example:
+         *
+         * query = "email"
+         * DOM   = "E-mail or ID"
+         */
+        const matches =
+          normalized === target ||
+          normalized.includes(target) ||
+          target.includes(normalized);
+
+        if (!matches) {
+          continue;
+        }
+
+        /*
+         * Find the nearest ancestor that contains
+         * an INPUT.
+         *
+         * This is the important part.
+         *
+         * label
+         *   ↑ parent
+         *   ↑ parent
+         *   ↑ field container
+         *       ↓
+         *      input
+         */
+
+        const field = label.locator("xpath=ancestor::*[.//input][1]");
+
+        if (await field.count()) {
+          const inputs = field.locator(
+            "input:not([type='hidden']):not([disabled])",
+          );
+
+          const inputCount = await inputs.count();
+
+          for (let j = 0; j < inputCount; j++) {
+            const input = inputs.nth(j);
+
+            if (!(await input.isVisible())) {
+              continue;
+            }
+
+            return {
+              input,
+              label,
+              labelText: text,
+              strategy: "label-parent-input",
+              score: 100,
+            };
+          }
+        }
+
+        /*
+         * Explicit parent fallback.
+         * Useful for Material UI/custom wrappers.
+         */
+        for (let parentLevel = 1; parentLevel <= 6; parentLevel++) {
+          const parent = label.locator(`xpath=${"../".repeat(parentLevel)}`);
+
+          if (!(await parent.count())) {
+            continue;
+          }
+
+          const inputs = parent.locator(
+            "input:not([type='hidden']):not([disabled])",
+          );
+
+          const inputCount = await inputs.count();
+
+          for (let j = 0; j < inputCount; j++) {
+            const input = inputs.nth(j);
+
+            if (await input.isVisible()) {
+              return {
+                input,
+                label,
+                labelText: text,
+                strategy: `label-parent-${parentLevel}`,
+                score: 100,
+              };
+            }
+          }
+        }
+      } catch (error) {
+        // DOM changed; continue scanning labels.
+      }
+    }
+
+    return null;
+  }
   async typeSmart(input, explicitValue = null) {
     const started = this.startTimer();
 
@@ -1766,6 +1928,72 @@ export default class Resolver {
 
       await this.ensureFreshDOM();
 
+      /*
+       * ======================================================
+       * 1. LABEL-FIRST RESOLUTION
+       * ======================================================
+       *
+       * Do NOT use:
+       *
+       * findSemanticInputCandidate()
+       *
+       * Do NOT depend on:
+       *
+       * input[type="email"]
+       * input[name="email"]
+       * input[type="username"]
+       *
+       * The visible label is the semantic source.
+       */
+
+      const labelCandidate = await this.findInputByLabel(query);
+
+      if (labelCandidate) {
+        console.log(`[typeSmart] Label match: "${labelCandidate.labelText}"`);
+
+        console.log(`[typeSmart] Strategy: ${labelCandidate.strategy}`);
+
+        const typed = await this.typeIntoInput(labelCandidate.input, value);
+
+        if (!typed) {
+          throw new Error(`Unable to type into label '${query}'`);
+        }
+
+        this.stats.types++;
+
+        this.stopTimer(started);
+
+        return {
+          success: true,
+
+          action: "type",
+
+          value,
+
+          confidence: 100,
+
+          candidate: {
+            text: labelCandidate.labelText,
+
+            role: "textbox",
+
+            tag: "input",
+
+            score: 100,
+
+            strategy: labelCandidate.strategy,
+          },
+        };
+      }
+
+      /*
+       * ======================================================
+       * 2. FALLBACK TO EXISTING SCORING ENGINE
+       * ======================================================
+       *
+       * Only use scoring when label resolution failed.
+       */
+
       const dom = await this.buildDOMIndex(ctx.retry > 0);
 
       const elements = dom?.elements || [];
@@ -1780,6 +2008,9 @@ export default class Resolver {
 
       let candidate = ranked[0];
 
+      /*
+       * Planner is still fallback only.
+       */
       if (candidate.score < this.options.plannerThreshold) {
         this.stats.plannerCalls++;
 
@@ -1841,7 +2072,37 @@ export default class Resolver {
       };
     });
   }
+  async typeIntoInput(input, value) {
+    if (!input) {
+      return false;
+    }
 
+    if (!this.page || this.page.isClosed()) {
+      throw new Error("Browser controller is closed");
+    }
+
+    try {
+      await input.scrollIntoViewIfNeeded();
+
+      await input.click();
+
+      await input.fill(String(value));
+
+      /*
+       * Some Vue / React / MUI-style applications listen
+       * to keyboard/input/change events.
+       *
+       * Pressing Tab also causes blur/change handling.
+       */
+      await input.press("Tab");
+
+      return true;
+    } catch (error) {
+      console.error("[typeIntoInput] Failed:", error.message);
+
+      return false;
+    }
+  }
   //==========================================================
   // INPUT CANDIDATE
   //==========================================================
