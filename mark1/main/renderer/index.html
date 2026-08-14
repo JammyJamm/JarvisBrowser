@@ -1,0 +1,424 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Jarvis Browser</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+
+  <body>
+    <!-- NAV -->
+    <div id="nav">
+      <button onclick="goBack()">
+        <img class="icon" src="./icon/chevron-left.svg" alt="leftNav-Icon" />
+      </button>
+      <button onclick="goForward()">
+        <img class="icon" src="./icon/chevron-right.svg" alt="rightNav-Icon" />
+      </button>
+      <button onclick="reloadPage()">
+        <img class="icon" src="./icon/refresh-cw.svg" alt="refreshNav-Icon" />
+      </button>
+      <div class="urlBlock">
+        <img src="./icon/logo.svg" alt="refreshNav-Icon" />
+        <input id="url" value="https://example.com" />
+        <!-- <input id="url" value="https://india-1x-bet.com/en/user/login/" /> -->
+      </div>
+
+      <button onclick="navigate()">
+        <img class="icon" src="./icon/send.svg" alt="sendNav-Icon" />
+      </button>
+    </div>
+
+    <!-- LAYOUT -->
+    <div id="layout">
+      <div id="browser"></div>
+
+      <div id="ai">
+        <div class="animation">
+          <div class="animationLayerColor"></div>
+          <div class="animationLayer"></div>
+        </div>
+      </div>
+
+      <div id="aiForm">
+        <form id="ai-form">
+          <div class="statusBlock">
+            <img src="./icon/logo.svg" alt="refreshNav-Icon" />
+            <p>Limit your availability to create exclusivity...</p>
+          </div>
+          <textarea id="cmd" placeholder="Type command..." rows="4"></textarea>
+        </form>
+        <div id="logs"></div>
+      </div>
+    </div>
+
+    <script>
+      // ==========================================================
+      // GLOBAL STATE
+      // ==========================================================
+
+      window.aiState = {
+        ready: false,
+        pendingCommand: null,
+        backendReady: false,
+        initialized: false,
+      };
+
+      // ==========================================================
+      // CONFIGURATION
+      // ==========================================================
+
+      // ==========================================================
+      // URL FORMATTER
+      // ==========================================================
+
+      function formatURL(url) {
+        url = String(url || "").trim();
+
+        if (!url) {
+          return "https://google.com";
+        }
+
+        if (!/^https?:\/\//i.test(url)) {
+          return "https://" + url;
+        }
+
+        return url;
+      }
+
+      // ==========================================================
+      // LOGGING
+      // ==========================================================
+
+      function log(msg) {
+        const logs = document.getElementById("logs");
+
+        if (!logs) {
+          console.log(msg);
+          return;
+        }
+
+        const div = document.createElement("div");
+        div.innerText = msg;
+
+        logs.appendChild(div);
+        logs.scrollTop = logs.scrollHeight;
+      }
+
+      // ==========================================================
+      // BACKEND HEALTH CHECK
+      // ==========================================================
+
+      const BACKEND_URL = "http://localhost:9000";
+      const BACKEND_HEALTH_URL = `${BACKEND_URL}/status`;
+
+      async function waitForBackend(maxAttempts = 30, retryDelay = 500) {
+        log("⏳ Connecting to Jarvis backend...");
+
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+          try {
+            const response = await fetch(BACKEND_HEALTH_URL, {
+              method: "GET",
+              cache: "no-store",
+            });
+
+            if (response.ok) {
+              window.aiState.backendReady = true;
+
+              log("✅ Jarvis backend connected");
+
+              return true;
+            }
+
+            console.warn(`Backend returned HTTP ${response.status}`);
+          } catch (error) {
+            console.warn(
+              `Backend connection attempt ${attempt}/${maxAttempts} failed`,
+              error.message,
+            );
+          }
+
+          if (attempt < maxAttempts) {
+            await new Promise((resolve) => setTimeout(resolve, retryDelay));
+          }
+        }
+
+        window.aiState.backendReady = false;
+
+        log("❌ Unable to connect to Jarvis backend");
+
+        return false;
+      } // ==========================================================
+      // BACKEND REQUEST HELPER
+      // ==========================================================
+
+      async function backendFetch(endpoint, options = {}) {
+        if (!window.aiState.backendReady) {
+          await waitForBackend();
+        }
+
+        const response = await fetch(`${BACKEND_URL}${endpoint}`, {
+          ...options,
+          headers: {
+            "Content-Type": "application/json",
+            ...(options.headers || {}),
+          },
+        });
+
+        if (!response.ok) {
+          throw new Error(
+            `Backend request failed: ${response.status} ${response.statusText}`,
+          );
+        }
+
+        return response;
+      }
+
+      // ==========================================================
+      // NAVIGATE
+      // ==========================================================
+
+      async function navigate() {
+        try {
+          const input = document.getElementById("url");
+
+          if (!input) {
+            throw new Error("URL input element not found");
+          }
+
+          const url = formatURL(input.value);
+
+          log(`🌐 Navigating to ${url}`);
+
+          // Navigate Electron browser
+          await window.browserAPI.navigate(url);
+
+          // Notify backend
+          await backendFetch("/navigate", {
+            method: "POST",
+            body: JSON.stringify({ url }),
+          });
+
+          log(`✅ Navigation completed: ${url}`);
+        } catch (error) {
+          console.error("❌ Navigation failed:", error);
+
+          log(`❌ Navigation failed: ${error.message}`);
+        }
+      }
+
+      // ==========================================================
+      // INITIALIZE JARVIS
+      // ==========================================================
+
+      async function initializeJarvis() {
+        if (window.aiState.initialized) {
+          console.log("ℹ️ Jarvis is already initialized");
+
+          return;
+        }
+
+        try {
+          log("🚀 Starting Jarvis Browser...");
+
+          // ------------------------------------------------------
+          // STEP 1: WAIT FOR BACKEND
+          // ------------------------------------------------------
+
+          await waitForBackend();
+
+          // ------------------------------------------------------
+          // STEP 2: GET INITIAL URL
+          // ------------------------------------------------------
+
+          const input = document.getElementById("url");
+
+          if (!input) {
+            throw new Error("URL input element not found");
+          }
+
+          const url = formatURL(input.value);
+
+          // ------------------------------------------------------
+          // STEP 3: NAVIGATE ELECTRON BROWSER
+          // ------------------------------------------------------
+
+          log(`🌐 Opening ${url}`);
+
+          await window.browserAPI.navigate(url);
+
+          // ------------------------------------------------------
+          // STEP 4: INITIALIZE BACKEND
+          // ------------------------------------------------------
+
+          log("🔌 Initializing browser automation...");
+
+          const response = await backendFetch("/init", {
+            method: "POST",
+            body: JSON.stringify({ url }),
+          });
+
+          const data = await response.json();
+
+          if (data && data.success === false) {
+            throw new Error(data.error || "Backend initialization failed");
+          }
+
+          // ------------------------------------------------------
+          // STEP 5: UPDATE STATE
+          // ------------------------------------------------------
+
+          window.aiState.ready = true;
+          window.aiState.initialized = true;
+
+          log("✅ Jarvis Browser is ready");
+
+          console.log("✅ Jarvis initialization complete", data);
+        } catch (error) {
+          window.aiState.ready = false;
+          window.aiState.initialized = false;
+
+          console.error("❌ Jarvis initialization failed:", error);
+
+          log(`❌ Jarvis startup failed: ${error.message}`);
+        }
+      }
+
+      // ==========================================================
+      // 🔙 BACK
+      // ==========================================================
+
+      function goBack() {
+        try {
+          window.browserAPI.back();
+        } catch (error) {
+          console.error("❌ Back navigation failed:", error);
+
+          log(`❌ Back failed: ${error.message}`);
+        }
+      }
+
+      // ==========================================================
+      // 🔜 FORWARD
+      // ==========================================================
+
+      function goForward() {
+        try {
+          window.browserAPI.forward();
+        } catch (error) {
+          console.error("❌ Forward navigation failed:", error);
+
+          log(`❌ Forward failed: ${error.message}`);
+        }
+      }
+
+      // ==========================================================
+      // 🔄 RELOAD
+      // ==========================================================
+
+      function reloadPage() {
+        try {
+          window.browserAPI.reload();
+        } catch (error) {
+          console.error("❌ Reload failed:", error);
+
+          log(`❌ Reload failed: ${error.message}`);
+        }
+      }
+
+      // ==========================================================
+      // BROWSER RESIZE
+      // ==========================================================
+
+      function resizeBrowser() {
+        try {
+          if (
+            window.electronAPI &&
+            typeof window.electronAPI.resizeBrowser === "function"
+          ) {
+            window.electronAPI.resizeBrowser();
+          }
+        } catch (error) {
+          console.error("❌ Browser resize failed:", error);
+        }
+      }
+
+      // ==========================================================
+      // INITIAL PAGE LOAD
+      // ==========================================================
+
+      window.addEventListener(
+        "load",
+        async () => {
+          try {
+            // Resize browser
+            resizeBrowser();
+
+            // Observe browser container
+            const browserDiv = document.getElementById("browser");
+
+            if (browserDiv && window.ResizeObserver) {
+              const observer = new ResizeObserver(() => {
+                resizeBrowser();
+              });
+
+              observer.observe(browserDiv);
+            }
+
+            // Initialize Jarvis
+            await initializeJarvis();
+          } catch (error) {
+            console.error("❌ Page initialization failed:", error);
+
+            log(`❌ Page initialization failed: ${error.message}`);
+          }
+        },
+        { once: true },
+      );
+
+      // ==========================================================
+      // WINDOW RESIZE
+      // ==========================================================
+
+      window.addEventListener("resize", resizeBrowser);
+
+      // ==========================================================
+      // EXPOSE FUNCTIONS TO HTML
+      // ==========================================================
+
+      window.navigate = navigate;
+      window.goBack = goBack;
+      window.goForward = goForward;
+      window.reloadPage = reloadPage;
+
+      // ==========================================================
+      // DEBUG HELPERS
+      // ==========================================================
+
+      window.jarvis = {
+        state: window.aiState,
+
+        async checkBackend() {
+          try {
+            await waitForBackend(1, 0);
+
+            return {
+              success: true,
+              message: "Backend is available",
+            };
+          } catch (error) {
+            return {
+              success: false,
+              error: error.message,
+            };
+          }
+        },
+
+        async initialize() {
+          await initializeJarvis();
+        },
+      };
+    </script>
+
+    <script src="ai.js"></script>
+  </body>
+</html>

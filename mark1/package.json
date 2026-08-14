@@ -1,0 +1,25 @@
+{
+  "name": "Friday",
+  "version": "3.0.0",
+  "main": "main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "backend": "node backend/server.js",
+    "ollama": "ollama serve",
+    "dev": "concurrently -k \"npm run backend\" \"npm start\" \"npm run ollama\"",
+    "mcp": "npx @playwright/mcp@0.0.78 --port 8931"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@playwright/mcp": "^0.0.75",
+    "cors": "^2.8.6",
+    "electron": "^42.3.2",
+    "express": "^5.1.0",
+    "node-fetch": "^2.7.0",
+    "openai": "^6.32.0",
+    "playwright": "^1.60.0"
+  },
+  "devDependencies": {
+    "concurrently": "^8.0.0"
+  }
+}
