@@ -1450,36 +1450,12 @@ export default class Resolver {
     };
   }
 
-  //==========================================================
-  // CLICK SMART
-  //
-  // IMPORTANT LOGIN FIX
-  //
-  // For login commands such as:
-  //
-  //   Click "Log in"
-  //   Click the "Log in" button
-  //   Submit login form
-  //   Click login
-  //
-  // We first locate the actual LOGIN FORM.
-  //
-  // Login form is identified using:
-  //   1. visible form
-  //   2. password input
-  //   3. email / username / ID input
-  //   4. submit button
-  //
-  // This prevents multiple "Log in" buttons elsewhere on
-  // the page from being selected.
-  //==========================================================
-
   async clickSmart(input) {
     const started = this.startTimer();
 
     return await this.executeWithHealing("clickSmart", input, async (ctx) => {
       //--------------------------------------------------
-      // Validate
+      // VALIDATE
       //--------------------------------------------------
 
       if (
@@ -1497,19 +1473,7 @@ export default class Resolver {
       this.log("==========================================");
 
       //--------------------------------------------------
-      // 1. WAIT FOR TARGET
-      //--------------------------------------------------
-
-      await this.waitForTarget(query, this.options.targetWaitTimeout);
-
-      //--------------------------------------------------
-      // 2. FORCE FRESH DOM
-      //--------------------------------------------------
-
-      await this.ensureFreshDOM();
-
-      //--------------------------------------------------
-      // 3. GET PAGE
+      // GET PAGE
       //--------------------------------------------------
 
       const page = await this.mcp.getPage();
@@ -1519,14 +1483,366 @@ export default class Resolver {
       }
 
       //--------------------------------------------------
-      // 4. LOGIN FORM SUBMIT RESOLVER
-      //
-      // THIS IS THE IMPORTANT FIX.
-      //
-      // Do this BEFORE generic "Log in" text matching.
+      // FRESH DOM
+      //--------------------------------------------------
+
+      await this.ensureFreshDOM();
+
+      //--------------------------------------------------
+      // NORMALIZE
       //--------------------------------------------------
 
       const normalizedQuery = this.normalizeResolverText(query);
+
+      this.log("Normalized click query:", normalizedQuery);
+
+      //==================================================
+      // DIRECT ID MATCH - MAIN PAGE
+      //==================================================
+
+      this.log("==========================================");
+      this.log("DIRECT ID SEARCH - MAIN PAGE");
+      this.log("TARGET ID:", query);
+      this.log("==========================================");
+
+      try {
+        const escapedId = query.replace(/"/g, '\\"');
+
+        const idLocator = page.locator(`[id="${escapedId}"]`);
+
+        const idCount = await idLocator.count();
+
+        this.log("Main page direct ID match count:", idCount);
+
+        if (idCount > 0) {
+          for (let idIndex = 0; idIndex < idCount; idIndex++) {
+            try {
+              const candidate = idLocator.nth(idIndex);
+
+              const visible = await candidate.isVisible().catch(() => false);
+
+              if (!visible) {
+                this.log("Main page direct ID candidate not visible:", idIndex);
+                continue;
+              }
+
+              const disabled = await candidate.isDisabled().catch(() => false);
+
+              if (disabled) {
+                this.log("Main page direct ID candidate disabled:", idIndex);
+                continue;
+              }
+
+              const tag = await candidate
+                .evaluate((el) => String(el.tagName || "").toLowerCase())
+                .catch(() => "");
+
+              const text = await candidate.innerText().catch(() => "");
+
+              const role = await candidate
+                .getAttribute("role")
+                .catch(() => null);
+
+              const dataRole = await candidate
+                .getAttribute("data-role")
+                .catch(() => null);
+
+              this.log("Main page ID candidate:", {
+                id: query,
+                tag,
+                role,
+                dataRole,
+                text,
+              });
+
+              await candidate.scrollIntoViewIfNeeded().catch(() => {});
+
+              await candidate.click({
+                timeout: 7000,
+                force: false,
+              });
+
+              this.stats.clicks++;
+              this.stats.exactMatches++;
+
+              this.remember(query, {
+                text: text || query,
+                role: role || "",
+                tag,
+                id: query,
+                dataRole,
+                matchType: "direct-id-main-page",
+                score: 100,
+              });
+
+              this.stopTimer(started);
+
+              this.log("DIRECT ID MAIN PAGE CLICK SUCCESS:", query);
+
+              return {
+                success: true,
+                action: "click",
+                confidence: 100,
+                matchType: "direct-id-main-page",
+                verified: true,
+                candidate: {
+                  id: query,
+                  text: text || query,
+                  role: role || "",
+                  tag,
+                  dataRole,
+                  score: 100,
+                },
+              };
+            } catch (idCandidateError) {
+              this.log("Main page ID candidate failed:", {
+                index: idIndex,
+                id: query,
+                error: idCandidateError.message,
+              });
+            }
+          }
+        }
+      } catch (idError) {
+        this.log("Main page direct ID search failed:", {
+          id: query,
+          error: idError.message,
+        });
+      }
+
+      //==================================================
+      // DIRECT ID MATCH - ALL IFRAMES
+      //
+      // IMPORTANT:
+      //
+      // This is the critical fix for:
+      //
+      // Click "SuperSicBo000001"
+      //
+      // If the element is inside an iframe/tab section,
+      // page.locator() cannot see it from the parent page.
+      //
+      // We explicitly inspect every Playwright frame.
+      //==================================================
+
+      this.log("==========================================");
+      this.log("DIRECT ID SEARCH - ALL IFRAMES");
+      this.log("TARGET ID:", query);
+      this.log("==========================================");
+
+      try {
+        const allFrames = page.frames();
+
+        this.log(
+          "Total frames available for direct ID search:",
+          allFrames.length,
+        );
+
+        for (let frameIndex = 0; frameIndex < allFrames.length; frameIndex++) {
+          const frame = allFrames[frameIndex];
+
+          try {
+            if (!frame || frame.isDetached()) {
+              continue;
+            }
+
+            this.log("Checking frame for exact ID:", {
+              frameIndex,
+              url: frame.url(),
+            });
+
+            const escapedId = query.replace(/"/g, '\\"');
+
+            const frameIdLocator = frame.locator(`[id="${escapedId}"]`);
+
+            const frameIdCount = await frameIdLocator.count();
+
+            this.log("Frame direct ID match count:", {
+              frameIndex,
+              id: query,
+              count: frameIdCount,
+            });
+
+            if (frameIdCount === 0) {
+              continue;
+            }
+
+            for (let idIndex = 0; idIndex < frameIdCount; idIndex++) {
+              try {
+                const candidate = frameIdLocator.nth(idIndex);
+
+                const visible = await candidate.isVisible().catch(() => false);
+
+                if (!visible) {
+                  this.log("Frame ID candidate not visible:", {
+                    frameIndex,
+                    idIndex,
+                  });
+
+                  continue;
+                }
+
+                const disabled = await candidate
+                  .isDisabled()
+                  .catch(() => false);
+
+                if (disabled) {
+                  this.log("Frame ID candidate disabled:", {
+                    frameIndex,
+                    idIndex,
+                  });
+
+                  continue;
+                }
+
+                const tag = await candidate
+                  .evaluate((el) => String(el.tagName || "").toLowerCase())
+                  .catch(() => "");
+
+                const text = await candidate.innerText().catch(() => "");
+
+                const role = await candidate
+                  .getAttribute("role")
+                  .catch(() => null);
+
+                const dataRole = await candidate
+                  .getAttribute("data-role")
+                  .catch(() => null);
+
+                const className = await candidate
+                  .getAttribute("class")
+                  .catch(() => null);
+
+                const title = await candidate
+                  .getAttribute("title")
+                  .catch(() => null);
+
+                this.log("==========================================");
+
+                this.log("EXACT IFRAME ID CANDIDATE FOUND:", {
+                  frameIndex,
+                  frameUrl: frame.url(),
+                  id: query,
+                  tag,
+                  text,
+                  role,
+                  dataRole,
+                  className,
+                  title,
+                });
+
+                this.log("==========================================");
+
+                //--------------------------------------------------
+                // SCROLL
+                //--------------------------------------------------
+
+                await candidate.scrollIntoViewIfNeeded().catch(() => {});
+
+                //--------------------------------------------------
+                // FOCUS
+                //--------------------------------------------------
+
+                await candidate.focus().catch(() => {});
+
+                //--------------------------------------------------
+                // NORMAL CLICK
+                //--------------------------------------------------
+
+                try {
+                  await candidate.click({
+                    timeout: 7000,
+                    force: false,
+                  });
+                } catch (normalClickError) {
+                  this.log(
+                    "Normal iframe click failed, trying force click:",
+                    normalClickError.message,
+                  );
+
+                  //--------------------------------------------------
+                  // FORCE CLICK FALLBACK
+                  //--------------------------------------------------
+
+                  await candidate.click({
+                    timeout: 7000,
+                    force: true,
+                  });
+                }
+
+                this.stats.clicks++;
+                this.stats.exactMatches++;
+
+                this.remember(query, {
+                  text: text || query,
+                  role: role || "",
+                  tag,
+                  id: query,
+                  dataRole,
+                  className,
+                  title,
+                  frameUrl: frame.url(),
+                  frameIndex,
+                  matchType: "direct-id-iframe",
+                  score: 100,
+                });
+
+                this.stopTimer(started);
+
+                this.log("==========================================");
+
+                this.log("DIRECT IFRAME ID CLICK SUCCESS:", query);
+
+                this.log("Frame:", frameIndex, frame.url());
+
+                this.log("==========================================");
+
+                return {
+                  success: true,
+                  action: "click",
+                  confidence: 100,
+                  matchType: "direct-id-iframe",
+                  verified: true,
+                  frameUrl: frame.url(),
+                  frameIndex,
+                  candidate: {
+                    id: query,
+                    text: text || query,
+                    role: role || "",
+                    tag,
+                    dataRole,
+                    className,
+                    title,
+                    score: 100,
+                  },
+                };
+              } catch (idCandidateError) {
+                this.log("Iframe ID candidate failed:", {
+                  frameIndex,
+                  idIndex,
+                  id: query,
+                  error: idCandidateError.message,
+                });
+              }
+            }
+          } catch (frameError) {
+            this.log("Iframe direct ID search failed:", {
+              frameIndex,
+              url: frame?.url?.() || "",
+              error: frameError.message,
+            });
+          }
+        }
+      } catch (iframeSearchError) {
+        this.log("ALL IFRAME ID SEARCH FAILED:", {
+          id: query,
+          error: iframeSearchError.message,
+        });
+      }
+
+      //==================================================
+      // LOGIN COMMAND
+      //==================================================
 
       const loginCommand =
         normalizedQuery.includes("login") ||
@@ -1536,6 +1852,10 @@ export default class Resolver {
         normalizedQuery.includes("submit login") ||
         normalizedQuery.includes("login form");
 
+      //==================================================
+      // LOGIN FORM RESOLVER
+      //==================================================
+
       if (loginCommand) {
         this.log("LOGIN COMMAND DETECTED:", query);
 
@@ -1543,10 +1863,6 @@ export default class Resolver {
 
         for (const frame of loginFrames) {
           try {
-            //------------------------------------------------
-            // Find visible forms
-            //------------------------------------------------
-
             const forms = frame.locator("form");
 
             const formCount = await forms.count();
@@ -1557,20 +1873,9 @@ export default class Resolver {
               try {
                 const form = forms.nth(formIndex);
 
-                //------------------------------------------------
-                // FORM MUST BE VISIBLE
-                //------------------------------------------------
-
                 if (!(await form.isVisible().catch(() => false))) {
                   continue;
                 }
-
-                //------------------------------------------------
-                // PASSWORD INPUT
-                //
-                // Strongest indicator that this is a login
-                // form.
-                //------------------------------------------------
 
                 const passwordInputs = form.locator('input[type="password"]');
 
@@ -1579,10 +1884,6 @@ export default class Resolver {
                 if (passwordCount === 0) {
                   continue;
                 }
-
-                //------------------------------------------------
-                // EMAIL / USERNAME / ID INPUT
-                //------------------------------------------------
 
                 const identityInputs = form.locator(
                   [
@@ -1605,63 +1906,17 @@ export default class Resolver {
 
                 const identityCount = await identityInputs.count();
 
-                //------------------------------------------------
-                // Find submit buttons inside THIS FORM
-                //------------------------------------------------
-
                 const submitButtons = form.locator(
                   'button[type="submit"], input[type="submit"]',
                 );
 
                 const submitCount = await submitButtons.count();
 
-                //------------------------------------------------
-                // LOG FORM DETAILS
-                //------------------------------------------------
-
-                this.log("LOGIN FORM CANDIDATE:", {
-                  frameUrl: frame.url(),
-                  formIndex,
-                  passwordCount,
-                  identityCount,
-                  submitCount,
-                });
-
-                //------------------------------------------------
-                // We need at minimum:
-                //
-                // password + submit
-                //
-                // Identity input gives additional confidence.
-                //------------------------------------------------
-
-                if (passwordCount === 0 || submitCount === 0) {
+                if (submitCount === 0) {
                   continue;
                 }
 
-                //------------------------------------------------
-                // Prefer form with identity + password.
-                //------------------------------------------------
-
-                const isStrongLoginForm =
-                  identityCount > 0 && passwordCount > 0;
-
-                //------------------------------------------------
-                // Find best submit button
-                //------------------------------------------------
-
                 let submitButton = null;
-
-                //------------------------------------------------
-                // First preference:
-                //
-                // button[type=submit] containing:
-                //
-                // Log in
-                // Login
-                // Sign in
-                // Submit
-                //------------------------------------------------
 
                 const submitTexts = [
                   "Log in",
@@ -1694,17 +1949,9 @@ export default class Resolver {
                     )
                   ) {
                     submitButton = candidate;
-
                     break;
                   }
                 }
-
-                //------------------------------------------------
-                // FALLBACK:
-                //
-                // First visible submit button inside the
-                // login form.
-                //------------------------------------------------
 
                 if (!submitButton) {
                   for (
@@ -1716,7 +1963,6 @@ export default class Resolver {
 
                     if (await candidate.isVisible().catch(() => false)) {
                       submitButton = candidate;
-
                       break;
                     }
                   }
@@ -1726,9 +1972,9 @@ export default class Resolver {
                   continue;
                 }
 
-                //------------------------------------------------
-                // Inspect button
-                //------------------------------------------------
+                if (await submitButton.isDisabled().catch(() => false)) {
+                  continue;
+                }
 
                 const buttonText = await submitButton
                   .innerText()
@@ -1742,51 +1988,12 @@ export default class Resolver {
                   .getAttribute("type")
                   .catch(() => null);
 
-                //------------------------------------------------
-                // LOG FINAL LOGIN BUTTON
-                //------------------------------------------------
-
-                this.log("LOGIN FORM SUBMIT BUTTON FOUND:", {
-                  text: buttonText,
-                  tag: buttonTag,
-                  type: buttonType,
-                  frameUrl: frame.url(),
-                  formIndex,
-                  strongLoginForm: isStrongLoginForm,
-                });
-
-                //------------------------------------------------
-                // Scroll into view
-                //------------------------------------------------
-
                 await submitButton.scrollIntoViewIfNeeded().catch(() => {});
-
-                //------------------------------------------------
-                // Ensure enabled
-                //------------------------------------------------
-
-                const disabled = await submitButton
-                  .isDisabled()
-                  .catch(() => false);
-
-                if (disabled) {
-                  this.log("Login submit button is disabled. Skipping.");
-
-                  continue;
-                }
-
-                //------------------------------------------------
-                // CLICK
-                //------------------------------------------------
 
                 await submitButton.click({
                   timeout: 7000,
                   force: false,
                 });
-
-                //------------------------------------------------
-                // SUCCESS
-                //------------------------------------------------
 
                 this.stats.clicks++;
                 this.stats.exactMatches++;
@@ -1804,60 +2011,118 @@ export default class Resolver {
 
                 return {
                   success: true,
-
                   action: "click",
-
                   confidence: 100,
-
                   matchType: "login-form-submit",
-
                   verified: true,
-
                   frameUrl: frame.url(),
-
                   candidate: {
                     text: buttonText || "Log in",
-
                     role: "button",
-
                     tag: buttonTag,
-
                     type: buttonType,
-
                     score: 100,
-
                     formIndex,
-
                     identityInputs: identityCount,
-
                     passwordInputs: passwordCount,
-
                     submitButtons: submitCount,
                   },
                 };
               } catch (formError) {
                 this.log("Login form candidate failed:", formError.message);
-
-                continue;
               }
             }
           } catch (frameError) {
             this.log("Login frame search failed:", frameError.message);
-
-            continue;
           }
         }
-
-        //--------------------------------------------------
-        // LOGIN FORM NOT FOUND
-        //--------------------------------------------------
-
-        this.log("No suitable login form submit button found.");
       }
 
-      //--------------------------------------------------
-      // 5. EXACT NORMALIZED DOM CLICK
-      //--------------------------------------------------
+      //==================================================
+      // THIRD-PARTY GAME IFRAME
+      //==================================================
+
+      this.log("==========================================");
+      this.log("THIRD-PARTY GAME IFRAME SEARCH");
+      this.log("TARGET:", query);
+      this.log("==========================================");
+
+      const gameFrameResult = await this.clickInsideThirdPartyGameIframe(
+        page,
+        query,
+        normalizedQuery,
+      );
+
+      if (gameFrameResult?.success) {
+        this.stats.clicks++;
+        this.stats.exactMatches++;
+
+        this.stopTimer(started);
+
+        return gameFrameResult;
+      }
+
+      //==================================================
+      // SECONDARY FRAME SEARCH
+      //==================================================
+
+      const allFrames = page.frames();
+
+      this.log("Fallback frame count:", allFrames.length);
+
+      for (let frameIndex = 0; frameIndex < allFrames.length; frameIndex++) {
+        const frame = allFrames[frameIndex];
+
+        try {
+          this.log("Checking fallback frame:", {
+            frameIndex,
+            url: frame.url(),
+          });
+
+          const result = await this.searchAndClickFrame(
+            frame,
+            query,
+            normalizedQuery,
+            page,
+            frameIndex,
+          );
+
+          if (result?.success) {
+            this.stats.clicks++;
+            this.stats.exactMatches++;
+
+            this.stopTimer(started);
+
+            return result;
+          }
+        } catch (frameError) {
+          this.log("Fallback frame failed:", {
+            frameIndex,
+            url: frame.url(),
+            error: frameError.message,
+          });
+        }
+      }
+
+      //==================================================
+      // WAIT FOR TARGET
+      //==================================================
+
+      try {
+        await this.waitForTarget(query, this.options.targetWaitTimeout);
+      } catch (waitError) {
+        this.log("waitForTarget did not find target:", waitError.message);
+      }
+
+      //==================================================
+      // FRESH DOM
+      //==================================================
+
+      await this.ensureFreshDOM();
+
+      //==================================================
+      // NORMAL PAGE EXACT CLICK
+      //==================================================
 
       const exact = await this.clickExactTextOrParent(query);
 
@@ -1869,17 +2134,11 @@ export default class Resolver {
 
         return {
           success: true,
-
           action: "click",
-
           confidence: 100,
-
           matchType: exact.strategy,
-
           verified: true,
-
           frameUrl: exact.frameUrl,
-
           candidate: {
             text: query,
             score: 100,
@@ -1887,150 +2146,9 @@ export default class Resolver {
         };
       }
 
-      //--------------------------------------------------
-      // 6. NESTED TEXT -> CLICKABLE PARENT
-      //--------------------------------------------------
-
-      const frames = page.frames();
-
-      let nestedClickSuccess = false;
-
-      let nestedFrameUrl = null;
-
-      for (const frame of frames) {
-        try {
-          //------------------------------------------------
-          // Find exact visible text
-          //------------------------------------------------
-
-          const textLocator = frame
-            .getByText(query, {
-              exact: true,
-            })
-            .first();
-
-          if (!(await textLocator.count())) {
-            continue;
-          }
-
-          if (!(await textLocator.isVisible().catch(() => false))) {
-            continue;
-          }
-
-          //------------------------------------------------
-          // Find nearest clickable parent
-          //------------------------------------------------
-
-          const clickable = textLocator
-            .locator(
-              `xpath=ancestor::*[
-                  self::button
-                  or self::a
-                  or @role="button"
-                  or @role="link"
-                  or @onclick
-                  or @tabindex
-                ][1]`,
-            )
-            .first();
-
-          if (!(await clickable.count())) {
-            continue;
-          }
-
-          if (!(await clickable.isVisible().catch(() => false))) {
-            continue;
-          }
-
-          //------------------------------------------------
-          // Scroll
-          //------------------------------------------------
-
-          await clickable.scrollIntoViewIfNeeded().catch(() => {});
-
-          //------------------------------------------------
-          // Inspect
-          //------------------------------------------------
-
-          const tagName = await clickable
-            .evaluate((el) => String(el.tagName || "").toLowerCase())
-            .catch(() => "");
-
-          const buttonType = await clickable
-            .getAttribute("type")
-            .catch(() => null);
-
-          //------------------------------------------------
-          // Do not blindly click if it is not actually
-          // clickable.
-          //------------------------------------------------
-
-          this.log("Nested clickable candidate:", {
-            query,
-            tagName,
-            buttonType,
-            frameUrl: frame.url(),
-          });
-
-          //------------------------------------------------
-          // CLICK
-          //------------------------------------------------
-
-          await clickable.click({
-            timeout: 5000,
-            force: false,
-          });
-
-          nestedClickSuccess = true;
-
-          nestedFrameUrl = frame.url();
-
-          this.log("Nested text parent click SUCCESS:", query);
-
-          break;
-        } catch (error) {
-          this.log("Nested text parent attempt failed:", error.message);
-
-          continue;
-        }
-      }
-
-      //--------------------------------------------------
-      // NESTED CLICK SUCCESS
-      //--------------------------------------------------
-
-      if (nestedClickSuccess) {
-        this.stats.clicks++;
-        this.stats.exactMatches++;
-
-        this.stopTimer(started);
-
-        return {
-          success: true,
-
-          action: "click",
-
-          confidence: 100,
-
-          matchType: "nested-text-clickable-parent",
-
-          verified: true,
-
-          frameUrl: nestedFrameUrl,
-
-          candidate: {
-            text: query,
-
-            score: 100,
-
-            tag: "button",
-          },
-        };
-      }
-
-      //--------------------------------------------------
-      // 7. BUILD DOM INDEX
-      //--------------------------------------------------
+      //==================================================
+      // BUILD DOM INDEX
+      //==================================================
 
       const dom = await this.buildDOMIndex(ctx?.retry > 0);
 
@@ -2040,9 +2158,9 @@ export default class Resolver {
         throw new Error(`No DOM elements found while searching for '${query}'`);
       }
 
-      //--------------------------------------------------
-      // 8. EXACT INDEX MATCH
-      //--------------------------------------------------
+      //==================================================
+      // EXACT INDEX
+      //==================================================
 
       const exactCandidates = this.findExactClickCandidates(query, elements);
 
@@ -2061,31 +2179,23 @@ export default class Resolver {
 
           return {
             success: true,
-
             action: "click",
-
             confidence: 100,
-
             matchType: "exact-index",
-
             verified: execution.verified,
-
             candidate: {
               text: candidate.text,
-
               role: candidate.role,
-
               tag: candidate.tag,
-
               score: 100,
             },
           };
         }
       }
 
-      //--------------------------------------------------
-      // 9. SCORING ENGINE
-      //--------------------------------------------------
+      //==================================================
+      // SCORING
+      //==================================================
 
       const scored = await this.resolveByScoring(query, elements);
 
@@ -2097,38 +2207,26 @@ export default class Resolver {
 
       this.log("Scoring candidate:", {
         requested: query,
-
         matched: finalCandidate.text,
-
         score: finalCandidate.score,
-
         matchType: finalCandidate.matchType,
       });
-
-      //--------------------------------------------------
-      // Count fuzzy match
-      //--------------------------------------------------
 
       if (!finalCandidate.exactMatch && finalCandidate.score < 100) {
         this.stats.fuzzyMatches++;
       }
 
-      //--------------------------------------------------
-      // 10. LOW CONFIDENCE
-      //--------------------------------------------------
+      //==================================================
+      // PLANNER
+      //==================================================
 
       if (Number(finalCandidate.score || 0) < this.options.plannerThreshold) {
         this.stats.plannerCalls++;
 
-        this.log("Low scoring match. Planner fallback.");
-
         const plan = await this.planner.plan(`Click "${query}"`, {
           action: "click",
-
           target: query,
-
           ranked: scored.ranked,
-
           dom: elements,
         });
 
@@ -2136,8 +2234,6 @@ export default class Resolver {
           const step = plan.steps[0];
 
           const plannerTarget = step.target || step.text || query;
-
-          this.log("Planner target:", plannerTarget);
 
           const plannerScored = await this.resolveByScoring(
             plannerTarget,
@@ -2156,9 +2252,9 @@ export default class Resolver {
         }
       }
 
-      //--------------------------------------------------
-      // 11. CONFIDENCE
-      //--------------------------------------------------
+      //==================================================
+      // CONFIDENCE
+      //==================================================
 
       const score = Number(finalCandidate?.score || 0);
 
@@ -2168,9 +2264,9 @@ export default class Resolver {
         );
       }
 
-      //--------------------------------------------------
-      // 12. EXECUTE
-      //--------------------------------------------------
+      //==================================================
+      // EXECUTE
+      //==================================================
 
       const execution = await this.executeClickCandidate(finalCandidate, query);
 
@@ -2178,9 +2274,9 @@ export default class Resolver {
         throw new Error(`Playwright could not click '${query}'`);
       }
 
-      //--------------------------------------------------
-      // 13. LEARN
-      //--------------------------------------------------
+      //==================================================
+      // LEARN
+      //==================================================
 
       this.remember(query, finalCandidate);
 
@@ -2188,32 +2284,874 @@ export default class Resolver {
 
       this.stopTimer(started);
 
-      //--------------------------------------------------
-      // 14. RETURN
-      //--------------------------------------------------
-
       return {
         success: true,
-
         action: "click",
-
         confidence: Number(score.toFixed(2)),
-
         matchType: finalCandidate.matchType || "scored",
-
         verified: execution.verified,
-
         candidate: {
           text: finalCandidate.text,
-
           role: finalCandidate.role,
-
           tag: finalCandidate.tag,
-
           score,
         },
       };
     });
+  }
+
+  /* ======================================================
+   THIRD-PARTY GAME IFRAME
+   ====================================================== */
+
+  async clickInsideThirdPartyGameIframe(page, query, normalizedQuery) {
+    const iframeSelector = 'iframe[data-test-id="thirdparty_game_iframe"]';
+
+    this.log("Looking for:", iframeSelector);
+
+    let iframeLocator = page.locator(iframeSelector);
+
+    let iframeCount = await iframeLocator.count().catch(() => 0);
+
+    this.log("thirdparty_game_iframe count:", iframeCount);
+
+    //--------------------------------------------------
+    // Wait for iframe to appear.
+    //
+    // The iframe is often inserted after the casino
+    // page itself has already loaded.
+    //--------------------------------------------------
+
+    if (iframeCount === 0) {
+      try {
+        await page.locator(iframeSelector).first().waitFor({
+          state: "attached",
+          timeout: 15000,
+        });
+
+        iframeCount = await page
+          .locator(iframeSelector)
+          .count()
+          .catch(() => 0);
+      } catch (error) {
+        this.log("Game iframe did not appear:", error.message);
+
+        return null;
+      }
+    }
+
+    if (iframeCount === 0) {
+      return null;
+    }
+
+    //--------------------------------------------------
+    // Process every matching game iframe.
+    //--------------------------------------------------
+
+    for (let iframeIndex = 0; iframeIndex < iframeCount; iframeIndex++) {
+      try {
+        iframeLocator = page.locator(iframeSelector).nth(iframeIndex);
+
+        //------------------------------------------------
+        // Ensure attached
+        //------------------------------------------------
+
+        await iframeLocator
+          .waitFor({
+            state: "attached",
+            timeout: 10000,
+          })
+          .catch(() => {});
+
+        //------------------------------------------------
+        // Wait for visible
+        //------------------------------------------------
+
+        await iframeLocator
+          .waitFor({
+            state: "visible",
+            timeout: 10000,
+          })
+          .catch(() => {});
+
+        //------------------------------------------------
+        // Read iframe attributes
+        //------------------------------------------------
+
+        const src = await iframeLocator.getAttribute("src").catch(() => null);
+
+        const testId = await iframeLocator
+          .getAttribute("data-test-id")
+          .catch(() => null);
+
+        this.log("GAME IFRAME FOUND:", {
+          iframeIndex,
+          testId,
+          src,
+        });
+
+        //------------------------------------------------
+        // CRITICAL:
+        //
+        // Obtain the actual Frame object.
+        //
+        // Do NOT rely only on page.frames().
+        //------------------------------------------------
+
+        let frame = null;
+
+        for (let attempt = 1; attempt <= 20; attempt++) {
+          try {
+            frame = await iframeLocator.contentFrame();
+
+            if (frame) {
+              break;
+            }
+          } catch (error) {
+            this.log("contentFrame attempt failed:", {
+              attempt,
+              error: error.message,
+            });
+          }
+
+          await page.waitForTimeout(500).catch(() => {});
+        }
+
+        if (!frame) {
+          this.log("Unable to obtain contentFrame:", iframeIndex);
+
+          continue;
+        }
+
+        this.log("ACTUAL GAME FRAME ATTACHED:", {
+          iframeIndex,
+          frameUrl: frame.url(),
+        });
+
+        //------------------------------------------------
+        // Wait for document/body.
+        //------------------------------------------------
+
+        try {
+          await frame.locator("body").waitFor({
+            state: "attached",
+            timeout: 15000,
+          });
+        } catch (error) {
+          this.log("Game iframe body wait:", error.message);
+        }
+
+        //------------------------------------------------
+        // Give SPA game time to render.
+        //------------------------------------------------
+
+        await page.waitForTimeout(1000).catch(() => {});
+
+        //------------------------------------------------
+        // SEARCH MAIN GAME FRAME
+        //------------------------------------------------
+
+        const result = await this.searchAndClickFrame(
+          frame,
+          query,
+          normalizedQuery,
+          page,
+          `game-${iframeIndex}`,
+        );
+
+        if (result?.success) {
+          return result;
+        }
+
+        //------------------------------------------------
+        // SEARCH NESTED FRAMES
+        //------------------------------------------------
+
+        const nestedFrames = frame.childFrames();
+
+        this.log("Nested game frames:", nestedFrames.length);
+
+        for (
+          let nestedIndex = 0;
+          nestedIndex < nestedFrames.length;
+          nestedIndex++
+        ) {
+          const nestedFrame = nestedFrames[nestedIndex];
+
+          try {
+            this.log("Checking nested game frame:", {
+              iframeIndex,
+              nestedIndex,
+              url: nestedFrame.url(),
+            });
+
+            const nestedResult = await this.searchAndClickFrame(
+              nestedFrame,
+              query,
+              normalizedQuery,
+              page,
+              `game-${iframeIndex}-${nestedIndex}`,
+            );
+
+            if (nestedResult?.success) {
+              return nestedResult;
+            }
+
+            //------------------------------------------------
+            // One more level.
+            //------------------------------------------------
+
+            const deepFrames = nestedFrame.childFrames();
+
+            for (
+              let deepIndex = 0;
+              deepIndex < deepFrames.length;
+              deepIndex++
+            ) {
+              const deepFrame = deepFrames[deepIndex];
+
+              const deepResult = await this.searchAndClickFrame(
+                deepFrame,
+                query,
+                normalizedQuery,
+                page,
+                `game-${iframeIndex}-${nestedIndex}-${deepIndex}`,
+              );
+
+              if (deepResult?.success) {
+                return deepResult;
+              }
+            }
+          } catch (nestedError) {
+            this.log("Nested game frame failed:", nestedError.message);
+          }
+        }
+      } catch (iframeError) {
+        this.log("Third-party iframe processing failed:", {
+          iframeIndex,
+          error: iframeError.message,
+        });
+      }
+    }
+
+    return null;
+  }
+
+  /* ======================================================
+   SEARCH ONE FRAME
+   ====================================================== */
+
+  async searchAndClickFrame(
+    frame,
+    query,
+    normalizedQuery,
+    page,
+    frameIdentifier,
+  ) {
+    if (!frame) {
+      return null;
+    }
+
+    this.log("==========================================");
+
+    this.log("SEARCHING FRAME:", {
+      frameIdentifier,
+      url: frame.url(),
+      query,
+    });
+
+    this.log("==========================================");
+
+    //--------------------------------------------------
+    // Wait until frame DOM exists.
+    //--------------------------------------------------
+
+    try {
+      await frame.locator("body").waitFor({
+        state: "attached",
+        timeout: 10000,
+      });
+    } catch (error) {
+      this.log("Frame body not ready:", error.message);
+    }
+
+    //--------------------------------------------------
+    // CATEGORY NAVIGATOR
+    //
+    // This is the important resolver for:
+    //
+    // Baccarat & Sic Bo
+    //--------------------------------------------------
+
+    const navigator = frame.locator('[data-role="category-navigator"]');
+
+    const navigatorCount = await navigator.count().catch(() => 0);
+
+    this.log("Category navigator count:", {
+      frameIdentifier,
+      navigatorCount,
+    });
+
+    if (navigatorCount > 0) {
+      const categories = navigator.locator("li");
+
+      const categoryCount = await categories.count().catch(() => 0);
+
+      this.log("Category count:", {
+        frameIdentifier,
+        categoryCount,
+      });
+
+      for (
+        let categoryIndex = 0;
+        categoryIndex < categoryCount;
+        categoryIndex++
+      ) {
+        try {
+          const category = categories.nth(categoryIndex);
+
+          const rawText = await category.textContent().catch(() => "");
+
+          const categoryText = this.normalizeResolverText(rawText || "");
+
+          this.log("CATEGORY INSIDE GAME FRAME:", {
+            categoryIndex,
+            rawText,
+            categoryText,
+            wanted: normalizedQuery,
+          });
+
+          if (categoryText !== normalizedQuery) {
+            continue;
+          }
+
+          if (!(await category.isVisible().catch(() => false))) {
+            continue;
+          }
+
+          //------------------------------------------------
+          // IMPORTANT:
+          //
+          // The category <li> may not itself have a
+          // button/a/role.
+          //
+          // Your supplied HTML starts with:
+          //
+          // <li class="zODTqC PgbkKm">
+          //   <div class="p6NDON" data-active="false">
+          //
+          // Therefore we explicitly test the DIV.
+          //------------------------------------------------
+
+          const possibleTargets = [
+            category.locator("[data-active]").first(),
+
+            category.locator('[role="button"]').first(),
+
+            category.locator("button").first(),
+
+            category.locator("a").first(),
+
+            category.locator("div").first(),
+
+            category,
+          ];
+
+          let clickable = null;
+
+          for (const target of possibleTargets) {
+            if ((await target.count().catch(() => 0)) === 0) {
+              continue;
+            }
+
+            if (await target.isVisible().catch(() => false)) {
+              clickable = target;
+              break;
+            }
+          }
+
+          if (!clickable) {
+            this.log("No visible category target:", categoryIndex);
+
+            continue;
+          }
+
+          await clickable.scrollIntoViewIfNeeded().catch(() => {});
+
+          //------------------------------------------------
+          // Inspect.
+          //------------------------------------------------
+
+          const tagName = await clickable
+            .evaluate((el) => String(el.tagName || "").toLowerCase())
+            .catch(() => "");
+
+          const role = await clickable.getAttribute("role").catch(() => null);
+
+          const className = await clickable
+            .getAttribute("class")
+            .catch(() => null);
+
+          const dataActive = await clickable
+            .getAttribute("data-active")
+            .catch(() => null);
+
+          this.log("GAME CATEGORY TARGET:", {
+            query,
+            frameIdentifier,
+            categoryIndex,
+            tagName,
+            role,
+            className,
+            dataActive,
+          });
+
+          //------------------------------------------------
+          // ATTEMPT 1
+          // Normal Playwright click.
+          //------------------------------------------------
+
+          try {
+            await clickable.click({
+              timeout: 5000,
+              force: false,
+            });
+
+            await page.waitForTimeout(700).catch(() => {});
+
+            this.log("CATEGORY NORMAL CLICK SUCCESS");
+
+            return {
+              success: true,
+              action: "click",
+              confidence: 100,
+              matchType: "thirdparty-game-category",
+              verified: true,
+              frameUrl: frame.url(),
+              candidate: {
+                text: rawText || query,
+                role,
+                tag: tagName,
+                className,
+                dataActive,
+                score: 100,
+                frameIdentifier,
+                categoryIndex,
+              },
+            };
+          } catch (normalClickError) {
+            this.log("Normal iframe click failed:", normalClickError.message);
+          }
+
+          //------------------------------------------------
+          // ATTEMPT 2
+          // Force click.
+          //------------------------------------------------
+
+          try {
+            await clickable.click({
+              timeout: 5000,
+              force: true,
+            });
+
+            await page.waitForTimeout(700).catch(() => {});
+
+            this.log("CATEGORY FORCE CLICK SUCCESS");
+
+            return {
+              success: true,
+              action: "click",
+              confidence: 100,
+              matchType: "thirdparty-game-category-force",
+              verified: true,
+              frameUrl: frame.url(),
+              candidate: {
+                text: rawText || query,
+                role,
+                tag: tagName,
+                className,
+                dataActive,
+                score: 100,
+                frameIdentifier,
+                categoryIndex,
+              },
+            };
+          } catch (forceError) {
+            this.log("Force iframe click failed:", forceError.message);
+          }
+
+          //------------------------------------------------
+          // ATTEMPT 3
+          // Native DOM click.
+          //
+          // This is useful for React/Vue elements where
+          // Playwright's pointer action is blocked by an
+          // overlay or transformed element.
+          //------------------------------------------------
+
+          try {
+            await clickable.evaluate((el) => {
+              el.scrollIntoView({
+                block: "center",
+                inline: "center",
+              });
+
+              el.click();
+            });
+
+            await page.waitForTimeout(700).catch(() => {});
+
+            this.log("CATEGORY DOM CLICK SUCCESS");
+
+            return {
+              success: true,
+              action: "click",
+              confidence: 100,
+              matchType: "thirdparty-game-category-dom",
+              verified: true,
+              frameUrl: frame.url(),
+              candidate: {
+                text: rawText || query,
+                role,
+                tag: tagName,
+                className,
+                dataActive,
+                score: 100,
+                frameIdentifier,
+                categoryIndex,
+              },
+            };
+          } catch (domError) {
+            this.log("DOM click failed:", domError.message);
+          }
+
+          //------------------------------------------------
+          // ATTEMPT 4
+          // Dispatch mouse events from inside the frame.
+          //------------------------------------------------
+
+          try {
+            await clickable.evaluate((el) => {
+              const rect = el.getBoundingClientRect();
+
+              const x = rect.left + rect.width / 2;
+
+              const y = rect.top + rect.height / 2;
+
+              const events = [
+                "pointerover",
+                "pointerenter",
+                "mouseover",
+                "mousemove",
+                "pointerdown",
+                "mousedown",
+                "pointerup",
+                "mouseup",
+                "click",
+              ];
+
+              for (const type of events) {
+                el.dispatchEvent(
+                  new MouseEvent(type, {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window,
+                    clientX: x,
+                    clientY: y,
+                    button: 0,
+                  }),
+                );
+              }
+            });
+
+            await page.waitForTimeout(700).catch(() => {});
+
+            this.log("CATEGORY EVENT DISPATCH SUCCESS");
+
+            return {
+              success: true,
+              action: "click",
+              confidence: 100,
+              matchType: "thirdparty-game-category-events",
+              verified: true,
+              frameUrl: frame.url(),
+              candidate: {
+                text: rawText || query,
+                role,
+                tag: tagName,
+                className,
+                dataActive,
+                score: 100,
+                frameIdentifier,
+                categoryIndex,
+              },
+            };
+          } catch (eventError) {
+            this.log("Event dispatch failed:", eventError.message);
+          }
+
+          //------------------------------------------------
+          // ATTEMPT 5
+          // Coordinate click inside iframe.
+          //
+          // This is the final pointer-level fallback.
+          //------------------------------------------------
+
+          try {
+            const box = await clickable.boundingBox();
+
+            const iframeElement = page.locator(
+              'iframe[data-test-id="thirdparty_game_iframe"]',
+            );
+
+            const iframeBox = await iframeElement
+              .boundingBox()
+              .catch(() => null);
+
+            if (box && iframeBox) {
+              const x = iframeBox.x + box.x + box.width / 2;
+
+              const y = iframeBox.y + box.y + box.height / 2;
+
+              this.log("COORDINATE CLICK:", {
+                x,
+                y,
+                iframeBox,
+                elementBox: box,
+              });
+
+              await page.mouse.click(x, y);
+
+              await page.waitForTimeout(700).catch(() => {});
+
+              this.log("CATEGORY COORDINATE CLICK SUCCESS");
+
+              return {
+                success: true,
+                action: "click",
+                confidence: 100,
+                matchType: "thirdparty-game-category-coordinate",
+                verified: true,
+                frameUrl: frame.url(),
+                candidate: {
+                  text: rawText || query,
+                  role,
+                  tag: tagName,
+                  className,
+                  dataActive,
+                  score: 100,
+                  frameIdentifier,
+                  categoryIndex,
+                },
+              };
+            }
+          } catch (coordinateError) {
+            this.log(
+              "Coordinate iframe click failed:",
+              coordinateError.message,
+            );
+          }
+        } catch (categoryError) {
+          this.log("Game category candidate failed:", categoryError.message);
+        }
+      }
+    }
+
+    //--------------------------------------------------
+    // GENERIC TEXT SEARCH INSIDE THIS FRAME
+    //--------------------------------------------------
+
+    const candidates = frame.locator(
+      [
+        "button",
+        "a",
+        '[role="button"]',
+        '[role="link"]',
+        "li",
+        "[tabindex]",
+        "div",
+        "span",
+      ].join(","),
+    );
+
+    const candidateCount = await candidates.count().catch(() => 0);
+
+    this.log("Generic frame candidates:", {
+      frameIdentifier,
+      candidateCount,
+    });
+
+    const maxCandidates = Math.min(candidateCount, 2500);
+
+    for (let index = 0; index < maxCandidates; index++) {
+      try {
+        const candidate = candidates.nth(index);
+
+        if (!(await candidate.isVisible().catch(() => false))) {
+          continue;
+        }
+
+        const rawText = await candidate.textContent().catch(() => "");
+
+        const candidateText = this.normalizeResolverText(rawText || "");
+
+        if (candidateText !== normalizedQuery) {
+          continue;
+        }
+
+        let clickable = candidate;
+
+        const tagName = await candidate
+          .evaluate((el) => String(el.tagName || "").toLowerCase())
+          .catch(() => "");
+
+        const role = await candidate.getAttribute("role").catch(() => null);
+
+        const directClickable =
+          tagName === "button" ||
+          tagName === "a" ||
+          role === "button" ||
+          role === "link" ||
+          (await candidate.getAttribute("tabindex").catch(() => null)) !== null;
+
+        if (!directClickable) {
+          const parent = candidate
+            .locator(
+              `xpath=ancestor::*[
+                self::button
+                or self::a
+                or @role="button"
+                or @role="link"
+                or @onclick
+                or @tabindex
+              ][1]`,
+            )
+            .first();
+
+          if (await parent.count().catch(() => 0)) {
+            clickable = parent;
+          }
+        }
+
+        if (!(await clickable.isVisible().catch(() => false))) {
+          continue;
+        }
+
+        await clickable.scrollIntoViewIfNeeded().catch(() => {});
+
+        //------------------------------------------------
+        // Normal click.
+        //------------------------------------------------
+
+        try {
+          await clickable.click({
+            timeout: 5000,
+            force: false,
+          });
+
+          await page.waitForTimeout(500).catch(() => {});
+
+          const finalTag = await clickable
+            .evaluate((el) => String(el.tagName || "").toLowerCase())
+            .catch(() => "");
+
+          const finalRole = await clickable
+            .getAttribute("role")
+            .catch(() => null);
+
+          return {
+            success: true,
+            action: "click",
+            confidence: 100,
+            matchType: "thirdparty-game-text",
+            verified: true,
+            frameUrl: frame.url(),
+            candidate: {
+              text: rawText || query,
+              role: finalRole,
+              tag: finalTag,
+              score: 100,
+              frameIdentifier,
+              candidateIndex: index,
+            },
+          };
+        } catch (normalError) {
+          this.log("Generic normal click failed:", normalError.message);
+        }
+
+        //------------------------------------------------
+        // Force.
+        //------------------------------------------------
+
+        try {
+          await clickable.click({
+            timeout: 5000,
+            force: true,
+          });
+
+          await page.waitForTimeout(500).catch(() => {});
+
+          return {
+            success: true,
+            action: "click",
+            confidence: 100,
+            matchType: "thirdparty-game-text-force",
+            verified: true,
+            frameUrl: frame.url(),
+            candidate: {
+              text: rawText || query,
+              role,
+              tag: tagName,
+              score: 100,
+              frameIdentifier,
+              candidateIndex: index,
+            },
+          };
+        } catch (forceError) {
+          this.log("Generic force click failed:", forceError.message);
+        }
+
+        //------------------------------------------------
+        // DOM click.
+        //------------------------------------------------
+
+        try {
+          await clickable.evaluate((el) => {
+            el.scrollIntoView({
+              block: "center",
+              inline: "center",
+            });
+
+            el.click();
+          });
+
+          await page.waitForTimeout(500).catch(() => {});
+
+          return {
+            success: true,
+            action: "click",
+            confidence: 100,
+            matchType: "thirdparty-game-text-dom",
+            verified: true,
+            frameUrl: frame.url(),
+            candidate: {
+              text: rawText || query,
+              role,
+              tag: tagName,
+              score: 100,
+              frameIdentifier,
+              candidateIndex: index,
+            },
+          };
+        } catch (domError) {
+          this.log("Generic DOM click failed:", domError.message);
+        }
+      } catch (candidateError) {
+        this.log("Generic frame candidate failed:", candidateError.message);
+      }
+    }
+
+    return null;
   }
 
   //==========================================================
