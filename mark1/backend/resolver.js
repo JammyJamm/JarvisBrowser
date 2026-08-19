@@ -1453,20 +1453,25 @@ export default class Resolver {
   //==========================================================
   // CLICK SMART
   //
-  // MAIN CLICK API
+  // IMPORTANT LOGIN FIX
   //
-  // IMPORTANT:
-  // --------------------------------------------------------
-  // The target-aware wait happens BEFORE DOM resolution.
+  // For login commands such as:
   //
-  // This fixes:
+  //   Click "Log in"
+  //   Click the "Log in" button
+  //   Submit login form
+  //   Click login
   //
-  // Navigate
-  //    ↓
-  // Click immediately
+  // We first locate the actual LOGIN FORM.
   //
-  // where the page is technically loaded but the SPA UI
-  // has not rendered the requested target yet.
+  // Login form is identified using:
+  //   1. visible form
+  //   2. password input
+  //   3. email / username / ID input
+  //   4. submit button
+  //
+  // This prevents multiple "Log in" buttons elsewhere on
+  // the page from being selected.
   //==========================================================
 
   async clickSmart(input) {
@@ -1488,15 +1493,11 @@ export default class Resolver {
       const query = String(input).trim();
 
       this.log("==========================================");
-
       this.log("CLICK SMART:", query);
-
       this.log("==========================================");
 
       //--------------------------------------------------
       // 1. WAIT FOR TARGET
-      //
-      // Critical for multi-step navigation.
       //--------------------------------------------------
 
       await this.waitForTarget(query, this.options.targetWaitTimeout);
@@ -1508,14 +1509,360 @@ export default class Resolver {
       await this.ensureFreshDOM();
 
       //--------------------------------------------------
-      // 3. EXACT NORMALIZED DOM CLICK
+      // 3. GET PAGE
+      //--------------------------------------------------
+
+      const page = await this.mcp.getPage();
+
+      if (!page || page.isClosed()) {
+        throw new Error("Browser page is closed");
+      }
+
+      //--------------------------------------------------
+      // 4. LOGIN FORM SUBMIT RESOLVER
+      //
+      // THIS IS THE IMPORTANT FIX.
+      //
+      // Do this BEFORE generic "Log in" text matching.
+      //--------------------------------------------------
+
+      const normalizedQuery = this.normalizeResolverText(query);
+
+      const loginCommand =
+        normalizedQuery.includes("login") ||
+        normalizedQuery.includes("log in") ||
+        normalizedQuery.includes("signin") ||
+        normalizedQuery.includes("sign in") ||
+        normalizedQuery.includes("submit login") ||
+        normalizedQuery.includes("login form");
+
+      if (loginCommand) {
+        this.log("LOGIN COMMAND DETECTED:", query);
+
+        const loginFrames = page.frames();
+
+        for (const frame of loginFrames) {
+          try {
+            //------------------------------------------------
+            // Find visible forms
+            //------------------------------------------------
+
+            const forms = frame.locator("form");
+
+            const formCount = await forms.count();
+
+            this.log("Login form count:", formCount, "frame:", frame.url());
+
+            for (let formIndex = 0; formIndex < formCount; formIndex++) {
+              try {
+                const form = forms.nth(formIndex);
+
+                //------------------------------------------------
+                // FORM MUST BE VISIBLE
+                //------------------------------------------------
+
+                if (!(await form.isVisible().catch(() => false))) {
+                  continue;
+                }
+
+                //------------------------------------------------
+                // PASSWORD INPUT
+                //
+                // Strongest indicator that this is a login
+                // form.
+                //------------------------------------------------
+
+                const passwordInputs = form.locator('input[type="password"]');
+
+                const passwordCount = await passwordInputs.count();
+
+                if (passwordCount === 0) {
+                  continue;
+                }
+
+                //------------------------------------------------
+                // EMAIL / USERNAME / ID INPUT
+                //------------------------------------------------
+
+                const identityInputs = form.locator(
+                  [
+                    'input[type="email"]',
+                    'input[name*="email" i]',
+                    'input[name*="user" i]',
+                    'input[name*="login" i]',
+                    'input[name*="username" i]',
+                    'input[name*="identifier" i]',
+                    'input[id*="email" i]',
+                    'input[id*="user" i]',
+                    'input[id*="login" i]',
+                    'input[id*="username" i]',
+                    'input[placeholder*="email" i]',
+                    'input[placeholder*="user" i]',
+                    'input[placeholder*="login" i]',
+                    'input[placeholder*="id" i]',
+                  ].join(","),
+                );
+
+                const identityCount = await identityInputs.count();
+
+                //------------------------------------------------
+                // Find submit buttons inside THIS FORM
+                //------------------------------------------------
+
+                const submitButtons = form.locator(
+                  'button[type="submit"], input[type="submit"]',
+                );
+
+                const submitCount = await submitButtons.count();
+
+                //------------------------------------------------
+                // LOG FORM DETAILS
+                //------------------------------------------------
+
+                this.log("LOGIN FORM CANDIDATE:", {
+                  frameUrl: frame.url(),
+                  formIndex,
+                  passwordCount,
+                  identityCount,
+                  submitCount,
+                });
+
+                //------------------------------------------------
+                // We need at minimum:
+                //
+                // password + submit
+                //
+                // Identity input gives additional confidence.
+                //------------------------------------------------
+
+                if (passwordCount === 0 || submitCount === 0) {
+                  continue;
+                }
+
+                //------------------------------------------------
+                // Prefer form with identity + password.
+                //------------------------------------------------
+
+                const isStrongLoginForm =
+                  identityCount > 0 && passwordCount > 0;
+
+                //------------------------------------------------
+                // Find best submit button
+                //------------------------------------------------
+
+                let submitButton = null;
+
+                //------------------------------------------------
+                // First preference:
+                //
+                // button[type=submit] containing:
+                //
+                // Log in
+                // Login
+                // Sign in
+                // Submit
+                //------------------------------------------------
+
+                const submitTexts = [
+                  "Log in",
+                  "Login",
+                  "Sign in",
+                  "Signin",
+                  "Submit",
+                ];
+
+                for (
+                  let buttonIndex = 0;
+                  buttonIndex < submitCount;
+                  buttonIndex++
+                ) {
+                  const candidate = submitButtons.nth(buttonIndex);
+
+                  if (!(await candidate.isVisible().catch(() => false))) {
+                    continue;
+                  }
+
+                  const text = await candidate.innerText().catch(() => "");
+
+                  const normalizedText = this.normalizeResolverText(text);
+
+                  if (
+                    submitTexts.some(
+                      (submitText) =>
+                        this.normalizeResolverText(submitText) ===
+                        normalizedText,
+                    )
+                  ) {
+                    submitButton = candidate;
+
+                    break;
+                  }
+                }
+
+                //------------------------------------------------
+                // FALLBACK:
+                //
+                // First visible submit button inside the
+                // login form.
+                //------------------------------------------------
+
+                if (!submitButton) {
+                  for (
+                    let buttonIndex = 0;
+                    buttonIndex < submitCount;
+                    buttonIndex++
+                  ) {
+                    const candidate = submitButtons.nth(buttonIndex);
+
+                    if (await candidate.isVisible().catch(() => false)) {
+                      submitButton = candidate;
+
+                      break;
+                    }
+                  }
+                }
+
+                if (!submitButton) {
+                  continue;
+                }
+
+                //------------------------------------------------
+                // Inspect button
+                //------------------------------------------------
+
+                const buttonText = await submitButton
+                  .innerText()
+                  .catch(() => "");
+
+                const buttonTag = await submitButton
+                  .evaluate((el) => String(el.tagName || "").toLowerCase())
+                  .catch(() => "");
+
+                const buttonType = await submitButton
+                  .getAttribute("type")
+                  .catch(() => null);
+
+                //------------------------------------------------
+                // LOG FINAL LOGIN BUTTON
+                //------------------------------------------------
+
+                this.log("LOGIN FORM SUBMIT BUTTON FOUND:", {
+                  text: buttonText,
+                  tag: buttonTag,
+                  type: buttonType,
+                  frameUrl: frame.url(),
+                  formIndex,
+                  strongLoginForm: isStrongLoginForm,
+                });
+
+                //------------------------------------------------
+                // Scroll into view
+                //------------------------------------------------
+
+                await submitButton.scrollIntoViewIfNeeded().catch(() => {});
+
+                //------------------------------------------------
+                // Ensure enabled
+                //------------------------------------------------
+
+                const disabled = await submitButton
+                  .isDisabled()
+                  .catch(() => false);
+
+                if (disabled) {
+                  this.log("Login submit button is disabled. Skipping.");
+
+                  continue;
+                }
+
+                //------------------------------------------------
+                // CLICK
+                //------------------------------------------------
+
+                await submitButton.click({
+                  timeout: 7000,
+                  force: false,
+                });
+
+                //------------------------------------------------
+                // SUCCESS
+                //------------------------------------------------
+
+                this.stats.clicks++;
+                this.stats.exactMatches++;
+
+                this.remember(query, {
+                  text: buttonText || "Log in",
+                  role: "button",
+                  tag: buttonTag,
+                  type: buttonType,
+                  matchType: "login-form-submit",
+                  score: 100,
+                });
+
+                this.stopTimer(started);
+
+                return {
+                  success: true,
+
+                  action: "click",
+
+                  confidence: 100,
+
+                  matchType: "login-form-submit",
+
+                  verified: true,
+
+                  frameUrl: frame.url(),
+
+                  candidate: {
+                    text: buttonText || "Log in",
+
+                    role: "button",
+
+                    tag: buttonTag,
+
+                    type: buttonType,
+
+                    score: 100,
+
+                    formIndex,
+
+                    identityInputs: identityCount,
+
+                    passwordInputs: passwordCount,
+
+                    submitButtons: submitCount,
+                  },
+                };
+              } catch (formError) {
+                this.log("Login form candidate failed:", formError.message);
+
+                continue;
+              }
+            }
+          } catch (frameError) {
+            this.log("Login frame search failed:", frameError.message);
+
+            continue;
+          }
+        }
+
+        //--------------------------------------------------
+        // LOGIN FORM NOT FOUND
+        //--------------------------------------------------
+
+        this.log("No suitable login form submit button found.");
+      }
+
+      //--------------------------------------------------
+      // 5. EXACT NORMALIZED DOM CLICK
       //--------------------------------------------------
 
       const exact = await this.clickExactTextOrParent(query);
 
       if (exact?.success) {
         this.stats.clicks++;
-
         this.stats.exactMatches++;
 
         this.stopTimer(started);
@@ -1535,14 +1882,154 @@ export default class Resolver {
 
           candidate: {
             text: query,
-
             score: 100,
           },
         };
       }
 
       //--------------------------------------------------
-      // 4. BUILD DOM INDEX
+      // 6. NESTED TEXT -> CLICKABLE PARENT
+      //--------------------------------------------------
+
+      const frames = page.frames();
+
+      let nestedClickSuccess = false;
+
+      let nestedFrameUrl = null;
+
+      for (const frame of frames) {
+        try {
+          //------------------------------------------------
+          // Find exact visible text
+          //------------------------------------------------
+
+          const textLocator = frame
+            .getByText(query, {
+              exact: true,
+            })
+            .first();
+
+          if (!(await textLocator.count())) {
+            continue;
+          }
+
+          if (!(await textLocator.isVisible().catch(() => false))) {
+            continue;
+          }
+
+          //------------------------------------------------
+          // Find nearest clickable parent
+          //------------------------------------------------
+
+          const clickable = textLocator
+            .locator(
+              `xpath=ancestor::*[
+                  self::button
+                  or self::a
+                  or @role="button"
+                  or @role="link"
+                  or @onclick
+                  or @tabindex
+                ][1]`,
+            )
+            .first();
+
+          if (!(await clickable.count())) {
+            continue;
+          }
+
+          if (!(await clickable.isVisible().catch(() => false))) {
+            continue;
+          }
+
+          //------------------------------------------------
+          // Scroll
+          //------------------------------------------------
+
+          await clickable.scrollIntoViewIfNeeded().catch(() => {});
+
+          //------------------------------------------------
+          // Inspect
+          //------------------------------------------------
+
+          const tagName = await clickable
+            .evaluate((el) => String(el.tagName || "").toLowerCase())
+            .catch(() => "");
+
+          const buttonType = await clickable
+            .getAttribute("type")
+            .catch(() => null);
+
+          //------------------------------------------------
+          // Do not blindly click if it is not actually
+          // clickable.
+          //------------------------------------------------
+
+          this.log("Nested clickable candidate:", {
+            query,
+            tagName,
+            buttonType,
+            frameUrl: frame.url(),
+          });
+
+          //------------------------------------------------
+          // CLICK
+          //------------------------------------------------
+
+          await clickable.click({
+            timeout: 5000,
+            force: false,
+          });
+
+          nestedClickSuccess = true;
+
+          nestedFrameUrl = frame.url();
+
+          this.log("Nested text parent click SUCCESS:", query);
+
+          break;
+        } catch (error) {
+          this.log("Nested text parent attempt failed:", error.message);
+
+          continue;
+        }
+      }
+
+      //--------------------------------------------------
+      // NESTED CLICK SUCCESS
+      //--------------------------------------------------
+
+      if (nestedClickSuccess) {
+        this.stats.clicks++;
+        this.stats.exactMatches++;
+
+        this.stopTimer(started);
+
+        return {
+          success: true,
+
+          action: "click",
+
+          confidence: 100,
+
+          matchType: "nested-text-clickable-parent",
+
+          verified: true,
+
+          frameUrl: nestedFrameUrl,
+
+          candidate: {
+            text: query,
+
+            score: 100,
+
+            tag: "button",
+          },
+        };
+      }
+
+      //--------------------------------------------------
+      // 7. BUILD DOM INDEX
       //--------------------------------------------------
 
       const dom = await this.buildDOMIndex(ctx?.retry > 0);
@@ -1554,7 +2041,7 @@ export default class Resolver {
       }
 
       //--------------------------------------------------
-      // 5. EXACT INDEX MATCH
+      // 8. EXACT INDEX MATCH
       //--------------------------------------------------
 
       const exactCandidates = this.findExactClickCandidates(query, elements);
@@ -1568,7 +2055,6 @@ export default class Resolver {
           this.remember(query, candidate);
 
           this.stats.clicks++;
-
           this.stats.exactMatches++;
 
           this.stopTimer(started);
@@ -1598,7 +2084,7 @@ export default class Resolver {
       }
 
       //--------------------------------------------------
-      // 6. SCORING ENGINE
+      // 9. SCORING ENGINE
       //--------------------------------------------------
 
       const scored = await this.resolveByScoring(query, elements);
@@ -1628,9 +2114,7 @@ export default class Resolver {
       }
 
       //--------------------------------------------------
-      // 7. LOW CONFIDENCE
-      //
-      // Planner only for genuine ambiguity.
+      // 10. LOW CONFIDENCE
       //--------------------------------------------------
 
       if (Number(finalCandidate.score || 0) < this.options.plannerThreshold) {
@@ -1673,7 +2157,7 @@ export default class Resolver {
       }
 
       //--------------------------------------------------
-      // 8. CONFIDENCE
+      // 11. CONFIDENCE
       //--------------------------------------------------
 
       const score = Number(finalCandidate?.score || 0);
@@ -1685,7 +2169,7 @@ export default class Resolver {
       }
 
       //--------------------------------------------------
-      // 9. EXECUTE
+      // 12. EXECUTE
       //--------------------------------------------------
 
       const execution = await this.executeClickCandidate(finalCandidate, query);
@@ -1695,7 +2179,7 @@ export default class Resolver {
       }
 
       //--------------------------------------------------
-      // 10. LEARN
+      // 13. LEARN
       //--------------------------------------------------
 
       this.remember(query, finalCandidate);
@@ -1705,7 +2189,7 @@ export default class Resolver {
       this.stopTimer(started);
 
       //--------------------------------------------------
-      // 11. RETURN
+      // 14. RETURN
       //--------------------------------------------------
 
       return {
