@@ -1898,154 +1898,811 @@ export default class Resolver {
 
     return null;
   }
+  //======================================================
+  // TYPE SMART
+  //
+  // Supports BOTH:
+  //
+  // 1. Full natural-language command
+  //    typeSmart(
+  //      'Fill the "E-mail or ID" field with "abc@gmail.com"'
+  //    )
+  //
+  // 2. Tool-level target + value
+  //    typeSmart("E-mail or ID", "abc@gmail.com")
+  //
+  // IMPORTANT
+  // ------------------------------------------------------
+  // If explicitValue is provided, input is ALREADY the
+  // target. Do NOT send the target through IntentParser.
+  //
+  // This prevents:
+  //
+  // "E-mail or ID"
+  //        ↓
+  // IntentParser
+  //        ↓
+  // chat
+  //
+  //======================================================
+  //==========================================================
+  // TYPE COMMAND PARSER
+  //
+  // Handles simple deterministic type commands BEFORE
+  // IntentParser.
+  //
+  // Examples:
+  //
+  // Fill the "E-mail or ID" field with "abc@gmail.com"
+  // Fill "E-mail or ID" with "abc@gmail.com"
+  // Type "abc@gmail.com" into "E-mail or ID"
+  // Enter "abc@gmail.com" in "E-mail or ID"
+  //
+  // This prevents IntentParser from incorrectly returning:
+  //
+  // action: "chat"
+  //
+  //==========================================================
+
+  parseTypeCommand(input) {
+    const raw = String(input ?? "").trim();
+
+    if (!raw) {
+      return null;
+    }
+
+    //--------------------------------------------------------
+    // Pattern 1
+    //
+    // Fill the "FIELD" field with "VALUE"
+    //
+    //--------------------------------------------------------
+
+    let match = raw.match(
+      /^(?:fill|type|enter|input|write)\s+(?:the\s+)?["“'](.+?)["”']\s+(?:field\s+)?(?:with|as)\s+["“']([\s\S]*?)["”']$/i,
+    );
+
+    if (match) {
+      return {
+        action: "type",
+        target: match[1].trim(),
+        value: match[2],
+        source: "deterministic",
+      };
+    }
+
+    //--------------------------------------------------------
+    // Pattern 2
+    //
+    // Fill "FIELD" with "VALUE"
+    //
+    //--------------------------------------------------------
+
+    match = raw.match(
+      /^(?:fill|type|enter|input|write)\s+["“'](.+?)["”']\s+(?:with|as)\s+["“']([\s\S]*?)["”']$/i,
+    );
+
+    if (match) {
+      return {
+        action: "type",
+        target: match[1].trim(),
+        value: match[2],
+        source: "deterministic",
+      };
+    }
+
+    //--------------------------------------------------------
+    // Pattern 3
+    //
+    // Type "VALUE" into "FIELD"
+    //
+    //--------------------------------------------------------
+
+    match = raw.match(
+      /^(?:type|enter|input|write|fill)\s+["“']([\s\S]*?)["”']\s+(?:into|in)\s+["“'](.+?)["”']$/i,
+    );
+
+    if (match) {
+      return {
+        action: "type",
+        target: match[2].trim(),
+        value: match[1],
+        source: "deterministic",
+      };
+    }
+
+    //--------------------------------------------------------
+    // Pattern 4
+    //
+    // Unquoted:
+    //
+    // Fill email with abc@gmail.com
+    //
+    //--------------------------------------------------------
+
+    match = raw.match(
+      /^(?:fill|type|enter|input|write)\s+(?:the\s+)?(.+?)\s+(?:field\s+)?(?:with|as)\s+(.+)$/i,
+    );
+
+    if (match) {
+      return {
+        action: "type",
+        target: match[1].trim(),
+        value: match[2].trim(),
+        source: "deterministic-unquoted",
+      };
+    }
+
+    return null;
+  }
+  //==========================================================
+  // TYPE SMART
+  //
+  // Supports:
+  //
+  // 1. Tool mode:
+  //
+  // typeSmart(
+  //   "E-mail or ID",
+  //   "tamiltanishh@gmail.com"
+  // )
+  //
+  // 2. Natural language:
+  //
+  // typeSmart(
+  //   'Fill the "E-mail or ID" field with "tamiltanishh@gmail.com"'
+  // )
+  //
+  // 3. Other natural forms:
+  //
+  // Type "abc@gmail.com" into "E-mail or ID"
+  // Enter "abc@gmail.com" in "E-mail or ID"
+  //
+  // IMPORTANT
+  // ----------------------------------------------------------
+  // Deterministic type parsing happens BEFORE IntentParser.
+  //
+  // IntentParser must NOT be allowed to turn a simple
+  // type command into:
+  //
+  // action: "chat"
+  //
+  //==========================================================
+  //==========================================================
+  // FIND INPUT BY LABEL
+  //
+  // Works across ALL Playwright frames.
+  //
+  // Example:
+  //
+  // "E-mail or ID"
+  //       ↓
+  // <label>E-mail or ID</label>
+  //       ↓
+  // parent/container
+  //       ↓
+  // <input>
+  //==========================================================
+
+  async findInputByLabelSafe(labelText) {
+    if (!labelText) {
+      return null;
+    }
+
+    const page = await this.mcp.getPage();
+
+    if (!page || page.isClosed()) {
+      throw new Error("Browser controller is closed");
+    }
+
+    const target = this.normalizeForComparison(labelText);
+
+    if (!target) {
+      return null;
+    }
+
+    //--------------------------------------------------------
+    // Search every frame
+    //--------------------------------------------------------
+
+    for (const frame of page.frames()) {
+      try {
+        //----------------------------------------------------
+        // Native labels
+        //----------------------------------------------------
+
+        const labels = frame.locator(
+          [
+            "label",
+            ".field-base__label",
+            ".field-base-label",
+            ".field-base-label-text",
+            "[class*='label']",
+          ].join(","),
+        );
+
+        const count = Math.min(await labels.count(), 500);
+
+        for (let i = 0; i < count; i++) {
+          const label = labels.nth(i);
+
+          if (!(await label.isVisible().catch(() => false))) {
+            continue;
+          }
+
+          const text = (await label.innerText().catch(() => "")).trim();
+
+          if (!text) {
+            continue;
+          }
+
+          const normalized = this.normalizeForComparison(text);
+
+          //--------------------------------------------------
+          // EXACT MATCH ONLY
+          //
+          // Don't use fuzzy matching here.
+          //--------------------------------------------------
+
+          if (normalized !== target) {
+            continue;
+          }
+
+          //--------------------------------------------------
+          // 1. label[for]
+          //--------------------------------------------------
+
+          const forId = await label.getAttribute("for").catch(() => null);
+
+          if (forId) {
+            const input = frame
+              .locator(`#${this.escapeCSSSelector(forId)}`)
+              .first();
+
+            if (
+              (await input.count()) &&
+              (await input.isVisible().catch(() => false))
+            ) {
+              return {
+                input,
+                label,
+                labelText: text,
+                strategy: "label-for",
+                frame,
+                score: 100,
+              };
+            }
+          }
+
+          //--------------------------------------------------
+          // 2. Input inside label
+          //--------------------------------------------------
+
+          const nestedInput = label
+            .locator(
+              "input:not([type='hidden']):not([disabled]), textarea:not([disabled])",
+            )
+            .first();
+
+          if (
+            (await nestedInput.count()) &&
+            (await nestedInput.isVisible().catch(() => false))
+          ) {
+            return {
+              input: nestedInput,
+              label,
+              labelText: text,
+              strategy: "label-input",
+              frame,
+              score: 100,
+            };
+          }
+
+          //--------------------------------------------------
+          // 3. Closest ancestor containing input
+          //--------------------------------------------------
+
+          const field = label
+            .locator(
+              `xpath=ancestor::*[
+              .//input[
+                not(@type="hidden")
+                and not(@disabled)
+              ]
+              or
+              .//textarea[
+                not(@disabled)
+              ]
+            ][1]`,
+            )
+            .first();
+
+          if (await field.count()) {
+            const inputs = field.locator(
+              "input:not([type='hidden']):not([disabled]), textarea:not([disabled])",
+            );
+
+            const inputCount = await inputs.count();
+
+            for (let j = 0; j < inputCount; j++) {
+              const input = inputs.nth(j);
+
+              if (!(await input.isVisible().catch(() => false))) {
+                continue;
+              }
+
+              return {
+                input,
+                label,
+                labelText: text,
+                strategy: "label-parent-input",
+                frame,
+                score: 100,
+              };
+            }
+          }
+
+          //--------------------------------------------------
+          // 4. Parent fallback
+          //--------------------------------------------------
+
+          for (let level = 1; level <= 6; level++) {
+            const parent = label
+              .locator(`xpath=${"../".repeat(level)}`)
+              .first();
+
+            if (!(await parent.count())) {
+              continue;
+            }
+
+            const inputs = parent.locator(
+              "input:not([type='hidden']):not([disabled]), textarea:not([disabled])",
+            );
+
+            const inputCount = await inputs.count();
+
+            for (let j = 0; j < inputCount; j++) {
+              const input = inputs.nth(j);
+
+              if (await input.isVisible().catch(() => false)) {
+                return {
+                  input,
+                  label,
+                  labelText: text,
+                  strategy: `label-parent-${level}`,
+                  frame,
+                  score: 100,
+                };
+              }
+            }
+          }
+        }
+      } catch (error) {
+        this.log(
+          "[findInputByLabelSafe] Frame failed:",
+          frame.url(),
+          error.message,
+        );
+      }
+    }
+
+    return null;
+  }
+  //==========================================================
+  // ESCAPE CSS SELECTOR
+  //==========================================================
+
+  escapeCSSSelector(value) {
+    const text = String(value ?? "");
+
+    if (typeof CSS !== "undefined" && CSS.escape) {
+      return CSS.escape(text);
+    }
+
+    return text
+      .replace(/\\/g, "\\\\")
+      .replace(/"/g, '\\"')
+      .replace(/([ #;?%&,.+*~\':"!^$[\]()=>|/@])/g, "\\$1");
+  }
+
+  //==========================================================
+  // TYPE INTO RESOLVED INPUT
+  //==========================================================
+
+  async typeIntoResolvedInput(input, value) {
+    if (!input) {
+      return false;
+    }
+
+    try {
+      await input.scrollIntoViewIfNeeded().catch(() => {});
+
+      await input.click({
+        timeout: 3000,
+        force: false,
+      });
+
+      await input.fill(String(value));
+
+      //------------------------------------------------------
+      // Trigger application change/blur handlers
+      //------------------------------------------------------
+
+      await input.press("Tab").catch(() => {});
+
+      return true;
+    } catch (error) {
+      this.log("[typeIntoResolvedInput] Normal fill failed:", error.message);
+
+      //------------------------------------------------------
+      // Force fallback
+      //------------------------------------------------------
+
+      try {
+        await input.fill(String(value), {
+          timeout: 3000,
+        });
+
+        return true;
+      } catch (fallbackError) {
+        this.log(
+          "[typeIntoResolvedInput] Fallback failed:",
+          fallbackError.message,
+        );
+
+        return false;
+      }
+    }
+  }
+
+  //==========================================================
+  // VERIFY LOCATOR VALUE
+  //==========================================================
+
+  async verifyLocatorValue(locator, expectedValue) {
+    if (!locator) {
+      return false;
+    }
+
+    try {
+      const actual = await locator.inputValue();
+
+      return String(actual) === String(expectedValue ?? "");
+    } catch {
+      return false;
+    }
+  }
   async typeSmart(input, explicitValue = null) {
     const started = this.startTimer();
 
     return await this.executeWithHealing("typeSmart", input, async (ctx) => {
-      if (!input) {
-        throw new Error("typeSmart requires input");
+      //----------------------------------------------------
+      // VALIDATE
+      //----------------------------------------------------
+
+      if (
+        input === undefined ||
+        input === null ||
+        String(input).trim() === ""
+      ) {
+        throw new Error("typeSmart requires a field/target");
       }
 
-      const parsed = this.intentParser.parse(input);
+      const rawInput = String(input).trim();
 
-      const step = parsed.steps?.[0];
+      let query = "";
+      let value = null;
+      let parsed = null;
 
-      if (!step) {
-        throw new Error("Unable to parse type action");
+      //----------------------------------------------------
+      // MODE 1
+      //
+      // Explicit tool arguments
+      //
+      // typeSmart("E-mail or ID", "abc@gmail.com")
+      //
+      //----------------------------------------------------
+
+      if (explicitValue !== undefined && explicitValue !== null) {
+        query = rawInput;
+        value = String(explicitValue);
+
+        this.log("[TYPE SMART] Direct target/value mode", {
+          target: query,
+          value,
+        });
       }
 
-      if (step.action !== "type") {
-        throw new Error(`Expected type action but received '${step.action}'`);
+      //----------------------------------------------------
+      // MODE 2
+      //
+      // Deterministic natural-language parsing
+      //
+      //----------------------------------------------------
+      else {
+        parsed = this.parseTypeCommand(rawInput);
+
+        if (parsed?.action === "type") {
+          query = parsed.target;
+          value = String(parsed.value ?? "");
+
+          this.log(
+            "[TYPE SMART] Deterministic type parse:",
+            JSON.stringify(parsed, null, 2),
+          );
+        }
       }
 
-      const query = step.target || input;
+      //----------------------------------------------------
+      // MODE 3
+      //
+      // IntentParser fallback
+      //
+      // IMPORTANT:
+      // Only use this if deterministic parsing failed.
+      //----------------------------------------------------
 
-      const value = explicitValue ?? step.value;
+      if (!query) {
+        parsed = this.intentParser.parse(rawInput);
+
+        this.log(
+          "[TYPE SMART] IntentParser result:",
+          JSON.stringify(parsed, null, 2),
+        );
+
+        const step = parsed?.steps?.[0];
+
+        if (!step) {
+          throw new Error(`Unable to understand typing command: '${rawInput}'`);
+        }
+
+        if (step.action !== "type") {
+          throw new Error(
+            `Unable to resolve typing command '${rawInput}'. ` +
+              `IntentParser returned '${step.action}'.`,
+          );
+        }
+
+        query = step.target || step.field || step.text || "";
+
+        if (value === null || value === undefined || value === "") {
+          value = step.value;
+        }
+      }
+
+      //----------------------------------------------------
+      // NORMALIZE
+      //----------------------------------------------------
+
+      query = String(query ?? "").trim();
+
+      if (!query) {
+        throw new Error("Typing target is empty");
+      }
 
       if (value === undefined || value === null) {
-        throw new Error("No typing value provided");
+        throw new Error(`No typing value provided for '${query}'`);
       }
+
+      value = String(value);
+
+      this.log("[TYPE SMART] FINAL:", {
+        target: query,
+        value,
+      });
+
+      //----------------------------------------------------
+      // BUILD FRESH DOM
+      //----------------------------------------------------
 
       await this.ensureFreshDOM();
 
-      /*
-       * ======================================================
-       * 1. LABEL-FIRST RESOLUTION
-       * ======================================================
-       *
-       * Do NOT use:
-       *
-       * findSemanticInputCandidate()
-       *
-       * Do NOT depend on:
-       *
-       * input[type="email"]
-       * input[name="email"]
-       * input[type="username"]
-       *
-       * The visible label is the semantic source.
-       */
-
-      const labelCandidate = await this.findInputByLabel(query);
-
-      if (labelCandidate) {
-        console.log(`[typeSmart] Label match: "${labelCandidate.labelText}"`);
-
-        console.log(`[typeSmart] Strategy: ${labelCandidate.strategy}`);
-
-        const typed = await this.typeIntoInput(labelCandidate.input, value);
-
-        if (!typed) {
-          throw new Error(`Unable to type into label '${query}'`);
-        }
-
-        this.stats.types++;
-
-        this.stopTimer(started);
-
-        return {
-          success: true,
-
-          action: "type",
-
-          value,
-
-          confidence: 100,
-
-          candidate: {
-            text: labelCandidate.labelText,
-
-            role: "textbox",
-
-            tag: "input",
-
-            score: 100,
-
-            strategy: labelCandidate.strategy,
-          },
-        };
-      }
-
-      /*
-       * ======================================================
-       * 2. FALLBACK TO EXISTING SCORING ENGINE
-       * ======================================================
-       *
-       * Only use scoring when label resolution failed.
-       */
-
-      const dom = await this.buildDOMIndex(ctx.retry > 0);
+      const dom = await this.buildDOMIndex(ctx?.retry > 0);
 
       const elements = dom?.elements || [];
+
+      if (!elements.length) {
+        throw new Error(
+          `No DOM elements found while searching for input '${query}'`,
+        );
+      }
+
+      //----------------------------------------------------
+      // DIRECT LABEL RESOLUTION
+      //
+      // This should happen BEFORE scoring.
+      //
+      // "E-mail or ID"
+      //       ↓
+      // visible label
+      //       ↓
+      // associated input
+      //
+      //----------------------------------------------------
+
+      const labelCandidate = await this.findInputByLabelSafe(query);
+
+      if (labelCandidate) {
+        this.log("[TYPE SMART] LABEL MATCH:", {
+          label: labelCandidate.labelText,
+          strategy: labelCandidate.strategy,
+        });
+
+        const typed = await this.typeIntoResolvedInput(
+          labelCandidate.input,
+          value,
+        );
+
+        if (typed) {
+          const verified = await this.verifyLocatorValue(
+            labelCandidate.input,
+            value,
+          );
+
+          if (!verified) {
+            throw new Error(`Typing was not verified for '${query}'`);
+          }
+
+          this.stats.types++;
+
+          this.stopTimer(started);
+
+          return {
+            success: true,
+
+            action: "type",
+
+            target: query,
+
+            value,
+
+            confidence: 100,
+
+            verified: true,
+
+            matchType: labelCandidate.strategy,
+
+            candidate: {
+              text: labelCandidate.labelText,
+              tag: "input",
+              score: 100,
+            },
+          };
+        }
+      }
+
+      //----------------------------------------------------
+      // SCORE INPUT CANDIDATES
+      //----------------------------------------------------
 
       let ranked = this.scoringEngine
         .rankCandidates(query)
         .filter((candidate) => this.isInputCandidate(candidate));
 
+      //----------------------------------------------------
+      // SEMANTIC INPUT MATCH
+      //----------------------------------------------------
+
+      const semanticCandidate = this.findSemanticInputCandidate(
+        query,
+        elements,
+      );
+
+      if (semanticCandidate) {
+        this.log("[TYPE SMART] Semantic input match:", {
+          query,
+          id: semanticCandidate.id,
+          name: semanticCandidate.name,
+          type: semanticCandidate.type,
+          autocomplete: semanticCandidate.autocomplete,
+          score: semanticCandidate.score,
+        });
+
+        ranked = [
+          semanticCandidate,
+          ...ranked.filter((candidate) => candidate !== semanticCandidate),
+        ];
+      }
+
+      //----------------------------------------------------
+      // NO CANDIDATE
+      //----------------------------------------------------
+
       if (!ranked.length) {
         throw new Error(`Unable to locate input '${query}'`);
       }
 
-      let candidate = ranked[0];
+      //----------------------------------------------------
+      // BEST CANDIDATE
+      //----------------------------------------------------
 
-      /*
-       * Planner is still fallback only.
-       */
-      if (candidate.score < this.options.plannerThreshold) {
+      let finalCandidate = ranked[0];
+
+      this.log("[TYPE SMART] Candidate:", {
+        id: finalCandidate.id,
+        name: finalCandidate.name,
+        text: finalCandidate.text,
+        placeholder: finalCandidate.placeholder,
+        type: finalCandidate.type,
+        autocomplete: finalCandidate.autocomplete,
+        score: finalCandidate.score,
+      });
+
+      //----------------------------------------------------
+      // PLANNER FALLBACK
+      //----------------------------------------------------
+
+      if (Number(finalCandidate.score || 0) < this.options.plannerThreshold) {
         this.stats.plannerCalls++;
 
-        const plan = await this.planner.plan(input, {
+        const plan = await this.planner.plan(rawInput, {
           parsed,
-
           ranked,
-
           query,
-
           dom: elements,
         });
 
-        if (plan?.steps?.[0]?.target) {
-          const rescored = this.scoringEngine
-            .rankCandidates(plan.steps[0].target)
-            .filter((x) => this.isInputCandidate(x));
+        if (plan?.steps?.length) {
+          const plannerStep = plan.steps[0];
 
-          if (rescored.length && rescored[0].score > candidate.score) {
-            candidate = rescored[0];
+          const plannerTarget =
+            plannerStep.target || plannerStep.field || plannerStep.text;
+
+          if (plannerTarget) {
+            const rescored = this.scoringEngine
+              .rankCandidates(plannerTarget)
+              .filter((candidate) => this.isInputCandidate(candidate));
+
+            if (
+              rescored.length &&
+              Number(rescored[0].score || 0) > Number(finalCandidate.score || 0)
+            ) {
+              finalCandidate = rescored[0];
+
+              this.stats.plannerRecoveries++;
+            }
           }
         }
       }
 
-      if (!candidate || candidate.score < this.options.minimumConfidence) {
-        throw new Error(`Low confidence input match for '${query}'`);
+      //----------------------------------------------------
+      // CONFIDENCE
+      //----------------------------------------------------
+
+      const score = Number(finalCandidate?.score || 0);
+
+      if (!finalCandidate || score < this.options.minimumConfidence) {
+        throw new Error(
+          `Low confidence input match for '${query}': ` +
+            `${score.toFixed(1)}%`,
+        );
       }
 
-      const typed = await this.executeCandidateType(candidate, value);
+      //----------------------------------------------------
+      // EXECUTE
+      //----------------------------------------------------
+
+      const typed = await this.executeCandidateType(finalCandidate, value);
 
       if (!typed) {
         throw new Error(`Unable to type into '${query}'`);
       }
 
-      this.remember(query, candidate);
+      //----------------------------------------------------
+      // VERIFY
+      //----------------------------------------------------
+
+      const verified = await this.verifyTypedValue(finalCandidate, value);
+
+      if (!verified) {
+        throw new Error(`Typing was not verified for '${query}'`);
+      }
+
+      //----------------------------------------------------
+      // LEARN
+      //----------------------------------------------------
+
+      this.remember(query, finalCandidate);
 
       this.stats.types++;
 
@@ -2056,21 +2713,372 @@ export default class Resolver {
 
         action: "type",
 
+        target: query,
+
         value,
 
-        confidence: Number(candidate.score.toFixed(2)),
+        confidence: Number(score.toFixed(2)),
+
+        verified: true,
 
         candidate: {
-          text: candidate.text,
-
-          role: candidate.role,
-
-          tag: candidate.tag,
-
-          score: candidate.score,
+          id: finalCandidate.id,
+          name: finalCandidate.name,
+          text: finalCandidate.text,
+          role: finalCandidate.role,
+          tag: finalCandidate.tag,
+          type: finalCandidate.type,
+          placeholder: finalCandidate.placeholder,
+          autocomplete: finalCandidate.autocomplete,
+          score,
         },
       };
     });
+  }
+  //======================================================
+  // VERIFY TYPED VALUE
+  //======================================================
+
+  async verifyTypedValue(candidate, expectedValue) {
+    if (!candidate) {
+      return false;
+    }
+
+    const expected = String(expectedValue ?? "");
+
+    //----------------------------------------------------
+    // Preferred frame
+    //----------------------------------------------------
+
+    const scopes = [];
+
+    if (candidate.frame) {
+      scopes.push(candidate.frame);
+    }
+
+    //----------------------------------------------------
+    // Current page
+    //----------------------------------------------------
+
+    const page = await this.mcp.getPage();
+
+    scopes.push(page);
+
+    //----------------------------------------------------
+    // Try every scope
+    //----------------------------------------------------
+
+    for (const scope of scopes) {
+      const selectors = this.buildCandidateSelectors(candidate);
+
+      for (const selector of selectors) {
+        try {
+          const locator = scope.locator(selector).first();
+
+          if (!(await locator.count())) {
+            continue;
+          }
+
+          if (!(await locator.isVisible().catch(() => false))) {
+            continue;
+          }
+
+          const actual = await locator.inputValue();
+
+          if (String(actual) === expected) {
+            return true;
+          }
+        } catch {
+          // Try next selector
+        }
+      }
+    }
+
+    return false;
+  }
+  //======================================================
+  // SEMANTIC INPUT RESOLVER
+  //
+  // Converts human field names into strong DOM matches.
+  //
+  // Example:
+  //
+  // "E-mail or ID"
+  //      ↓
+  // autocomplete="username"
+  //      ↓
+  // #username
+  //
+  // "Password"
+  //      ↓
+  // type="password"
+  //      ↓
+  // #username-password
+  //
+  //======================================================
+
+  findSemanticInputCandidate(query = "", elements = []) {
+    const normalized = this.normalizeText(query);
+
+    if (!normalized) {
+      return null;
+    }
+
+    //----------------------------------------------------
+    // FIELD SEMANTIC GROUPS
+    //----------------------------------------------------
+
+    const groups = {
+      username: [
+        "email",
+        "e-mail",
+        "email or id",
+        "email/id",
+        "e-mail or id",
+        "user",
+        "user id",
+        "userid",
+        "username",
+        "login",
+        "login id",
+        "id",
+      ],
+
+      password: [
+        "password",
+        "pass",
+        "pwd",
+        "current password",
+        "current-password",
+        "new password",
+        "new-password",
+      ],
+
+      phone: ["phone", "phone number", "mobile", "mobile number", "telephone"],
+
+      otp: [
+        "otp",
+        "verification code",
+        "verification",
+        "code",
+        "one time password",
+      ],
+    };
+
+    //----------------------------------------------------
+    // Determine semantic type
+    //----------------------------------------------------
+
+    let semanticType = null;
+
+    for (const [type, aliases] of Object.entries(groups)) {
+      if (aliases.some((alias) => normalized === this.normalizeText(alias))) {
+        semanticType = type;
+        break;
+      }
+    }
+
+    //----------------------------------------------------
+    // If not a known semantic field,
+    // don't guess.
+    //----------------------------------------------------
+
+    if (!semanticType) {
+      return null;
+    }
+
+    //----------------------------------------------------
+    // Candidate scoring
+    //----------------------------------------------------
+
+    const candidates = elements.filter((candidate) => {
+      const tag = this.normalizeText(candidate.tag || candidate.tagName || "");
+
+      if (tag !== "input" && tag !== "textarea" && tag !== "select") {
+        return false;
+      }
+
+      if (candidate.visible === false || candidate.enabled === false) {
+        return false;
+      }
+
+      if (
+        candidate.type === "hidden" ||
+        candidate.type === "checkbox" ||
+        candidate.type === "radio" ||
+        candidate.type === "submit" ||
+        candidate.type === "button"
+      ) {
+        return false;
+      }
+
+      return true;
+    });
+
+    if (!candidates.length) {
+      return null;
+    }
+
+    //----------------------------------------------------
+    // Score candidates
+    //----------------------------------------------------
+
+    const ranked = candidates.map((candidate) => {
+      let score = 0;
+
+      const id = this.normalizeText(candidate.id);
+
+      const name = this.normalizeText(candidate.name);
+
+      const type = this.normalizeText(candidate.type);
+
+      const autocomplete = this.normalizeText(candidate.autocomplete);
+
+      const placeholder = this.normalizeText(candidate.placeholder);
+
+      const aria = this.normalizeText(candidate.aria || candidate.ariaLabel);
+
+      //------------------------------------------------
+      // USERNAME
+      //------------------------------------------------
+
+      if (semanticType === "username") {
+        if (autocomplete === "username") {
+          score += 100;
+        }
+
+        if (id === "username") {
+          score += 100;
+        }
+
+        if (name === "username") {
+          score += 90;
+        }
+
+        if (id.includes("username")) {
+          score += 80;
+        }
+
+        if (name.includes("username")) {
+          score += 70;
+        }
+
+        if (autocomplete.includes("email")) {
+          score += 70;
+        }
+
+        if (type === "email") {
+          score += 60;
+        }
+      }
+
+      //------------------------------------------------
+      // PASSWORD
+      //------------------------------------------------
+
+      if (semanticType === "password") {
+        if (type === "password") {
+          score += 100;
+        }
+
+        if (autocomplete === "current-password") {
+          score += 100;
+        }
+
+        if (id.includes("password")) {
+          score += 90;
+        }
+
+        if (name.includes("password")) {
+          score += 90;
+        }
+
+        if (autocomplete.includes("password")) {
+          score += 80;
+        }
+      }
+
+      //------------------------------------------------
+      // PHONE
+      //------------------------------------------------
+
+      if (semanticType === "phone") {
+        if (type === "tel") {
+          score += 100;
+        }
+
+        if (autocomplete === "tel") {
+          score += 90;
+        }
+
+        if (id.includes("phone")) {
+          score += 80;
+        }
+
+        if (name.includes("phone")) {
+          score += 80;
+        }
+
+        if (placeholder.includes("phone")) {
+          score += 60;
+        }
+      }
+
+      //------------------------------------------------
+      // OTP
+      //------------------------------------------------
+
+      if (semanticType === "otp") {
+        if (id.includes("otp") || name.includes("otp")) {
+          score += 100;
+        }
+
+        if (id.includes("code") || name.includes("code")) {
+          score += 80;
+        }
+      }
+
+      //------------------------------------------------
+      // Generic semantic attributes
+      //------------------------------------------------
+
+      const combined = [id, name, placeholder, aria, autocomplete, type].join(
+        " ",
+      );
+
+      if (combined.includes(normalized)) {
+        score += 30;
+      }
+
+      return {
+        ...candidate,
+        score,
+        matchType: "semantic-input",
+        exactMatch: score >= 100,
+      };
+    });
+
+    //----------------------------------------------------
+    // Highest score
+    //----------------------------------------------------
+
+    ranked.sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+
+    const best = ranked[0];
+
+    if (!best || best.score <= 0) {
+      return null;
+    }
+
+    //----------------------------------------------------
+    // Convert semantic score into Resolver score
+    //----------------------------------------------------
+
+    return {
+      ...best,
+
+      score: Math.min(100, Number(best.score)),
+    };
   }
   async typeIntoInput(input, value) {
     if (!input) {
