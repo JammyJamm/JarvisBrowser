@@ -2372,164 +2372,276 @@ export default class Resolver {
       return false;
     }
   }
-  //======================================================
-  // TYPE SMART
-  //======================================================
-
-  //=====================================================
-  // TYPE SMART
+  //==========================================================
+  // TYPE SMART - FIXED
   //
-  // User:
-  // Fill the "E-mail or ID" field with
-  // "tamiltanishh@gmail.com"
+  // Supports:
   //
-  // Pipeline:
+  // typeSmart("E-mail or ID", "tamiltanishh@gmail.com")
+  // typeSmart("Password", "your-password")
   //
-  // IntentParser
-  //      ↓
-  // ScoringEngine
-  //      ↓
-  // Input Candidate
-  //      ↓
-  // Playwright
-  //      ↓
-  // Verification
-  //      ↓
-  // SelfHealing
-  //
-  //=====================================================
+  // IMPORTANT:
+  // ----------------------------------------------------------
+  // 1. Never call this.resolveInput()
+  // 2. First resolve by visible field label.
+  // 3. Then fall back to DOM/scoring.
+  // 4. Verify the value after typing.
+  //==========================================================
 
   async typeSmart(input, explicitValue = null) {
     const started = this.startTimer();
 
     return await this.selfHealing.execute(
+      "typeSmart",
       async () => {
-        //--------------------------------------------------
+        //------------------------------------------------------
         // VALIDATE
-        //--------------------------------------------------
+        //------------------------------------------------------
 
-        if (!input) {
-          throw new Error("typeSmart requires input");
+        if (
+          input === undefined ||
+          input === null ||
+          String(input).trim() === ""
+        ) {
+          throw new Error("typeSmart requires an input target");
         }
 
-        //--------------------------------------------------
-        // PARSE INTENT
-        //--------------------------------------------------
+        const query = String(input).trim();
 
-        const parsed = this.intentParser.parse(input);
+        //------------------------------------------------------
+        // VALUE
+        //------------------------------------------------------
 
-        const step = parsed?.steps?.[0];
+        let value = explicitValue;
 
-        if (!step) {
-          throw new Error("Unable to parse type action");
+        //------------------------------------------------------
+        // PARSE COMPLETE NATURAL-LANGUAGE COMMAND
+        //------------------------------------------------------
+
+        const parsedType = this.parseTypeCommand(query);
+
+        if (parsedType?.action === "type") {
+          value =
+            explicitValue !== null && explicitValue !== undefined
+              ? explicitValue
+              : parsedType.value;
         }
 
-        if (step.action !== "type") {
-          throw new Error(`Expected type action but received '${step.action}'`);
-        }
+        const target =
+          parsedType?.action === "type" ? parsedType.target : query;
 
-        //--------------------------------------------------
-        // TARGET
-        //--------------------------------------------------
-
-        const query = String(step.target || "").trim();
-
-        if (!query) {
+        if (!target) {
           throw new Error("Type target is empty");
         }
 
-        //--------------------------------------------------
-        // VALUE
-        //--------------------------------------------------
-
-        const value =
-          explicitValue !== null && explicitValue !== undefined
-            ? explicitValue
-            : step.value;
-
         if (value === undefined || value === null) {
-          throw new Error("No typing value provided");
+          throw new Error(`No typing value provided for '${target}'`);
         }
 
-        const normalizedQuery = this.normalizeResolverText(query);
+        //------------------------------------------------------
+        // LOG
+        //------------------------------------------------------
 
-        this.log(
-          "TYPE target:",
-          query,
-          "normalized:",
-          normalizedQuery,
-          "value:",
-          value,
-        );
+        this.log("==========================================");
+        this.log("TYPE SMART");
+        this.log("Target:", target);
+        this.log("Value:", value);
+        this.log("==========================================");
 
-        //--------------------------------------------------
-        // REFRESH DOM
-        //--------------------------------------------------
+        //------------------------------------------------------
+        // GET CURRENT PAGE
+        //------------------------------------------------------
+
+        const page = await this.mcp.getPage();
+
+        if (!page || page.isClosed()) {
+          throw new Error("Browser page is closed");
+        }
+
+        //------------------------------------------------------
+        // IMPORTANT:
+        // After clicking "By email / ID", the login form may
+        // be dynamically rendered.
+        //------------------------------------------------------
+
+        await page.waitForTimeout(300).catch(() => {});
+
+        //------------------------------------------------------
+        // 1. LABEL-BASED RESOLUTION
+        //
+        // This is the primary fix.
+        //
+        // Example:
+        //
+        // "E-mail or ID"
+        //       ↓
+        // visible label
+        //       ↓
+        // associated input
+        //------------------------------------------------------
+
+        const labelResolved = await this.findInputByLabelSafe(target);
+
+        if (labelResolved?.input) {
+          this.log(
+            "TYPE label resolver matched:",
+            target,
+            labelResolved.strategy,
+            labelResolved.frame?.url?.() || "",
+          );
+
+          //----------------------------------------------------
+          // TYPE DIRECTLY INTO THE RESOLVED INPUT
+          //----------------------------------------------------
+
+          const typed = await this.typeIntoResolvedInput(
+            labelResolved.input,
+            value,
+          );
+
+          if (!typed) {
+            throw new Error(
+              `Unable to type into label-resolved field '${target}'`,
+            );
+          }
+
+          //----------------------------------------------------
+          // VERIFY DIRECTLY
+          //----------------------------------------------------
+
+          const verified = await this.verifyLocatorValue(
+            labelResolved.input,
+            value,
+          );
+
+          if (!verified) {
+            //--------------------------------------------------
+            // Retry with fill()
+            //--------------------------------------------------
+
+            await labelResolved.input
+              .fill(String(value), {
+                timeout: 3000,
+              })
+              .catch(() => {});
+
+            const retryVerified = await this.verifyLocatorValue(
+              labelResolved.input,
+              value,
+            );
+
+            if (!retryVerified) {
+              throw new Error(
+                `Typing completed but verification failed for '${target}'`,
+              );
+            }
+          }
+
+          //----------------------------------------------------
+          // SUCCESS
+          //----------------------------------------------------
+
+          this.stats.types++;
+
+          this.stopTimer(started);
+
+          return {
+            success: true,
+            action: "type",
+            value,
+            confidence: 100,
+            matchType: "label-resolver",
+            strategy: labelResolved.strategy,
+            verified: true,
+            candidate: {
+              text: labelResolved.labelText || target,
+              tag: "input",
+              score: 100,
+            },
+          };
+        }
+
+        //------------------------------------------------------
+        // 2. REFRESH DOM
+        //------------------------------------------------------
 
         await this.ensureFreshDOM();
 
-        //--------------------------------------------------
-        // BUILD DOM INDEX
-        //--------------------------------------------------
+        //------------------------------------------------------
+        // 3. BUILD DOM INDEX
+        //------------------------------------------------------
 
-        await this.buildDOMIndex();
+        const dom = await this.buildDOMIndex(true);
 
-        //--------------------------------------------------
-        // RANK INPUT CANDIDATES
-        //--------------------------------------------------
+        const elements = dom?.elements || [];
 
-        let ranked = this.scoringEngine
-          .rankCandidates(query)
-          .filter((candidate) => this.isInputCandidate(candidate));
-
-        //--------------------------------------------------
-        // EXACT NORMALIZED FALLBACK
+        //------------------------------------------------------
+        // 4. SEMANTIC INPUT RESOLUTION
         //
-        // Important for:
-        //
-        // E-mail or ID
-        // email or id
-        // E-MAIL OR ID
-        //
-        //--------------------------------------------------
+        // "E-mail or ID" should map to username/email.
+        //------------------------------------------------------
 
-        if (!ranked.length) {
-          const allCandidates = this.scoringEngine.rankCandidates("");
+        let finalCandidate = this.findSemanticInputCandidate(target, elements);
 
-          ranked = allCandidates.filter((candidate) => {
-            if (!this.isInputCandidate(candidate)) {
-              return false;
-            }
+        //------------------------------------------------------
+        // 5. SCORING ENGINE FALLBACK
+        //------------------------------------------------------
 
-            const values = [
-              candidate.text,
-              candidate.placeholder,
-              candidate.aria,
-              candidate.ariaLabel,
-              candidate.title,
-              candidate.name,
-              candidate.id,
-            ];
+        if (!finalCandidate) {
+          let ranked = this.scoringEngine
+            .rankCandidates(target)
+            .filter((candidate) => this.isInputCandidate(candidate));
 
-            return values.some(
-              (value) => this.normalizeResolverText(value) === normalizedQuery,
-            );
-          });
+          //----------------------------------------------------
+          // Exact normalized fallback
+          //----------------------------------------------------
+
+          const normalizedTarget = this.normalizeResolverText(target);
+
+          if (!ranked.length) {
+            const allCandidates = this.scoringEngine.rankCandidates("");
+
+            ranked = allCandidates.filter((candidate) => {
+              if (!this.isInputCandidate(candidate)) {
+                return false;
+              }
+
+              const values = [
+                candidate.text,
+                candidate.placeholder,
+                candidate.aria,
+                candidate.ariaLabel,
+                candidate.title,
+                candidate.name,
+                candidate.id,
+              ];
+
+              return values.some(
+                (candidateValue) =>
+                  this.normalizeResolverText(candidateValue) ===
+                  normalizedTarget,
+              );
+            });
+          }
+
+          if (ranked.length) {
+            finalCandidate = ranked[0];
+          }
         }
 
-        //--------------------------------------------------
-        // NO INPUT
-        //--------------------------------------------------
+        //------------------------------------------------------
+        // 6. NO INPUT FOUND
+        //------------------------------------------------------
 
-        if (!ranked.length) {
-          throw new Error(`Unable to locate input '${query}'`);
+        if (!finalCandidate) {
+          throw new Error(`Unable to locate input '${target}'`);
         }
 
-        //--------------------------------------------------
-        // BEST CANDIDATE
-        //--------------------------------------------------
+        //------------------------------------------------------
+        // 7. CONFIDENCE
+        //------------------------------------------------------
 
-        let finalCandidate = ranked[0];
+        const confidence = Number(finalCandidate.score || 0);
 
         this.log(
           "TYPE candidate:",
@@ -2539,146 +2651,74 @@ export default class Resolver {
             aria: finalCandidate.aria,
             name: finalCandidate.name,
             id: finalCandidate.id,
-            tag: finalCandidate.tag,
-            score: finalCandidate.score,
+            type: finalCandidate.type,
+            score: confidence,
           }),
         );
 
-        //--------------------------------------------------
-        // LOW CONFIDENCE → PLANNER
-        //--------------------------------------------------
+        //------------------------------------------------------
+        // 8. EXECUTE TYPE
+        //------------------------------------------------------
 
-        if (
-          finalCandidate.score < this.scoringEngine.options.plannerThreshold
-        ) {
-          this.stats.plannerCalls++;
-
-          const plan = await this.planner.plan(input, {
-            ranked,
-            query,
-          });
-
-          if (plan?.steps?.length) {
-            const plannerTarget = plan.steps[0].target || query;
-
-            const rescored = this.scoringEngine
-              .rankCandidates(plannerTarget)
-              .filter((candidate) => this.isInputCandidate(candidate));
-
-            if (rescored.length) {
-              finalCandidate = rescored[0];
-            }
-          }
-        }
-
-        //--------------------------------------------------
-        // CONFIDENCE
-        //--------------------------------------------------
-
-        if (!finalCandidate) {
-          throw new Error(`No input candidate resolved for '${query}'`);
-        }
-
-        if (finalCandidate.score < 60) {
-          throw new Error(
-            `Low confidence (${finalCandidate.score.toFixed(1)}%) for input '${query}'`,
-          );
-        }
-
-        //--------------------------------------------------
-        // PAGE
-        //--------------------------------------------------
-
-        const page = await this.mcp.getPage();
-
-        //--------------------------------------------------
-        // TYPE CURRENT PAGE
-        //--------------------------------------------------
-
-        let typed = await this.typeCandidate(page, finalCandidate, value);
-
-        //--------------------------------------------------
-        // SEARCH FRAMES
-        //--------------------------------------------------
+        const typed = await this.executeCandidateType(finalCandidate, value);
 
         if (!typed) {
-          for (const frame of page.frames()) {
-            typed = await this.typeCandidate(frame, finalCandidate, value);
-
-            if (typed) {
-              break;
-            }
-          }
+          throw new Error(`Unable to type into '${target}'`);
         }
 
-        //--------------------------------------------------
-        // FINAL FAILURE
-        //--------------------------------------------------
+        //------------------------------------------------------
+        // 9. VERIFY
+        //------------------------------------------------------
 
-        if (!typed) {
-          throw new Error(`Unable to type into '${query}'`);
-        }
-
-        //--------------------------------------------------
-        // VERIFY VALUE
-        //--------------------------------------------------
+        const pageAfterType = await this.mcp.getPage();
 
         const verified = await this.verifyTypedValue(
-          page,
+          pageAfterType,
           finalCandidate,
           value,
         );
 
         if (!verified) {
           throw new Error(
-            `Typing completed but value verification failed for '${query}'`,
+            `Typing completed but value verification failed for '${target}'`,
           );
         }
 
-        //--------------------------------------------------
-        // LEARN
-        //--------------------------------------------------
+        //------------------------------------------------------
+        // 10. LEARN
+        //------------------------------------------------------
 
-        this.remember(query, finalCandidate);
+        this.remember(target, finalCandidate);
 
-        //--------------------------------------------------
-        // STATISTICS
-        //--------------------------------------------------
+        //------------------------------------------------------
+        // 11. STATISTICS
+        //------------------------------------------------------
 
         this.stats.types++;
 
         this.stopTimer(started);
 
-        //--------------------------------------------------
+        //------------------------------------------------------
         // SUCCESS
-        //--------------------------------------------------
+        //------------------------------------------------------
 
         return {
           success: true,
-
           action: "type",
-
           value,
-
-          confidence: Number(finalCandidate.score.toFixed(2)),
-
-          candidate: {
-            text: finalCandidate.text,
-
-            placeholder: finalCandidate.placeholder || "",
-
-            aria: finalCandidate.aria || finalCandidate.ariaLabel || "",
-
-            name: finalCandidate.name || "",
-
-            id: finalCandidate.id || "",
-
-            tag: finalCandidate.tag || "",
-
-            score: finalCandidate.score,
-          },
-
+          confidence,
+          matchType: finalCandidate.matchType || "scored-input",
           verified: true,
+          candidate: {
+            text: finalCandidate.text || "",
+            placeholder: finalCandidate.placeholder || "",
+            aria: finalCandidate.aria || finalCandidate.ariaLabel || "",
+            name: finalCandidate.name || "",
+            id: finalCandidate.id || "",
+            type: finalCandidate.type || "",
+            tag: finalCandidate.tag || "",
+            score: confidence,
+          },
         };
       },
       this.createHealingContext("typeSmart", input),
