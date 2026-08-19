@@ -1,55 +1,124 @@
 <!doctype html>
-<html>
+<html lang="en">
   <head>
+    <meta charset="UTF-8" />
+
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
     <title>Jarvis Browser</title>
+
     <link rel="stylesheet" href="styles.css" />
   </head>
 
   <body>
-    <!-- NAV -->
+    <!-- ==========================================================
+         NAVIGATION BAR
+         ========================================================== -->
+
     <div id="nav">
-      <button onclick="goBack()">
-        <img class="icon" src="./icon/chevron-left.svg" alt="leftNav-Icon" />
+      <!-- BACK -->
+      <button id="backButton" type="button" title="Back" onclick="goBack()">
+        <img class="icon" src="./icon/chevron-left.svg" alt="Back" />
       </button>
-      <button onclick="goForward()">
-        <img class="icon" src="./icon/chevron-right.svg" alt="rightNav-Icon" />
+
+      <!-- FORWARD -->
+      <button
+        id="forwardButton"
+        type="button"
+        title="Forward"
+        onclick="goForward()"
+      >
+        <img class="icon" src="./icon/chevron-right.svg" alt="Forward" />
       </button>
-      <button onclick="reloadPage()">
-        <img class="icon" src="./icon/refresh-cw.svg" alt="refreshNav-Icon" />
+
+      <!-- RELOAD -->
+      <button
+        id="reloadButton"
+        type="button"
+        title="Reload"
+        onclick="reloadPage()"
+      >
+        <img class="icon" src="./icon/refresh-cw.svg" alt="Reload" />
       </button>
+
+      <!-- URL -->
       <div class="urlBlock">
-        <img src="./icon/logo.svg" alt="refreshNav-Icon" />
-        <input id="url" value="https://example.com" />
-        <!-- <input id="url" value="https://india-1x-bet.com/en/user/login/" /> -->
+        <img src="./icon/logo.svg" alt="Jarvis" />
+
+        <input
+          id="url"
+          type="text"
+          value="https://example.com"
+          autocomplete="off"
+          spellcheck="false"
+          aria-label="Address"
+        />
       </div>
 
-      <button onclick="navigate()">
-        <img class="icon" src="./icon/send.svg" alt="sendNav-Icon" />
+      <!-- NAVIGATE -->
+      <button
+        id="navigateButton"
+        type="button"
+        title="Navigate"
+        onclick="navigate()"
+      >
+        <img class="icon" src="./icon/send.svg" alt="Navigate" />
       </button>
     </div>
 
-    <!-- LAYOUT -->
+    <!-- ==========================================================
+         MAIN LAYOUT
+         ========================================================== -->
+
     <div id="layout">
+      <!-- ========================================================
+           BROWSER
+           ======================================================== -->
+
       <div id="browser"></div>
+
+      <!-- ========================================================
+           AI VISUAL AREA
+           ======================================================== -->
 
       <div id="ai">
         <div class="animation">
           <div class="animationLayerColor"></div>
+
           <div class="animationLayer"></div>
         </div>
       </div>
 
+      <!-- ========================================================
+           AI COMMAND PANEL
+           ======================================================== -->
+
       <div id="aiForm">
-        <form id="ai-form">
+        <form id="ai-form" autocomplete="off">
           <div class="statusBlock">
-            <img src="./icon/logo.svg" alt="refreshNav-Icon" />
-            <p>Limit your availability to create exclusivity...</p>
+            <img src="./icon/logo.svg" alt="Jarvis" />
+
+            <p id="statusText">
+              Limit your availability to create exclusivity...
+            </p>
           </div>
-          <textarea id="cmd" placeholder="Type command..." rows="4"></textarea>
+
+          <textarea
+            id="cmd"
+            placeholder="Type command..."
+            rows="4"
+            autocomplete="off"
+            spellcheck="false"
+          ></textarea>
         </form>
+
         <div id="logs"></div>
       </div>
     </div>
+
+    <!-- ==========================================================
+         JARVIS CORE
+         ========================================================== -->
 
     <script>
       // ==========================================================
@@ -58,84 +127,246 @@
 
       window.aiState = {
         ready: false,
+
         pendingCommand: null,
+
         backendReady: false,
+
         initialized: false,
+
+        initializing: false,
+
+        navigating: false,
+
+        currentUrl: "",
+
+        lastError: null,
+
+        backendUrl: "http://localhost:9000",
+
+        startedAt: Date.now(),
       };
 
       // ==========================================================
       // CONFIGURATION
       // ==========================================================
 
+      const BACKEND_URL = "http://localhost:9000";
+
+      const BACKEND_HEALTH_URL = `${BACKEND_URL}/status`;
+
+      const BACKEND_TIMEOUT = 10000;
+
+      const BACKEND_MAX_ATTEMPTS = 30;
+
+      const BACKEND_RETRY_DELAY = 500;
+
       // ==========================================================
-      // URL FORMATTER
+      // DOM HELPERS
       // ==========================================================
 
-      function formatURL(url) {
-        url = String(url || "").trim();
-
-        if (!url) {
-          return "https://google.com";
-        }
-
-        if (!/^https?:\/\//i.test(url)) {
-          return "https://" + url;
-        }
-
-        return url;
+      function $(id) {
+        return document.getElementById(id);
       }
 
       // ==========================================================
       // LOGGING
       // ==========================================================
 
-      function log(msg) {
-        const logs = document.getElementById("logs");
+      function log(message) {
+        const text =
+          message === undefined || message === null ? "" : String(message);
+
+        console.log("[Jarvis]", text);
+
+        const logs = $("logs");
 
         if (!logs) {
-          console.log(msg);
           return;
         }
 
         const div = document.createElement("div");
-        div.innerText = msg;
+
+        div.innerText = text;
 
         logs.appendChild(div);
+
         logs.scrollTop = logs.scrollHeight;
+      }
+
+      // ==========================================================
+      // STATUS
+      // ==========================================================
+
+      function setStatus(message) {
+        const status = $("statusText");
+
+        if (status) {
+          status.innerText = String(message || "");
+        }
+      }
+
+      // ==========================================================
+      // ERROR HANDLING
+      // ==========================================================
+
+      function setError(error) {
+        const message = error?.message || String(error || "Unknown error");
+
+        window.aiState.lastError = message;
+
+        console.error("[Jarvis Error]", message);
+
+        log(`❌ ${message}`);
+
+        setStatus("Jarvis encountered an error");
+      }
+
+      // ==========================================================
+      // URL FORMATTER
+      // ==========================================================
+
+      function formatURL(value) {
+        let url = String(value || "").trim();
+
+        if (!url) {
+          return "https://google.com";
+        }
+
+        //--------------------------------------------------------
+        // Already valid HTTP/HTTPS
+        //--------------------------------------------------------
+
+        if (/^https?:\/\//i.test(url)) {
+          return url;
+        }
+
+        //--------------------------------------------------------
+        // Localhost / IP / file-like URLs
+        //--------------------------------------------------------
+
+        if (
+          /^localhost(?::\d+)?(?:\/|$)/i.test(url) ||
+          /^\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?(?:\/|$)/.test(url)
+        ) {
+          return `http://${url}`;
+        }
+
+        //--------------------------------------------------------
+        // Search-like input
+        //--------------------------------------------------------
+
+        if (/\s/.test(url) || !url.includes(".")) {
+          return `https://www.google.com/search?q=${encodeURIComponent(url)}`;
+        }
+
+        //--------------------------------------------------------
+        // Normal domain
+        //--------------------------------------------------------
+
+        return `https://${url}`;
+      }
+
+      // ==========================================================
+      // CHECK BROWSER API
+      // ==========================================================
+
+      function ensureBrowserAPI() {
+        if (!window.browserAPI) {
+          throw new Error("Electron browserAPI is not available");
+        }
+
+        return window.browserAPI;
+      }
+
+      // ==========================================================
+      // CHECK FUNCTION
+      // ==========================================================
+
+      function hasBrowserFunction(name) {
+        return (
+          window.browserAPI && typeof window.browserAPI[name] === "function"
+        );
+      }
+
+      // ==========================================================
+      // GENERIC TIMEOUT
+      // ==========================================================
+
+      async function fetchWithTimeout(
+        url,
+        options = {},
+        timeout = BACKEND_TIMEOUT,
+      ) {
+        const controller = new AbortController();
+
+        const timer = setTimeout(() => controller.abort(), timeout);
+
+        try {
+          return await fetch(url, {
+            ...options,
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timer);
+        }
       }
 
       // ==========================================================
       // BACKEND HEALTH CHECK
       // ==========================================================
 
-      const BACKEND_URL = "http://localhost:9000";
-      const BACKEND_HEALTH_URL = `${BACKEND_URL}/status`;
+      async function checkBackend() {
+        try {
+          const response = await fetchWithTimeout(BACKEND_HEALTH_URL, {
+            method: "GET",
+            cache: "no-store",
+          });
 
-      async function waitForBackend(maxAttempts = 30, retryDelay = 500) {
+          if (!response.ok) {
+            throw new Error(`Backend returned HTTP ${response.status}`);
+          }
+
+          window.aiState.backendReady = true;
+
+          return true;
+        } catch (error) {
+          window.aiState.backendReady = false;
+
+          return false;
+        }
+      }
+
+      // ==========================================================
+      // WAIT FOR BACKEND
+      // ==========================================================
+
+      async function waitForBackend(
+        maxAttempts = BACKEND_MAX_ATTEMPTS,
+        retryDelay = BACKEND_RETRY_DELAY,
+      ) {
+        if (window.aiState.backendReady) {
+          return true;
+        }
+
         log("⏳ Connecting to Jarvis backend...");
 
+        setStatus("Connecting to Jarvis backend...");
+
         for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-          try {
-            const response = await fetch(BACKEND_HEALTH_URL, {
-              method: "GET",
-              cache: "no-store",
-            });
+          const available = await checkBackend();
 
-            if (response.ok) {
-              window.aiState.backendReady = true;
+          if (available) {
+            log("✅ Jarvis backend connected");
 
-              log("✅ Jarvis backend connected");
+            setStatus("Jarvis backend connected");
 
-              return true;
-            }
-
-            console.warn(`Backend returned HTTP ${response.status}`);
-          } catch (error) {
-            console.warn(
-              `Backend connection attempt ${attempt}/${maxAttempts} failed`,
-              error.message,
-            );
+            return true;
           }
+
+          console.warn(
+            `Backend connection attempt ${attempt}/${maxAttempts} failed`,
+          );
 
           if (attempt < maxAttempts) {
             await new Promise((resolve) => setTimeout(resolve, retryDelay));
@@ -144,30 +375,62 @@
 
         window.aiState.backendReady = false;
 
+        setStatus("Backend unavailable");
+
         log("❌ Unable to connect to Jarvis backend");
 
         return false;
-      } // ==========================================================
+      }
+
+      // ==========================================================
       // BACKEND REQUEST HELPER
       // ==========================================================
 
       async function backendFetch(endpoint, options = {}) {
+        //--------------------------------------------------------
+        // Ensure backend
+        //--------------------------------------------------------
+
         if (!window.aiState.backendReady) {
-          await waitForBackend();
+          const connected = await waitForBackend();
+
+          if (!connected) {
+            throw new Error("Jarvis backend is unavailable");
+          }
         }
 
-        const response = await fetch(`${BACKEND_URL}${endpoint}`, {
+        //--------------------------------------------------------
+        // Request
+        //--------------------------------------------------------
+
+        const response = await fetchWithTimeout(`${BACKEND_URL}${endpoint}`, {
           ...options,
+
           headers: {
             "Content-Type": "application/json",
+
             ...(options.headers || {}),
           },
         });
 
+        //--------------------------------------------------------
+        // Backend failure
+        //--------------------------------------------------------
+
         if (!response.ok) {
-          throw new Error(
-            `Backend request failed: ${response.status} ${response.statusText}`,
-          );
+          let message = `Backend request failed: ${response.status} ${response.statusText}`;
+
+          try {
+            const errorData = await response.clone().json();
+
+            if (errorData?.error) {
+              message = errorData.error;
+            }
+          } catch {
+            // Ignore non-JSON error response
+          }
+
+          throw new Error(message);
         }
 
         return response;
@@ -177,156 +440,171 @@
       // NAVIGATE
       // ==========================================================
 
-      async function navigate() {
+      async function navigate(providedUrl = null) {
+        if (window.aiState.navigating) {
+          log("⏳ Navigation already in progress...");
+
+          return false;
+        }
+
+        window.aiState.navigating = true;
+
         try {
-          const input = document.getElementById("url");
+          //------------------------------------------------------
+          // URL
+          //------------------------------------------------------
+
+          const input = $("url");
 
           if (!input) {
             throw new Error("URL input element not found");
           }
 
-          const url = formatURL(input.value);
+          const rawUrl = providedUrl !== null ? providedUrl : input.value;
+
+          const url = formatURL(rawUrl);
+
+          input.value = url;
+
+          window.aiState.currentUrl = url;
+
+          //------------------------------------------------------
+          // Browser API
+          //------------------------------------------------------
+
+          const browser = ensureBrowserAPI();
 
           log(`🌐 Navigating to ${url}`);
 
-          // Navigate Electron browser
-          await window.browserAPI.navigate(url);
+          setStatus(`Opening ${url}`);
 
-          // Notify backend
-          await backendFetch("/navigate", {
-            method: "POST",
-            body: JSON.stringify({ url }),
-          });
+          //------------------------------------------------------
+          // Electron browser
+          //------------------------------------------------------
+
+          if (typeof browser.navigate !== "function") {
+            throw new Error("browserAPI.navigate() is not available");
+          }
+
+          await browser.navigate(url);
+
+          //------------------------------------------------------
+          // Backend
+          //------------------------------------------------------
+
+          if (!window.aiState.backendReady) {
+            await waitForBackend(10, 300);
+          }
+
+          if (window.aiState.backendReady) {
+            try {
+              await backendFetch("/navigate", {
+                method: "POST",
+
+                body: JSON.stringify({
+                  url,
+                }),
+              });
+            } catch (backendError) {
+              console.warn(
+                "Backend navigation synchronization failed:",
+                backendError.message,
+              );
+
+              log(
+                `⚠️ Browser opened, backend sync failed: ${backendError.message}`,
+              );
+            }
+          }
+
+          //------------------------------------------------------
+          // Success
+          //------------------------------------------------------
+
+          setStatus("Jarvis Browser is ready");
 
           log(`✅ Navigation completed: ${url}`);
+
+          return true;
         } catch (error) {
-          console.error("❌ Navigation failed:", error);
+          setError(error);
 
           log(`❌ Navigation failed: ${error.message}`);
+
+          return false;
+        } finally {
+          window.aiState.navigating = false;
         }
       }
 
       // ==========================================================
-      // INITIALIZE JARVIS
+      // BACK
       // ==========================================================
 
-      async function initializeJarvis() {
-        if (window.aiState.initialized) {
-          console.log("ℹ️ Jarvis is already initialized");
-
-          return;
-        }
-
+      async function goBack() {
         try {
-          log("🚀 Starting Jarvis Browser...");
+          const browser = ensureBrowserAPI();
 
-          // ------------------------------------------------------
-          // STEP 1: WAIT FOR BACKEND
-          // ------------------------------------------------------
-
-          await waitForBackend();
-
-          // ------------------------------------------------------
-          // STEP 2: GET INITIAL URL
-          // ------------------------------------------------------
-
-          const input = document.getElementById("url");
-
-          if (!input) {
-            throw new Error("URL input element not found");
+          if (typeof browser.back !== "function") {
+            throw new Error("browserAPI.back() is not available");
           }
 
-          const url = formatURL(input.value);
+          await browser.back();
 
-          // ------------------------------------------------------
-          // STEP 3: NAVIGATE ELECTRON BROWSER
-          // ------------------------------------------------------
-
-          log(`🌐 Opening ${url}`);
-
-          await window.browserAPI.navigate(url);
-
-          // ------------------------------------------------------
-          // STEP 4: INITIALIZE BACKEND
-          // ------------------------------------------------------
-
-          log("🔌 Initializing browser automation...");
-
-          const response = await backendFetch("/init", {
-            method: "POST",
-            body: JSON.stringify({ url }),
-          });
-
-          const data = await response.json();
-
-          if (data && data.success === false) {
-            throw new Error(data.error || "Backend initialization failed");
-          }
-
-          // ------------------------------------------------------
-          // STEP 5: UPDATE STATE
-          // ------------------------------------------------------
-
-          window.aiState.ready = true;
-          window.aiState.initialized = true;
-
-          log("✅ Jarvis Browser is ready");
-
-          console.log("✅ Jarvis initialization complete", data);
+          log("↩️ Back");
         } catch (error) {
-          window.aiState.ready = false;
-          window.aiState.initialized = false;
-
-          console.error("❌ Jarvis initialization failed:", error);
-
-          log(`❌ Jarvis startup failed: ${error.message}`);
-        }
-      }
-
-      // ==========================================================
-      // 🔙 BACK
-      // ==========================================================
-
-      function goBack() {
-        try {
-          window.browserAPI.back();
-        } catch (error) {
-          console.error("❌ Back navigation failed:", error);
+          setError(error);
 
           log(`❌ Back failed: ${error.message}`);
         }
       }
 
       // ==========================================================
-      // 🔜 FORWARD
+      // FORWARD
       // ==========================================================
 
-      function goForward() {
+      async function goForward() {
         try {
-          window.browserAPI.forward();
+          const browser = ensureBrowserAPI();
+
+          if (typeof browser.forward !== "function") {
+            throw new Error("browserAPI.forward() is not available");
+          }
+
+          await browser.forward();
+
+          log("↪️ Forward");
         } catch (error) {
-          console.error("❌ Forward navigation failed:", error);
+          setError(error);
 
           log(`❌ Forward failed: ${error.message}`);
         }
       }
 
       // ==========================================================
-      // 🔄 RELOAD
+      // RELOAD
       // ==========================================================
 
-      function reloadPage() {
+      async function reloadPage() {
         try {
-          window.browserAPI.reload();
+          const browser = ensureBrowserAPI();
+
+          if (typeof browser.reload !== "function") {
+            throw new Error("browserAPI.reload() is not available");
+          }
+
+          await browser.reload();
+
+          log("🔄 Page reloaded");
         } catch (error) {
-          console.error("❌ Reload failed:", error);
+          setError(error);
 
           log(`❌ Reload failed: ${error.message}`);
         }
       }
 
       // ==========================================================
-      // BROWSER RESIZE
+      // RESIZE BROWSER
       // ==========================================================
 
       function resizeBrowser() {
@@ -336,10 +614,351 @@
             typeof window.electronAPI.resizeBrowser === "function"
           ) {
             window.electronAPI.resizeBrowser();
+
+            return true;
           }
+
+          //------------------------------------------------------
+          // Optional browserAPI resize
+          //------------------------------------------------------
+
+          if (
+            window.browserAPI &&
+            typeof window.browserAPI.resize === "function"
+          ) {
+            window.browserAPI.resize();
+
+            return true;
+          }
+
+          return false;
         } catch (error) {
           console.error("❌ Browser resize failed:", error);
+
+          return false;
         }
+      }
+
+      // ==========================================================
+      // SYNC URL FROM ELECTRON
+      // ==========================================================
+
+      function setupURLSynchronization() {
+        //--------------------------------------------------------
+        // Optional preload event
+        //--------------------------------------------------------
+
+        if (
+          window.browserAPI &&
+          typeof window.browserAPI.onURLChanged === "function"
+        ) {
+          window.browserAPI.onURLChanged((url) => {
+            if (!url) {
+              return;
+            }
+
+            const input = $("url");
+
+            if (input) {
+              input.value = String(url);
+            }
+
+            window.aiState.currentUrl = String(url);
+          });
+
+          log("🔗 URL synchronization enabled");
+        }
+
+        //--------------------------------------------------------
+        // Optional Electron event
+        //--------------------------------------------------------
+
+        if (
+          window.electronAPI &&
+          typeof window.electronAPI.onURLChanged === "function"
+        ) {
+          window.electronAPI.onURLChanged((url) => {
+            if (!url) {
+              return;
+            }
+
+            const input = $("url");
+
+            if (input) {
+              input.value = String(url);
+            }
+
+            window.aiState.currentUrl = String(url);
+          });
+        }
+      }
+
+      // ==========================================================
+      // INITIALIZE JARVIS
+      // ==========================================================
+
+      async function initializeJarvis() {
+        //--------------------------------------------------------
+        // Already initialized
+        //--------------------------------------------------------
+
+        if (window.aiState.initialized) {
+          console.log("ℹ️ Jarvis is already initialized");
+
+          return true;
+        }
+
+        //--------------------------------------------------------
+        // Already initializing
+        //--------------------------------------------------------
+
+        if (window.aiState.initializing) {
+          console.log("ℹ️ Jarvis initialization already running");
+
+          return false;
+        }
+
+        window.aiState.initializing = true;
+
+        try {
+          log("🚀 Starting Jarvis Browser...");
+
+          setStatus("Starting Jarvis Browser...");
+
+          //------------------------------------------------------
+          // STEP 1
+          // Browser API
+          //------------------------------------------------------
+
+          if (!window.browserAPI) {
+            throw new Error("Electron browserAPI is not available");
+          }
+
+          //------------------------------------------------------
+          // STEP 2
+          // Backend
+          //------------------------------------------------------
+
+          const backendReady = await waitForBackend();
+
+          if (!backendReady) {
+            throw new Error("Jarvis backend could not be reached");
+          }
+
+          //------------------------------------------------------
+          // STEP 3
+          // URL
+          //------------------------------------------------------
+
+          const input = $("url");
+
+          if (!input) {
+            throw new Error("URL input element not found");
+          }
+
+          const url = formatURL(input.value);
+
+          input.value = url;
+
+          window.aiState.currentUrl = url;
+
+          //------------------------------------------------------
+          // STEP 4
+          // Browser navigation
+          //------------------------------------------------------
+
+          log(`🌐 Opening ${url}`);
+
+          setStatus(`Opening ${url}`);
+
+          const browser = ensureBrowserAPI();
+
+          if (typeof browser.navigate !== "function") {
+            throw new Error("browserAPI.navigate() is not available");
+          }
+
+          await browser.navigate(url);
+
+          //------------------------------------------------------
+          // STEP 5
+          // Backend initialization
+          //------------------------------------------------------
+
+          log("🔌 Initializing browser automation...");
+
+          setStatus("Initializing browser automation...");
+
+          const response = await backendFetch("/init", {
+            method: "POST",
+
+            body: JSON.stringify({
+              url,
+            }),
+          });
+
+          let data = null;
+
+          try {
+            data = await response.json();
+          } catch {
+            data = {
+              success: true,
+            };
+          }
+
+          //------------------------------------------------------
+          // Backend explicitly rejected initialization
+          //------------------------------------------------------
+
+          if (data && data.success === false) {
+            throw new Error(data.error || "Backend initialization failed");
+          }
+
+          //------------------------------------------------------
+          // STEP 6
+          // State
+          //------------------------------------------------------
+
+          window.aiState.ready = true;
+
+          window.aiState.initialized = true;
+
+          window.aiState.backendReady = true;
+
+          window.aiState.lastError = null;
+
+          //------------------------------------------------------
+          // STEP 7
+          // Final status
+          //------------------------------------------------------
+
+          setStatus("Jarvis Browser is ready");
+
+          log("✅ Jarvis Browser is ready");
+
+          console.log("✅ Jarvis initialization complete", data);
+
+          return true;
+        } catch (error) {
+          window.aiState.ready = false;
+
+          window.aiState.initialized = false;
+
+          window.aiState.lastError = error?.message || String(error);
+
+          console.error("❌ Jarvis initialization failed:", error);
+
+          log(`❌ Jarvis startup failed: ${error.message}`);
+
+          setStatus("Jarvis startup failed");
+
+          return false;
+        } finally {
+          window.aiState.initializing = false;
+        }
+      }
+
+      // ==========================================================
+      // ENSURE JARVIS READY
+      // ==========================================================
+
+      async function ensureJarvisReady() {
+        if (window.aiState.ready && window.aiState.initialized) {
+          return true;
+        }
+
+        return await initializeJarvis();
+      }
+
+      // ==========================================================
+      // BROWSER RESIZE OBSERVER
+      // ==========================================================
+
+      function setupBrowserResizeObserver() {
+        const browserDiv = $("browser");
+
+        if (!browserDiv || !window.ResizeObserver) {
+          return;
+        }
+
+        const observer = new ResizeObserver(() => {
+          resizeBrowser();
+        });
+
+        observer.observe(browserDiv);
+
+        window.jarvisResizeObserver = observer;
+      }
+
+      // ==========================================================
+      // URL INPUT ENTER
+      // ==========================================================
+
+      function setupURLInput() {
+        const input = $("url");
+
+        if (!input) {
+          return;
+        }
+
+        input.addEventListener("keydown", async (event) => {
+          if (event.key !== "Enter") {
+            return;
+          }
+
+          event.preventDefault();
+
+          await navigate();
+        });
+
+        //--------------------------------------------------------
+        // Focus select
+        //--------------------------------------------------------
+
+        input.addEventListener("focus", () => {
+          input.select();
+        });
+      }
+
+      // ==========================================================
+      // AI COMMAND INPUT
+      //
+      // ai.js owns actual AI command processing.
+      // We only protect readiness here.
+      // ==========================================================
+
+      function setupAIFormGuard() {
+        const form = $("ai-form");
+
+        if (!form) {
+          return;
+        }
+
+        form.addEventListener(
+          "submit",
+          async (event) => {
+            //----------------------------------------------------
+            // IMPORTANT:
+            // Do not preventDefault if ai.js already owns
+            // the submit handler.
+            //
+            // This listener only performs readiness check.
+            //----------------------------------------------------
+
+            if (!window.aiState.ready) {
+              event.preventDefault();
+
+              log("⏳ Jarvis is still starting...");
+
+              const ready = await ensureJarvisReady();
+
+              if (!ready) {
+                log("❌ Jarvis is not ready");
+              }
+            }
+          },
+          true,
+        );
       }
 
       // ==========================================================
@@ -350,21 +969,42 @@
         "load",
         async () => {
           try {
-            // Resize browser
+            log("🚀 Jarvis Browser loading...");
+
+            //------------------------------------------------------
+            // Resize
+            //------------------------------------------------------
+
             resizeBrowser();
 
-            // Observe browser container
-            const browserDiv = document.getElementById("browser");
+            //------------------------------------------------------
+            // Resize observer
+            //------------------------------------------------------
 
-            if (browserDiv && window.ResizeObserver) {
-              const observer = new ResizeObserver(() => {
-                resizeBrowser();
-              });
+            setupBrowserResizeObserver();
 
-              observer.observe(browserDiv);
-            }
+            //------------------------------------------------------
+            // URL input
+            //------------------------------------------------------
 
-            // Initialize Jarvis
+            setupURLInput();
+
+            //------------------------------------------------------
+            // URL synchronization
+            //------------------------------------------------------
+
+            setupURLSynchronization();
+
+            //------------------------------------------------------
+            // AI form guard
+            //------------------------------------------------------
+
+            setupAIFormGuard();
+
+            //------------------------------------------------------
+            // Initialize
+            //------------------------------------------------------
+
             await initializeJarvis();
           } catch (error) {
             console.error("❌ Page initialization failed:", error);
@@ -372,52 +1012,181 @@
             log(`❌ Page initialization failed: ${error.message}`);
           }
         },
-        { once: true },
+        {
+          once: true,
+        },
       );
 
       // ==========================================================
       // WINDOW RESIZE
       // ==========================================================
 
-      window.addEventListener("resize", resizeBrowser);
+      window.addEventListener("resize", () => {
+        resizeBrowser();
+      });
 
       // ==========================================================
-      // EXPOSE FUNCTIONS TO HTML
+      // EXPOSE NAVIGATION FUNCTIONS
       // ==========================================================
 
       window.navigate = navigate;
+
       window.goBack = goBack;
+
       window.goForward = goForward;
+
       window.reloadPage = reloadPage;
 
       // ==========================================================
-      // DEBUG HELPERS
+      // JARVIS DEBUG / CONTROL API
       // ==========================================================
 
       window.jarvis = {
+        //--------------------------------------------------------
+        // State
+        //--------------------------------------------------------
+
         state: window.aiState,
 
-        async checkBackend() {
-          try {
-            await waitForBackend(1, 0);
+        //--------------------------------------------------------
+        // Backend
+        //--------------------------------------------------------
 
-            return {
-              success: true,
-              message: "Backend is available",
-            };
-          } catch (error) {
-            return {
-              success: false,
-              error: error.message,
-            };
-          }
+        async checkBackend() {
+          const available = await checkBackend();
+
+          return {
+            success: available,
+
+            message: available
+              ? "Backend is available"
+              : "Backend is unavailable",
+          };
         },
+
+        //--------------------------------------------------------
+        // Initialize
+        //--------------------------------------------------------
 
         async initialize() {
-          await initializeJarvis();
+          return await initializeJarvis();
+        },
+
+        //--------------------------------------------------------
+        // Ensure ready
+        //--------------------------------------------------------
+
+        async ready() {
+          return await ensureJarvisReady();
+        },
+
+        //--------------------------------------------------------
+        // Navigate
+        //--------------------------------------------------------
+
+        async navigate(url) {
+          return await navigate(url);
+        },
+
+        //--------------------------------------------------------
+        // Back
+        //--------------------------------------------------------
+
+        async back() {
+          return await goBack();
+        },
+
+        //--------------------------------------------------------
+        // Forward
+        //--------------------------------------------------------
+
+        async forward() {
+          return await goForward();
+        },
+
+        //--------------------------------------------------------
+        // Reload
+        //--------------------------------------------------------
+
+        async reload() {
+          return await reloadPage();
+        },
+
+        //--------------------------------------------------------
+        // Resize
+        //--------------------------------------------------------
+
+        resize() {
+          return resizeBrowser();
+        },
+
+        //--------------------------------------------------------
+        // Backend request
+        //--------------------------------------------------------
+
+        async backend(endpoint, options = {}) {
+          const response = await backendFetch(endpoint, options);
+
+          const contentType = response.headers.get("content-type") || "";
+
+          if (contentType.includes("application/json")) {
+            return await response.json();
+          }
+
+          return await response.text();
+        },
+
+        //--------------------------------------------------------
+        // Diagnostics
+        //--------------------------------------------------------
+
+        diagnostics() {
+          return {
+            state: {
+              ...window.aiState,
+            },
+
+            browserAPI: !!window.browserAPI,
+
+            electronAPI: !!window.electronAPI,
+
+            backend: BACKEND_URL,
+
+            browserFunctions: {
+              navigate: hasBrowserFunction("navigate"),
+
+              back: hasBrowserFunction("back"),
+
+              forward: hasBrowserFunction("forward"),
+
+              reload: hasBrowserFunction("reload"),
+
+              resize: hasBrowserFunction("resize"),
+
+              onURLChanged: hasBrowserFunction("onURLChanged"),
+            },
+
+            uptime: Date.now() - window.aiState.startedAt,
+          };
         },
       };
+
+      // ==========================================================
+      // GLOBAL DEBUG
+      // ==========================================================
+
+      console.log("==================================================");
+
+      console.log("Jarvis Browser Frontend");
+
+      console.log("Backend:", BACKEND_URL);
+
+      console.log("==================================================");
     </script>
+
+    <!-- ==========================================================
+         AI ENGINE
+         ========================================================== -->
 
     <script src="ai.js"></script>
   </body>

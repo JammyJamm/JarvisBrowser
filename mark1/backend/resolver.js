@@ -2372,368 +2372,368 @@ export default class Resolver {
       return false;
     }
   }
+  //======================================================
+  // TYPE SMART
+  //======================================================
+
+  //=====================================================
+  // TYPE SMART
+  //
+  // User:
+  // Fill the "E-mail or ID" field with
+  // "tamiltanishh@gmail.com"
+  //
+  // Pipeline:
+  //
+  // IntentParser
+  //      ↓
+  // ScoringEngine
+  //      ↓
+  // Input Candidate
+  //      ↓
+  // Playwright
+  //      ↓
+  // Verification
+  //      ↓
+  // SelfHealing
+  //
+  //=====================================================
+
   async typeSmart(input, explicitValue = null) {
     const started = this.startTimer();
 
-    return await this.executeWithHealing("typeSmart", input, async (ctx) => {
-      //----------------------------------------------------
-      // VALIDATE
-      //----------------------------------------------------
+    return await this.selfHealing.execute(
+      async () => {
+        //--------------------------------------------------
+        // VALIDATE
+        //--------------------------------------------------
 
-      if (
-        input === undefined ||
-        input === null ||
-        String(input).trim() === ""
-      ) {
-        throw new Error("typeSmart requires a field/target");
-      }
-
-      const rawInput = String(input).trim();
-
-      let query = "";
-      let value = null;
-      let parsed = null;
-
-      //----------------------------------------------------
-      // MODE 1
-      //
-      // Explicit tool arguments
-      //
-      // typeSmart("E-mail or ID", "abc@gmail.com")
-      //
-      //----------------------------------------------------
-
-      if (explicitValue !== undefined && explicitValue !== null) {
-        query = rawInput;
-        value = String(explicitValue);
-
-        this.log("[TYPE SMART] Direct target/value mode", {
-          target: query,
-          value,
-        });
-      }
-
-      //----------------------------------------------------
-      // MODE 2
-      //
-      // Deterministic natural-language parsing
-      //
-      //----------------------------------------------------
-      else {
-        parsed = this.parseTypeCommand(rawInput);
-
-        if (parsed?.action === "type") {
-          query = parsed.target;
-          value = String(parsed.value ?? "");
-
-          this.log(
-            "[TYPE SMART] Deterministic type parse:",
-            JSON.stringify(parsed, null, 2),
-          );
+        if (!input) {
+          throw new Error("typeSmart requires input");
         }
-      }
 
-      //----------------------------------------------------
-      // MODE 3
-      //
-      // IntentParser fallback
-      //
-      // IMPORTANT:
-      // Only use this if deterministic parsing failed.
-      //----------------------------------------------------
+        //--------------------------------------------------
+        // PARSE INTENT
+        //--------------------------------------------------
 
-      if (!query) {
-        parsed = this.intentParser.parse(rawInput);
-
-        this.log(
-          "[TYPE SMART] IntentParser result:",
-          JSON.stringify(parsed, null, 2),
-        );
+        const parsed = this.intentParser.parse(input);
 
         const step = parsed?.steps?.[0];
 
         if (!step) {
-          throw new Error(`Unable to understand typing command: '${rawInput}'`);
+          throw new Error("Unable to parse type action");
         }
 
         if (step.action !== "type") {
-          throw new Error(
-            `Unable to resolve typing command '${rawInput}'. ` +
-              `IntentParser returned '${step.action}'.`,
-          );
+          throw new Error(`Expected type action but received '${step.action}'`);
         }
 
-        query = step.target || step.field || step.text || "";
+        //--------------------------------------------------
+        // TARGET
+        //--------------------------------------------------
 
-        if (value === null || value === undefined || value === "") {
-          value = step.value;
+        const query = String(step.target || "").trim();
+
+        if (!query) {
+          throw new Error("Type target is empty");
         }
-      }
 
-      //----------------------------------------------------
-      // NORMALIZE
-      //----------------------------------------------------
+        //--------------------------------------------------
+        // VALUE
+        //--------------------------------------------------
 
-      query = String(query ?? "").trim();
+        const value =
+          explicitValue !== null && explicitValue !== undefined
+            ? explicitValue
+            : step.value;
 
-      if (!query) {
-        throw new Error("Typing target is empty");
-      }
+        if (value === undefined || value === null) {
+          throw new Error("No typing value provided");
+        }
 
-      if (value === undefined || value === null) {
-        throw new Error(`No typing value provided for '${query}'`);
-      }
+        const normalizedQuery = this.normalizeResolverText(query);
 
-      value = String(value);
-
-      this.log("[TYPE SMART] FINAL:", {
-        target: query,
-        value,
-      });
-
-      //----------------------------------------------------
-      // BUILD FRESH DOM
-      //----------------------------------------------------
-
-      await this.ensureFreshDOM();
-
-      const dom = await this.buildDOMIndex(ctx?.retry > 0);
-
-      const elements = dom?.elements || [];
-
-      if (!elements.length) {
-        throw new Error(
-          `No DOM elements found while searching for input '${query}'`,
-        );
-      }
-
-      //----------------------------------------------------
-      // DIRECT LABEL RESOLUTION
-      //
-      // This should happen BEFORE scoring.
-      //
-      // "E-mail or ID"
-      //       ↓
-      // visible label
-      //       ↓
-      // associated input
-      //
-      //----------------------------------------------------
-
-      const labelCandidate = await this.findInputByLabelSafe(query);
-
-      if (labelCandidate) {
-        this.log("[TYPE SMART] LABEL MATCH:", {
-          label: labelCandidate.labelText,
-          strategy: labelCandidate.strategy,
-        });
-
-        const typed = await this.typeIntoResolvedInput(
-          labelCandidate.input,
+        this.log(
+          "TYPE target:",
+          query,
+          "normalized:",
+          normalizedQuery,
+          "value:",
           value,
         );
 
-        if (typed) {
-          const verified = await this.verifyLocatorValue(
-            labelCandidate.input,
-            value,
-          );
+        //--------------------------------------------------
+        // REFRESH DOM
+        //--------------------------------------------------
 
-          if (!verified) {
-            throw new Error(`Typing was not verified for '${query}'`);
-          }
+        await this.ensureFreshDOM();
 
-          this.stats.types++;
+        //--------------------------------------------------
+        // BUILD DOM INDEX
+        //--------------------------------------------------
 
-          this.stopTimer(started);
+        await this.buildDOMIndex();
 
-          return {
-            success: true,
+        //--------------------------------------------------
+        // RANK INPUT CANDIDATES
+        //--------------------------------------------------
 
-            action: "type",
+        let ranked = this.scoringEngine
+          .rankCandidates(query)
+          .filter((candidate) => this.isInputCandidate(candidate));
 
-            target: query,
+        //--------------------------------------------------
+        // EXACT NORMALIZED FALLBACK
+        //
+        // Important for:
+        //
+        // E-mail or ID
+        // email or id
+        // E-MAIL OR ID
+        //
+        //--------------------------------------------------
 
-            value,
+        if (!ranked.length) {
+          const allCandidates = this.scoringEngine.rankCandidates("");
 
-            confidence: 100,
+          ranked = allCandidates.filter((candidate) => {
+            if (!this.isInputCandidate(candidate)) {
+              return false;
+            }
 
-            verified: true,
+            const values = [
+              candidate.text,
+              candidate.placeholder,
+              candidate.aria,
+              candidate.ariaLabel,
+              candidate.title,
+              candidate.name,
+              candidate.id,
+            ];
 
-            matchType: labelCandidate.strategy,
-
-            candidate: {
-              text: labelCandidate.labelText,
-              tag: "input",
-              score: 100,
-            },
-          };
+            return values.some(
+              (value) => this.normalizeResolverText(value) === normalizedQuery,
+            );
+          });
         }
-      }
 
-      //----------------------------------------------------
-      // SCORE INPUT CANDIDATES
-      //----------------------------------------------------
+        //--------------------------------------------------
+        // NO INPUT
+        //--------------------------------------------------
 
-      let ranked = this.scoringEngine
-        .rankCandidates(query)
-        .filter((candidate) => this.isInputCandidate(candidate));
+        if (!ranked.length) {
+          throw new Error(`Unable to locate input '${query}'`);
+        }
 
-      //----------------------------------------------------
-      // SEMANTIC INPUT MATCH
-      //----------------------------------------------------
+        //--------------------------------------------------
+        // BEST CANDIDATE
+        //--------------------------------------------------
 
-      const semanticCandidate = this.findSemanticInputCandidate(
-        query,
-        elements,
-      );
+        let finalCandidate = ranked[0];
 
-      if (semanticCandidate) {
-        this.log("[TYPE SMART] Semantic input match:", {
-          query,
-          id: semanticCandidate.id,
-          name: semanticCandidate.name,
-          type: semanticCandidate.type,
-          autocomplete: semanticCandidate.autocomplete,
-          score: semanticCandidate.score,
-        });
+        this.log(
+          "TYPE candidate:",
+          JSON.stringify({
+            text: finalCandidate.text,
+            placeholder: finalCandidate.placeholder,
+            aria: finalCandidate.aria,
+            name: finalCandidate.name,
+            id: finalCandidate.id,
+            tag: finalCandidate.tag,
+            score: finalCandidate.score,
+          }),
+        );
 
-        ranked = [
-          semanticCandidate,
-          ...ranked.filter((candidate) => candidate !== semanticCandidate),
-        ];
-      }
+        //--------------------------------------------------
+        // LOW CONFIDENCE → PLANNER
+        //--------------------------------------------------
 
-      //----------------------------------------------------
-      // NO CANDIDATE
-      //----------------------------------------------------
+        if (
+          finalCandidate.score < this.scoringEngine.options.plannerThreshold
+        ) {
+          this.stats.plannerCalls++;
 
-      if (!ranked.length) {
-        throw new Error(`Unable to locate input '${query}'`);
-      }
+          const plan = await this.planner.plan(input, {
+            ranked,
+            query,
+          });
 
-      //----------------------------------------------------
-      // BEST CANDIDATE
-      //----------------------------------------------------
+          if (plan?.steps?.length) {
+            const plannerTarget = plan.steps[0].target || query;
 
-      let finalCandidate = ranked[0];
-
-      this.log("[TYPE SMART] Candidate:", {
-        id: finalCandidate.id,
-        name: finalCandidate.name,
-        text: finalCandidate.text,
-        placeholder: finalCandidate.placeholder,
-        type: finalCandidate.type,
-        autocomplete: finalCandidate.autocomplete,
-        score: finalCandidate.score,
-      });
-
-      //----------------------------------------------------
-      // PLANNER FALLBACK
-      //----------------------------------------------------
-
-      if (Number(finalCandidate.score || 0) < this.options.plannerThreshold) {
-        this.stats.plannerCalls++;
-
-        const plan = await this.planner.plan(rawInput, {
-          parsed,
-          ranked,
-          query,
-          dom: elements,
-        });
-
-        if (plan?.steps?.length) {
-          const plannerStep = plan.steps[0];
-
-          const plannerTarget =
-            plannerStep.target || plannerStep.field || plannerStep.text;
-
-          if (plannerTarget) {
             const rescored = this.scoringEngine
               .rankCandidates(plannerTarget)
               .filter((candidate) => this.isInputCandidate(candidate));
 
-            if (
-              rescored.length &&
-              Number(rescored[0].score || 0) > Number(finalCandidate.score || 0)
-            ) {
+            if (rescored.length) {
               finalCandidate = rescored[0];
-
-              this.stats.plannerRecoveries++;
             }
           }
         }
-      }
 
-      //----------------------------------------------------
-      // CONFIDENCE
-      //----------------------------------------------------
+        //--------------------------------------------------
+        // CONFIDENCE
+        //--------------------------------------------------
 
-      const score = Number(finalCandidate?.score || 0);
+        if (!finalCandidate) {
+          throw new Error(`No input candidate resolved for '${query}'`);
+        }
 
-      if (!finalCandidate || score < this.options.minimumConfidence) {
-        throw new Error(
-          `Low confidence input match for '${query}': ` +
-            `${score.toFixed(1)}%`,
+        if (finalCandidate.score < 60) {
+          throw new Error(
+            `Low confidence (${finalCandidate.score.toFixed(1)}%) for input '${query}'`,
+          );
+        }
+
+        //--------------------------------------------------
+        // PAGE
+        //--------------------------------------------------
+
+        const page = await this.mcp.getPage();
+
+        //--------------------------------------------------
+        // TYPE CURRENT PAGE
+        //--------------------------------------------------
+
+        let typed = await this.typeCandidate(page, finalCandidate, value);
+
+        //--------------------------------------------------
+        // SEARCH FRAMES
+        //--------------------------------------------------
+
+        if (!typed) {
+          for (const frame of page.frames()) {
+            typed = await this.typeCandidate(frame, finalCandidate, value);
+
+            if (typed) {
+              break;
+            }
+          }
+        }
+
+        //--------------------------------------------------
+        // FINAL FAILURE
+        //--------------------------------------------------
+
+        if (!typed) {
+          throw new Error(`Unable to type into '${query}'`);
+        }
+
+        //--------------------------------------------------
+        // VERIFY VALUE
+        //--------------------------------------------------
+
+        const verified = await this.verifyTypedValue(
+          page,
+          finalCandidate,
+          value,
         );
+
+        if (!verified) {
+          throw new Error(
+            `Typing completed but value verification failed for '${query}'`,
+          );
+        }
+
+        //--------------------------------------------------
+        // LEARN
+        //--------------------------------------------------
+
+        this.remember(query, finalCandidate);
+
+        //--------------------------------------------------
+        // STATISTICS
+        //--------------------------------------------------
+
+        this.stats.types++;
+
+        this.stopTimer(started);
+
+        //--------------------------------------------------
+        // SUCCESS
+        //--------------------------------------------------
+
+        return {
+          success: true,
+
+          action: "type",
+
+          value,
+
+          confidence: Number(finalCandidate.score.toFixed(2)),
+
+          candidate: {
+            text: finalCandidate.text,
+
+            placeholder: finalCandidate.placeholder || "",
+
+            aria: finalCandidate.aria || finalCandidate.ariaLabel || "",
+
+            name: finalCandidate.name || "",
+
+            id: finalCandidate.id || "",
+
+            tag: finalCandidate.tag || "",
+
+            score: finalCandidate.score,
+          },
+
+          verified: true,
+        };
+      },
+      this.createHealingContext("typeSmart", input),
+    );
+  }
+  //=====================================================
+  // INPUT CANDIDATE
+  //=====================================================
+
+  isInputCandidate(candidate) {
+    if (!candidate) {
+      return false;
+    }
+
+    const tag = String(candidate.tag || candidate.tagName || "").toLowerCase();
+
+    const role = String(candidate.role || "").toLowerCase();
+
+    const type = String(
+      candidate.type || candidate.element?.type || "",
+    ).toLowerCase();
+
+    //--------------------------------------------------
+    // Native inputs
+    //--------------------------------------------------
+
+    if (tag === "input" || tag === "textarea") {
+      //------------------------------------------------
+      // Do not treat hidden inputs as user fields
+      //------------------------------------------------
+
+      if (type === "hidden" || candidate.visible === false) {
+        return false;
       }
 
-      //----------------------------------------------------
-      // EXECUTE
-      //----------------------------------------------------
+      return true;
+    }
 
-      const typed = await this.executeCandidateType(finalCandidate, value);
+    //--------------------------------------------------
+    // ARIA textbox
+    //--------------------------------------------------
 
-      if (!typed) {
-        throw new Error(`Unable to type into '${query}'`);
-      }
+    if (role === "textbox" || role === "searchbox") {
+      return candidate.visible !== false;
+    }
 
-      //----------------------------------------------------
-      // VERIFY
-      //----------------------------------------------------
+    //--------------------------------------------------
+    // Content editable
+    //--------------------------------------------------
 
-      const verified = await this.verifyTypedValue(finalCandidate, value);
+    if (candidate.contenteditable === true || candidate.editable === true) {
+      return candidate.visible !== false;
+    }
 
-      if (!verified) {
-        throw new Error(`Typing was not verified for '${query}'`);
-      }
-
-      //----------------------------------------------------
-      // LEARN
-      //----------------------------------------------------
-
-      this.remember(query, finalCandidate);
-
-      this.stats.types++;
-
-      this.stopTimer(started);
-
-      return {
-        success: true,
-
-        action: "type",
-
-        target: query,
-
-        value,
-
-        confidence: Number(score.toFixed(2)),
-
-        verified: true,
-
-        candidate: {
-          id: finalCandidate.id,
-          name: finalCandidate.name,
-          text: finalCandidate.text,
-          role: finalCandidate.role,
-          tag: finalCandidate.tag,
-          type: finalCandidate.type,
-          placeholder: finalCandidate.placeholder,
-          autocomplete: finalCandidate.autocomplete,
-          score,
-        },
-      };
-    });
+    return false;
   }
   //======================================================
   // VERIFY TYPED VALUE
@@ -3165,51 +3165,11 @@ export default class Resolver {
   // TYPE CANDIDATE
   //==========================================================
 
+  //=====================================================
+  // TYPE CANDIDATE
+  //=====================================================
+
   async typeCandidate(scope, candidate, value) {
-    if (!scope || !candidate) {
-      return false;
-    }
-
-    //------------------------------------------------------
-    // Placeholder
-    //------------------------------------------------------
-
-    if (candidate.placeholder) {
-      try {
-        const locator = scope.getByPlaceholder(candidate.placeholder, {
-          exact: true,
-        });
-
-        if (await locator.count()) {
-          await locator.first().fill(String(value));
-
-          return true;
-        }
-      } catch {}
-    }
-
-    //------------------------------------------------------
-    // Label
-    //------------------------------------------------------
-
-    if (candidate.text) {
-      try {
-        const locator = scope.getByLabel(candidate.text, {
-          exact: true,
-        });
-
-        if (await locator.count()) {
-          await locator.first().fill(String(value));
-
-          return true;
-        }
-      } catch {}
-    }
-
-    //------------------------------------------------------
-    // Selectors
-    //------------------------------------------------------
-
     const selectors = this.buildCandidateSelectors(candidate);
 
     for (const selector of selectors) {
@@ -3220,51 +3180,181 @@ export default class Resolver {
           continue;
         }
 
+        //------------------------------------------------
+        // VISIBLE
+        //------------------------------------------------
+
+        const visible = await locator.isVisible().catch(() => false);
+
+        if (!visible) {
+          continue;
+        }
+
+        //------------------------------------------------
+        // ENABLED
+        //------------------------------------------------
+
+        const disabled = await locator.isDisabled().catch(() => false);
+
+        if (disabled) {
+          continue;
+        }
+
+        //------------------------------------------------
+        // SCROLL
+        //------------------------------------------------
+
         await locator.scrollIntoViewIfNeeded().catch(() => {});
+
+        //------------------------------------------------
+        // FOCUS
+        //------------------------------------------------
+
+        await locator.focus().catch(() => {});
+
+        //------------------------------------------------
+        // CLEAR
+        //------------------------------------------------
+
+        await locator.fill("");
+
+        //------------------------------------------------
+        // TYPE
+        //------------------------------------------------
 
         await locator.fill(String(value));
 
+        //------------------------------------------------
+        // VERIFY IMMEDIATELY
+        //------------------------------------------------
+
+        const actualValue = await locator.inputValue().catch(() => null);
+
+        if (actualValue !== null && String(actualValue) !== String(value)) {
+          this.warn("Type verification mismatch:", {
+            selector,
+            expected: String(value),
+            actual: String(actualValue),
+          });
+
+          continue;
+        }
+
+        this.log("Typed successfully:", selector);
+
         return true;
-      } catch {
-        // Continue
+      } catch (error) {
+        this.log("Type candidate failed:", selector, error.message);
       }
     }
 
     return false;
   }
+  //=====================================================
+  // VERIFY TYPED VALUE
+  //=====================================================
 
+  async verifyTypedValue(page, candidate, value) {
+    const selectors = this.buildCandidateSelectors(candidate);
+
+    for (const selector of selectors) {
+      try {
+        const locator = page.locator(selector).first();
+
+        if (!(await locator.count())) {
+          continue;
+        }
+
+        const actual = await locator.inputValue().catch(() => null);
+
+        if (actual === null) {
+          continue;
+        }
+
+        if (String(actual) === String(value)) {
+          return true;
+        }
+      } catch {
+        // Continue with next selector
+      }
+    }
+
+    //--------------------------------------------------
+    // Try frames
+    //--------------------------------------------------
+
+    for (const frame of page.frames()) {
+      for (const selector of selectors) {
+        try {
+          const locator = frame.locator(selector).first();
+
+          if (!(await locator.count())) {
+            continue;
+          }
+
+          const actual = await locator.inputValue().catch(() => null);
+
+          if (actual !== null && String(actual) === String(value)) {
+            return true;
+          }
+        } catch {
+          // Continue
+        }
+      }
+    }
+
+    return false;
+  }
   //==========================================================
   // SELECTOR BUILDER
   //==========================================================
 
+  //=====================================================
+  // SELECTOR GENERATOR
+  //=====================================================
+
   buildCandidateSelectors(candidate) {
     const selectors = [];
 
-    const escapeCSS = (value) => {
-      const text = String(value ?? "");
+    const escapeCSS = (value) =>
+      String(value ?? "")
+        .replace(/\\/g, "\\\\")
+        .replace(/"/g, '\\"')
+        .trim();
 
-      return text.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-    };
+    const escapeText = (value) =>
+      String(value ?? "")
+        .replace(/\\/g, "\\\\")
+        .replace(/"/g, '\\"')
+        .trim();
 
-    //------------------------------------------------------
-    // Test ID
-    //------------------------------------------------------
+    //--------------------------------------------------
+    // TEST ID
+    //--------------------------------------------------
 
     if (candidate.testid) {
       selectors.push(`[data-testid="${escapeCSS(candidate.testid)}"]`);
     }
 
-    //------------------------------------------------------
+    //--------------------------------------------------
     // ID
-    //------------------------------------------------------
+    //--------------------------------------------------
 
     if (candidate.id) {
       selectors.push(`#${escapeCSS(candidate.id)}`);
     }
 
-    //------------------------------------------------------
+    //--------------------------------------------------
+    // NAME
+    //--------------------------------------------------
+
+    if (candidate.name) {
+      selectors.push(`[name="${escapeCSS(candidate.name)}"]`);
+    }
+
+    //--------------------------------------------------
     // ARIA
-    //------------------------------------------------------
+    //--------------------------------------------------
 
     const aria = candidate.aria || candidate.ariaLabel;
 
@@ -3272,55 +3362,75 @@ export default class Resolver {
       selectors.push(`[aria-label="${escapeCSS(aria)}"]`);
     }
 
-    //------------------------------------------------------
-    // Placeholder
-    //------------------------------------------------------
+    //--------------------------------------------------
+    // PLACEHOLDER
+    //--------------------------------------------------
 
     if (candidate.placeholder) {
       selectors.push(`[placeholder="${escapeCSS(candidate.placeholder)}"]`);
     }
 
-    //------------------------------------------------------
-    // Title
-    //------------------------------------------------------
+    //--------------------------------------------------
+    // TITLE
+    //--------------------------------------------------
 
     if (candidate.title) {
       selectors.push(`[title="${escapeCSS(candidate.title)}"]`);
     }
 
-    //------------------------------------------------------
-    // Name
-    //------------------------------------------------------
+    //--------------------------------------------------
+    // INPUT TYPE
+    //--------------------------------------------------
 
-    if (candidate.name) {
-      selectors.push(`[name="${escapeCSS(candidate.name)}"]`);
+    if (candidate.tag === "input" && candidate.type) {
+      selectors.push(`input[type="${escapeCSS(candidate.type)}"]`);
     }
 
-    //------------------------------------------------------
-    // Role
-    //------------------------------------------------------
+    //--------------------------------------------------
+    // LABEL TEXT
+    //
+    // Example:
+    //
+    // <label>E-mail or ID</label>
+    // <input ...>
+    //
+    //--------------------------------------------------
+
+    if (candidate.text) {
+      const text = escapeText(candidate.text);
+
+      selectors.push(`label:has-text("${text}")`);
+
+      selectors.push(`input:has-text("${text}")`);
+
+      selectors.push(`textarea:has-text("${text}")`);
+    }
+
+    //--------------------------------------------------
+    // DIRECT TEXT
+    //--------------------------------------------------
+
+    if (candidate.text) {
+      const text = escapeText(candidate.text);
+
+      selectors.push(`text="${text}"`);
+
+      selectors.push(`:text("${text}")`);
+    }
+
+    //--------------------------------------------------
+    // ROLE
+    //--------------------------------------------------
 
     if (candidate.role && candidate.text) {
       selectors.push(
-        `[role="${escapeCSS(candidate.role)}"]:has-text("${escapeCSS(
-          candidate.text,
-        )}")`,
+        `[role="${escapeCSS(candidate.role)}"]:has-text("${escapeText(candidate.text)}")`,
       );
     }
 
-    //------------------------------------------------------
-    // Tag + text
-    //------------------------------------------------------
-
-    if (
-      candidate.tag &&
-      candidate.text &&
-      ["button", "a", "label"].includes(String(candidate.tag).toLowerCase())
-    ) {
-      selectors.push(
-        `${candidate.tag}:has-text("${escapeCSS(candidate.text)}")`,
-      );
-    }
+    //--------------------------------------------------
+    // REMOVE DUPLICATES
+    //--------------------------------------------------
 
     return [...new Set(selectors.filter(Boolean))];
   }
@@ -3395,217 +3505,520 @@ export default class Resolver {
   // EXECUTE PLAN
   //==========================================================
 
+  //======================================================
+  // SEQUENTIAL EXECUTION
+  //======================================================
+
   async execute(plan) {
-    if (!plan?.steps?.length) {
+    const steps = this.normalizeExecutionSteps(plan);
+
+    if (!steps.length) {
       return {
         success: false,
-
         error: "Empty execution plan",
+        results: [],
       };
     }
 
     const results = [];
 
-    for (const step of plan.steps) {
-      switch (step.action || step.type) {
-        //--------------------------------------------------
-        // CLICK
-        //--------------------------------------------------
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
 
-        case "click":
-          results.push(
-            await this.clickSmart(step.target || step.text || step.value),
-          );
+      const stepNumber = i + 1;
 
-          break;
+      this.log(
+        `[SequentialExecutor] Step ${stepNumber}/${steps.length}`,
+        step.action,
+        step.target || step.url || "",
+      );
 
-        //--------------------------------------------------
-        // TYPE
-        //--------------------------------------------------
+      let result;
 
-        case "type":
-          results.push(
-            await this.typeSmart(step.target || step.text, step.value),
-          );
+      try {
+        switch (step.action) {
+          //================================================
+          // NAVIGATE
+          //================================================
 
-          break;
+          case "navigate": {
+            const url = String(step.url || step.target || "").trim();
 
-        //--------------------------------------------------
-        // NAVIGATE
-        //--------------------------------------------------
+            if (!url) {
+              throw new Error(`Step ${stepNumber}: Navigation URL missing`);
+            }
 
-        case "navigate": {
-          const page = await this.mcp.getPage();
+            const page = await this.mcp.getPage();
 
-          const url = step.url || step.target || step.value;
-
-          if (!url) {
-            results.push({
-              success: false,
-
-              action: "navigate",
-
-              error: "Navigation URL missing",
+            await page.goto(url, {
+              waitUntil: "domcontentloaded",
+              timeout: 30000,
             });
+
+            /*
+             * Do NOT use networkidle.
+             *
+             * Login pages often keep network
+             * connections open.
+             */
+            await page.waitForTimeout(500).catch(() => {});
+
+            /*
+             * Page changed.
+             *
+             * Old DOM information is invalid.
+             */
+            this.invalidateDOMCache();
+
+            result = {
+              success: true,
+              action: "navigate",
+              url,
+            };
 
             break;
           }
 
-          this.log("NAVIGATE:", url);
+          //================================================
+          // CLICK
+          //================================================
 
-          await page.goto(url, {
-            waitUntil: "domcontentloaded",
-          });
+          case "click": {
+            const target = String(step.target || "").trim();
 
-          //------------------------------------------------
-          // IMPORTANT:
-          // Navigation replaces the DOM.
-          //------------------------------------------------
+            if (!target) {
+              throw new Error(`Step ${stepNumber}: click target missing`);
+            }
 
-          this.clearDOMCache();
+            result = await this.clickSmart(target);
 
-          this.lastURL = page.url();
+            break;
+          }
 
-          //------------------------------------------------
-          // Allow SPA/framework rendering
-          // to begin.
-          //------------------------------------------------
+          //================================================
+          // TYPE / FILL
+          //================================================
 
-          await page.waitForTimeout(this.options.navigationRenderDelay);
+          case "type":
+          case "fill": {
+            const target = String(step.target || "").trim();
 
-          await page.waitForLoadState("load").catch(() => {});
+            const value = step.value;
 
-          this.log("Navigation ready:", page.url());
+            if (!target) {
+              throw new Error(`Step ${stepNumber}: field target missing`);
+            }
 
-          results.push({
-            success: true,
+            if (value === undefined || value === null) {
+              throw new Error(
+                `Step ${stepNumber}: value missing for '${target}'`,
+              );
+            }
 
-            action: "navigate",
+            result = await this.typeSmart(target, value);
 
-            url: page.url(),
-          });
+            break;
+          }
 
-          break;
+          //================================================
+          // SUBMIT
+          //================================================
+
+          case "submit": {
+            result = await this.submitSmart(step.target || "");
+
+            break;
+          }
+
+          //================================================
+          // WAIT
+          //================================================
+
+          case "wait": {
+            const page = await this.mcp.getPage();
+
+            const time = Math.max(0, Number(step.value) || 500);
+
+            await page.waitForTimeout(time);
+
+            result = {
+              success: true,
+              action: "wait",
+              time,
+            };
+
+            break;
+          }
+
+          //================================================
+          // RELOAD
+          //================================================
+
+          case "reload": {
+            const page = await this.mcp.getPage();
+
+            await page.reload({
+              waitUntil: "domcontentloaded",
+              timeout: 30000,
+            });
+
+            this.invalidateDOMCache();
+
+            result = {
+              success: true,
+              action: "reload",
+            };
+
+            break;
+          }
+
+          //================================================
+          // UNKNOWN
+          //================================================
+
+          default:
+            throw new Error(`Unsupported action '${step.action}'`);
         }
 
-        //--------------------------------------------------
-        // WAIT
-        //--------------------------------------------------
+        /*
+         * ================================================
+         * VERIFY STEP SUCCESS
+         * ================================================
+         */
 
-        case "wait": {
-          const page = await this.mcp.getPage();
-
-          await page.waitForTimeout(step.value || step.time || 1000);
-
-          results.push({
-            success: true,
-
-            action: "wait",
-          });
-
-          break;
+        if (!result || result.success !== true) {
+          throw new Error(result?.error || `Step ${stepNumber} failed`);
         }
 
-        //--------------------------------------------------
-        // RELOAD
-        //--------------------------------------------------
+        /*
+         * Store successful result.
+         */
+        results.push({
+          step: stepNumber,
+          action: step.action,
+          target: step.target,
+          value:
+            step.action === "type" || step.action === "fill"
+              ? "[REDACTED]"
+              : step.value,
+          success: true,
+          result,
+        });
 
-        case "reload": {
-          const page = await this.mcp.getPage();
-
-          await page.reload({
-            waitUntil: "domcontentloaded",
-          });
-
-          this.clearDOMCache();
-
-          this.lastURL = page.url();
-
-          await page.waitForTimeout(this.options.navigationRenderDelay);
-
-          results.push({
-            success: true,
-
-            action: "reload",
-          });
-
-          break;
+        if (
+          step.action === "click" ||
+          step.action === "type" ||
+          step.action === "fill" ||
+          step.action === "navigate" ||
+          step.action === "submit" ||
+          step.action === "reload"
+        ) {
+          this.invalidateDOMCache();
         }
 
-        //--------------------------------------------------
-        // BACK
-        //--------------------------------------------------
+        this.log(`[SequentialExecutor] Step ${stepNumber} SUCCESS`);
+      } catch (error) {
+        /*
+         * ================================================
+         * HARD STOP
+         * ================================================
+         *
+         * NEVER continue to the next step.
+         */
+        const errorMessage = error?.message || String(error);
 
-        case "back": {
-          const page = await this.mcp.getPage();
+        this.error(
+          `[SequentialExecutor] Step ${stepNumber} FAILED:`,
+          errorMessage,
+        );
 
-          await page.goBack({
-            waitUntil: "domcontentloaded",
-          });
+        results.push({
+          step: stepNumber,
+          action: step.action,
+          target: step.target,
+          success: false,
+          error: errorMessage,
+        });
 
-          this.clearDOMCache();
-
-          this.lastURL = page.url();
-
-          await page.waitForTimeout(this.options.navigationRenderDelay);
-
-          results.push({
-            success: true,
-
-            action: "back",
-          });
-
-          break;
-        }
-
-        //--------------------------------------------------
-        // FORWARD
-        //--------------------------------------------------
-
-        case "forward": {
-          const page = await this.mcp.getPage();
-
-          await page.goForward({
-            waitUntil: "domcontentloaded",
-          });
-
-          this.clearDOMCache();
-
-          this.lastURL = page.url();
-
-          await page.waitForTimeout(this.options.navigationRenderDelay);
-
-          results.push({
-            success: true,
-
-            action: "forward",
-          });
-
-          break;
-        }
-
-        //--------------------------------------------------
-        // UNSUPPORTED
-        //--------------------------------------------------
-
-        default:
-          results.push({
-            success: false,
-
-            action: step.action || step.type,
-
-            error: "Unsupported action",
-          });
+        return {
+          success: false,
+          stoppedAtStep: stepNumber,
+          totalSteps: steps.length,
+          completedSteps: results.filter((item) => item.success).length,
+          results,
+          error: errorMessage,
+        };
       }
     }
 
+    /*
+     * ALL STEPS SUCCESSFUL
+     */
     return {
-      success: results.every((result) => result.success),
-
+      success: true,
+      totalSteps: steps.length,
+      completedSteps: results.length,
       results,
     };
   }
+  //======================================================
+  // PARSE SEQUENTIAL COMMAND
+  //======================================================
 
+  parseSequentialCommand(input) {
+    const text = String(input ?? "").trim();
+
+    if (!text) {
+      return [];
+    }
+
+    /*
+     * Normalize line endings.
+     */
+    const normalized = text.replace(/\r\n?/g, "\n");
+
+    let chunks = normalized
+      .split(/\n+/)
+      .flatMap((line) => line.trim().split(/(?=\s*\d+\s*[\)\.\-:]\s+)/g))
+      .map((line) =>
+        line.replace(/^\s*(?:[-*•]\s+|\d+\s*[\)\.\-:]\s*)/, "").trim(),
+      )
+      .filter(Boolean);
+
+    /*
+     * If no numbered instructions were detected,
+     * allow IntentParser to split natural commands.
+     */
+    if (chunks.length <= 1) {
+      chunks = this.intentParser
+        .splitIntoSteps(text)
+        .map((item) => item.trim())
+        .filter(Boolean);
+    }
+
+    const steps = [];
+
+    for (const chunk of chunks) {
+      /*
+       * ----------------------------------------------
+       * NAVIGATE
+       * ----------------------------------------------
+       */
+
+      const navigateMatch = chunk.match(
+        /^(?:go\s+to|navigate(?:\s+to)?|open)\s+(https?:\/\/\S+)/i,
+      );
+
+      if (navigateMatch) {
+        steps.push({
+          action: "navigate",
+          target: navigateMatch[1],
+          url: navigateMatch[1],
+          value: null,
+          confidence: 1,
+        });
+
+        continue;
+      }
+
+      /*
+       * ----------------------------------------------
+       * CLICK
+       * ----------------------------------------------
+       */
+
+      const clickMatch = chunk.match(
+        /^(?:please\s+)?click\s+(?:the\s+)?["']?(.+?)["']?\s*$/i,
+      );
+
+      if (clickMatch) {
+        steps.push({
+          action: "click",
+          target: clickMatch[1].replace(/^["']|["']$/g, "").trim(),
+          value: null,
+          confidence: 1,
+        });
+
+        continue;
+      }
+
+      /*
+       * ----------------------------------------------
+       * FILL / TYPE
+       * ----------------------------------------------
+       */
+
+      const fillMatch = chunk.match(
+        /^(?:please\s+)?(?:fill|type|enter)\s+(?:the\s+)?["']?(.+?)["']?\s+(?:field\s+)?with\s+["']([\s\S]*)["']$/i,
+      );
+
+      if (fillMatch) {
+        steps.push({
+          action: "type",
+          target: fillMatch[1].replace(/^["']|["']$/g, "").trim(),
+
+          value: fillMatch[2],
+
+          confidence: 1,
+        });
+
+        continue;
+      }
+
+      /*
+       * ----------------------------------------------
+       * SUBMIT
+       * ----------------------------------------------
+       */
+
+      if (/^(?:please\s+)?submit\b/i.test(chunk)) {
+        const target = chunk.replace(/^(?:please\s+)?submit\s*/i, "").trim();
+
+        steps.push({
+          action: "submit",
+          target,
+          value: null,
+          confidence: 1,
+        });
+
+        continue;
+      }
+
+      /*
+       * ----------------------------------------------
+       * FALLBACK TO INTENT PARSER
+       * ----------------------------------------------
+       */
+
+      const parsed = this.intentParser.parse(chunk);
+
+      const parsedSteps = Array.isArray(parsed?.steps) ? parsed.steps : [];
+
+      const validSteps = parsedSteps.filter(
+        (step) => step?.action && step.action !== "chat",
+      );
+
+      if (validSteps.length) {
+        steps.push(...validSteps);
+        continue;
+      }
+
+      /*
+       * Do not silently throw the command away.
+       */
+      steps.push({
+        action: "unknown",
+        target: chunk,
+        value: null,
+        confidence: 0,
+      });
+    }
+
+    /*
+     * Add deterministic sequence numbers.
+     */
+    return steps.map((step, index) => ({
+      ...step,
+      sequence: index + 1,
+    }));
+  }
+  //======================================================
+
+  normalizeResolverText(value) {
+    return String(value ?? "")
+      .normalize("NFKC")
+      .replace(/\u00A0/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+  }
+  async submitSmart(target = "") {
+    const page = await this.mcp.getPage();
+
+    const normalizedTarget = this.normalizeResolverText(target);
+
+    /*
+     * First preference:
+     * Native submit controls.
+     */
+    const submitSelectors = [
+      'button[type="submit"]',
+      'input[type="submit"]',
+      '[role="button"][type="submit"]',
+    ];
+
+    for (const scope of [page, ...page.frames()]) {
+      for (const selector of submitSelectors) {
+        try {
+          const locator = scope.locator(selector).first();
+
+          if (
+            (await locator.count()) &&
+            (await locator.isVisible().catch(() => false))
+          ) {
+            await locator.scrollIntoViewIfNeeded().catch(() => {});
+
+            await locator.click({
+              timeout: 5000,
+            });
+
+            this.invalidateDOMCache();
+
+            return {
+              success: true,
+              action: "submit",
+              method: "submit-button",
+            };
+          }
+        } catch {
+          /*
+           * Try next candidate.
+           */
+        }
+      }
+    }
+
+    /*
+     * Text fallback.
+     */
+    const candidates = await this.getDOMPool(true);
+
+    const submitWords = ["login", "log in", "sign in", "submit", "continue"];
+
+    const candidate = candidates
+      .filter((item) => this.isClickableCandidate(item))
+      .filter((item) => item.visible !== false && item.enabled !== false)
+      .find((item) => {
+        const textValue = this.normalizeResolverText(
+          item.text || item.ariaLabel || item.title || "",
+        );
+
+        if (normalizedTarget && textValue.includes(normalizedTarget)) {
+          return true;
+        }
+
+        return submitWords.includes(textValue);
+      });
+
+    if (candidate) {
+      const clicked = await this.executeClickWithVerification(
+        candidate,
+        target || "submit",
+      );
+
+      if (clicked.success) {
+        this.invalidateDOMCache();
+
+        return {
+          success: true,
+          action: "submit",
+          method: "fallback-click",
+        };
+      }
+    }
+
+    throw new Error("Unable to locate the login form submit button");
+  }
   //==========================================================
   // RESOLVE
   //==========================================================

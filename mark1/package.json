@@ -6,7 +6,7 @@
     "start": "electron .",
     "backend": "node backend/server.js",
     "ollama": "ollama serve",
-    "dev": "concurrently -k \"npm run backend\" \"npm start\" \"npm run ollama\"",
+    "dev": "concurrently -k \"npm run backend\" \"npm start\"",
     "mcp": "npx @playwright/mcp@0.0.78 --port 8931"
   },
   "dependencies": {

@@ -16,9 +16,6 @@
 //     │                                      │
 //     │                                      ▼
 //     │                                    Ollama
-//     │                                      │
-//     │                                      ▼
-//     │                                    Reply
 //     │
 //     └──────────── ACTION ───────────────► Planner
 //                                            │
@@ -30,6 +27,20 @@
 //                                            │
 //                                            ▼
 //                                      Playwright MCP
+//
+// PERFORMANCE / STABILITY
+// -----------------------
+// ✔ Single /run execution lock
+// ✔ Duplicate request protection
+// ✔ No networkidle waits
+// ✔ No snapshot before deterministic fast path
+// ✔ Browser connection is lazy
+// ✔ Browser connection is not required for chat
+// ✔ Sequential action execution
+// ✔ Fast browser recovery
+// ✔ DevTools page protection
+// ✔ Navigation invalidates DOM cache
+// ✔ Detailed execution timing
 //
 //==========================================================
 
@@ -48,11 +59,6 @@ import ToolMap from "./tool-map.js";
 import CommandRouter from "./command-router.js";
 import { fastPath } from "./planner/fast-path.js";
 
-// IMPORTANT:
-// aiEngine.js exports:
-// export default { chat }
-//
-// Therefore import the default export.
 import aiEngine from "./aiEngine.js";
 
 //==========================================================
@@ -94,11 +100,27 @@ const CONFIG = {
 
   debug: process.env.DEBUG === "true",
 
-  requestTimeout: 120000,
+  requestTimeout: Number(process.env.REQUEST_TIMEOUT || 120000),
 
-  autoReconnect: true,
+  //========================================================
+  // BROWSER / MCP
+  //========================================================
 
-  cacheSnapshots: true,
+  autoReconnect: process.env.AUTO_RECONNECT !== "false",
+
+  cacheSnapshots: process.env.CACHE_SNAPSHOTS !== "false",
+
+  navigationWaitUntil: "domcontentloaded",
+
+  navigationTimeout: Number(process.env.NAVIGATION_TIMEOUT || 30000),
+
+  pageReadyTimeout: Number(process.env.PAGE_READY_TIMEOUT || 5000),
+
+  //========================================================
+  // EXECUTION
+  //========================================================
+
+  allowParallelRuns: false,
 };
 
 //==========================================================
@@ -109,9 +131,43 @@ const CONFIG = {
 // Playwright MCP
 //----------------------------------------------------------
 
-const mcp = new PlaywrightMCPClient({
+const MCP_CONFIG = {
   debug: CONFIG.debug,
-});
+
+  autoReconnect: CONFIG.autoReconnect,
+
+  navigationWaitUntil: CONFIG.navigationWaitUntil,
+
+  navigationTimeout: CONFIG.navigationTimeout,
+
+  pageReadyTimeout: CONFIG.pageReadyTimeout,
+};
+
+const mcp = new PlaywrightMCPClient(MCP_CONFIG);
+
+//----------------------------------------------------------
+// Defensive MCP configuration.
+//
+// Some versions of mcp-client.js use `options`,
+// while others use `config`.
+// Make sure neither is undefined.
+//----------------------------------------------------------
+
+if (!mcp.options || typeof mcp.options !== "object") {
+  mcp.options = {};
+}
+
+Object.assign(mcp.options, MCP_CONFIG);
+
+if (!mcp.config || typeof mcp.config !== "object") {
+  mcp.config = {};
+}
+
+Object.assign(mcp.config, MCP_CONFIG);
+
+mcp.options.autoReconnect = CONFIG.autoReconnect;
+
+mcp.config.autoReconnect = CONFIG.autoReconnect;
 
 //----------------------------------------------------------
 // Resolver
@@ -119,7 +175,27 @@ const mcp = new PlaywrightMCPClient({
 
 const resolver = new Resolver(mcp, {
   debug: CONFIG.debug,
+
+  autoReconnect: CONFIG.autoReconnect,
+
+  autoRefreshDOM: false,
+
+  navigationTimeout: CONFIG.navigationTimeout,
+
+  pageReadyTimeout: CONFIG.pageReadyTimeout,
 });
+
+if (!resolver.options || typeof resolver.options !== "object") {
+  resolver.options = {};
+}
+
+resolver.options.autoReconnect = CONFIG.autoReconnect;
+
+resolver.options.autoRefreshDOM = false;
+
+resolver.options.navigationTimeout = CONFIG.navigationTimeout;
+
+resolver.options.pageReadyTimeout = CONFIG.pageReadyTimeout;
 
 //----------------------------------------------------------
 // Tool Map
@@ -128,7 +204,7 @@ const resolver = new Resolver(mcp, {
 const toolMap = new ToolMap(resolver);
 
 //----------------------------------------------------------
-// Browser Planner
+// Planner
 //----------------------------------------------------------
 
 const planner = new Planner({
@@ -138,42 +214,13 @@ const planner = new Planner({
 });
 
 //----------------------------------------------------------
-// AI ENGINE
-//
-// aiEngine.js:
-//
-// export default {
-//   chat
-// }
-//
-// CommandRouter calls:
-//
-// aiEngine.chat(command)
-//
+// AI Engine
 //----------------------------------------------------------
 
 const chatAI = aiEngine;
 
 //----------------------------------------------------------
 // Command Router
-//
-// IMPORTANT
-//
-// CommandRouter constructor expects:
-//
-// {
-//   aiEngine,
-//   resolver,
-//   debug
-// }
-//
-// NOT:
-//
-// {
-//   model,
-//   endpoint,
-//   debug
-// }
 //----------------------------------------------------------
 
 const commandRouter = new CommandRouter({
@@ -215,6 +262,10 @@ const serverState = {
 
   activeRequests: 0,
 
+  activeRun: null,
+
+  runLocked: false,
+
   routerReady: true,
 
   plannerReady: true,
@@ -253,11 +304,15 @@ const stats = {
 
   failedRequests: 0,
 
+  duplicateRuns: 0,
+
   routerCalls: 0,
 
   chatCalls: 0,
 
   plannerCalls: 0,
+
+  fastPathCalls: 0,
 
   resolverCalls: 0,
 
@@ -357,9 +412,113 @@ app.use((req, res, next) => {
 // HELPERS
 //==========================================================
 
+//----------------------------------------------------------
+// Sleep
+//----------------------------------------------------------
+
+function sleep(ms = 100) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+//----------------------------------------------------------
+// Is DevTools URL?
+//----------------------------------------------------------
+
+function isDevToolsURL(url) {
+  const value = String(url || "")
+    .trim()
+    .toLowerCase();
+
+  return (
+    value.startsWith("devtools:") ||
+    value.startsWith("chrome:") ||
+    value.startsWith("chrome-extension:") ||
+    value.startsWith("edge:") ||
+    value.startsWith("about:")
+  );
+}
+
+//----------------------------------------------------------
+// Validate automation page
+//----------------------------------------------------------
+
+function validateAutomationPage(page) {
+  if (!page) {
+    throw new Error("Playwright page is not available.");
+  }
+
+  if (typeof page.isClosed === "function" && page.isClosed()) {
+    throw new Error("Playwright page is closed.");
+  }
+
+  const url = typeof page.url === "function" ? page.url() : "";
+
+  if (isDevToolsURL(url)) {
+    throw new Error(`Invalid automation page selected: ${url}`);
+  }
+
+  return page;
+}
+
+//==========================================================
+// BROWSER READY
+//==========================================================
+//
+// IMPORTANT
+//
+// Browser is NOT connected for chat.
+//
+// Browser is connected only when an ACTION needs it.
+//
+//==========================================================
+
+//==========================================================
+// BROWSER READY
+//==========================================================
+
 async function ensureBrowserReady() {
+  //--------------------------------------------------------
+  // Prevent browser access during shutdown
+  //--------------------------------------------------------
+
+  if (serverState.shuttingDown) {
+    throw new Error("Jarvis server is shutting down.");
+  }
+
+  //--------------------------------------------------------
+  // Validate MCP
+  //--------------------------------------------------------
+
+  if (!mcp) {
+    throw new Error("Playwright MCP client is not initialized.");
+  }
+
+  //--------------------------------------------------------
+  // Make sure MCP configuration exists
+  //--------------------------------------------------------
+
+  if (!mcp.options || typeof mcp.options !== "object") {
+    mcp.options = {};
+  }
+
+  if (!mcp.config || typeof mcp.config !== "object") {
+    mcp.config = {};
+  }
+
+  mcp.options.autoReconnect = CONFIG.autoReconnect;
+
+  mcp.config.autoReconnect = CONFIG.autoReconnect;
+
+  //--------------------------------------------------------
+  // FIRST ATTEMPT
+  //--------------------------------------------------------
+
   try {
     await mcp.ensureConnected();
+
+    const page = await mcp.getPage();
+
+    validateAutomationPage(page);
 
     serverState.browserConnected = true;
 
@@ -367,43 +526,78 @@ async function ensureBrowserReady() {
 
     serverState.lastBrowserError = null;
 
-    return true;
-  } catch (err) {
+    return page;
+  } catch (firstError) {
     serverState.browserConnected = false;
 
-    serverState.lastBrowserError = err.message;
+    serverState.lastBrowserError = firstError?.message || String(firstError);
 
     if (!CONFIG.autoReconnect) {
-      throw err;
+      throw firstError;
     }
 
-    stats.reconnects++;
+    //------------------------------------------------------
+    // PREVENT DUPLICATE RECONNECT
+    //------------------------------------------------------
+
+    if (serverState.reconnecting) {
+      throw new Error("Browser reconnection already in progress.");
+    }
 
     serverState.reconnecting = true;
 
+    stats.reconnects++;
+
     try {
-      await mcp.connect(true);
+      serverState.lastReconnectAt = Date.now();
+
+      //----------------------------------------------------
+      // Force reconnect
+      //----------------------------------------------------
+
+      if (typeof mcp.connect === "function") {
+        await mcp.connect(true);
+      } else {
+        await mcp.ensureConnected();
+      }
+
+      //----------------------------------------------------
+      // Get real automation page
+      //----------------------------------------------------
+
+      const page = await mcp.getPage();
+
+      validateAutomationPage(page);
 
       serverState.browserConnected = true;
 
       serverState.mcpReady = true;
 
-      serverState.lastReconnectAt = Date.now();
-
       serverState.lastBrowserError = null;
 
-      return true;
+      serverState.startupError = null;
+
+      return page;
     } catch (reconnectError) {
       serverState.browserConnected = false;
 
-      serverState.lastBrowserError = reconnectError.message;
+      serverState.lastBrowserError =
+        reconnectError?.message || String(reconnectError);
 
-      throw reconnectError;
+      throw new Error(
+        `Playwright browser connection failed: ${
+          reconnectError?.message || String(reconnectError)
+        }`,
+      );
     } finally {
       serverState.reconnecting = false;
     }
   }
 }
+
+//==========================================================
+// SNAPSHOT
+//==========================================================
 
 async function captureSnapshot() {
   if (!CONFIG.cacheSnapshots) {
@@ -419,11 +613,19 @@ async function captureSnapshot() {
   return snapshot;
 }
 
+//==========================================================
+// HTML
+//==========================================================
+
 async function captureHTML() {
   stats.htmlRequests++;
 
   return await mcp.html();
 }
+
+//==========================================================
+// RESPONSE HELPERS
+//==========================================================
 
 function success(data = {}) {
   return {
@@ -446,36 +648,48 @@ function failure(err) {
 }
 
 //==========================================================
-// CHAT AI
+// ROUTER
 //==========================================================
-//
-// IMPORTANT
-//
-// Chat flow:
-//
-// User
-//   ↓
-// CommandRouter
-//   ↓
-// classify()
-//   ↓
-// handleChat()
-//   ↓
-// aiEngine.chat()
-//   ↓
-// Ollama
-//   ↓
-// reply
-//
-// Browser is NOT initialized.
-//
+
+async function routeCommand(command, context = {}) {
+  stats.routerCalls++;
+
+  if (CONFIG.debug) {
+    console.log("\n========== COMMAND ROUTER ==========");
+
+    console.log("[ROUTER] Command:", command);
+
+    console.log("====================================\n");
+  }
+
+  if (!commandRouter) {
+    throw new Error("CommandRouter is not initialized.");
+  }
+
+  if (typeof commandRouter.route === "function") {
+    return await commandRouter.route(command, context);
+  }
+
+  if (typeof commandRouter.classify === "function") {
+    const classification = commandRouter.classify(command);
+
+    return {
+      ...classification,
+
+      mode: classification?.mode || classification?.type || "unknown",
+    };
+  }
+
+  throw new Error("CommandRouter does not provide route() or classify().");
+}
+
+//==========================================================
+// CHAT
 //==========================================================
 
 async function handleChat(command, context = {}) {
   if (!chatAI || typeof chatAI.chat !== "function") {
-    throw new Error(
-      "AI Engine is not available. Expected aiEngine.js to export a default object with chat() method.",
-    );
+    throw new Error("AI Engine is not available.");
   }
 
   if (CONFIG.debug) {
@@ -506,66 +720,479 @@ async function handleChat(command, context = {}) {
 }
 
 //==========================================================
-// ROUTING
+// NORMALIZE ROUTE
 //==========================================================
 
-async function routeCommand(command, context = {}) {
-  stats.routerCalls++;
+function normalizeRoute(route) {
+  const rawMode = String(
+    route?.mode ?? route?.type ?? route?.route ?? route?.intent ?? "",
+  )
+    .trim()
+    .toLowerCase();
 
-  if (CONFIG.debug) {
-    console.log("\n========== COMMAND ROUTER ==========");
-
-    console.log("[ROUTER] Command:", command);
-
-    console.log("====================================\n");
-  }
-
-  if (!commandRouter) {
-    throw new Error("CommandRouter is not initialized.");
-  }
+  let mode = rawMode;
 
   //--------------------------------------------------------
-  // Preferred route()
+  // CHAT
   //--------------------------------------------------------
 
-  if (typeof commandRouter.route === "function") {
-    return await commandRouter.route(command, context);
+  if (
+    ["chat", "conversation", "general", "question", "casual"].includes(mode)
+  ) {
+    mode = "chat";
   }
 
   //--------------------------------------------------------
-  // Alternative classify()
+  // ACTION
   //--------------------------------------------------------
 
-  if (typeof commandRouter.classify === "function") {
-    const classification = commandRouter.classify(command);
+  if (
+    ["action", "browser", "automation", "command", "execute"].includes(mode)
+  ) {
+    mode = "action";
+  }
+
+  return {
+    ...(route || {}),
+
+    mode,
+
+    type: route?.type || mode,
+  };
+}
+
+//==========================================================
+// NORMALIZE PLAN
+//==========================================================
+//
+// Keeps Planner output compatible with ToolMap.
+//
+//==========================================================
+
+function normalizePlan(plan) {
+  if (!plan || !Array.isArray(plan.steps)) {
+    return null;
+  }
+
+  const steps = plan.steps.filter(Boolean).map((step, index) => {
+    const rawTool = step.tool || step.action || step.type || "";
+
+    const tool = String(rawTool).trim().toLowerCase();
+
+    const args = {
+      ...(step.args || {}),
+    };
+
+    //------------------------------------------------
+    // CLICK
+    //------------------------------------------------
+
+    if (tool === "clicksmart" || tool === "click-smart") {
+      return {
+        ...step,
+
+        tool: "click",
+
+        args: {
+          ...args,
+
+          target:
+            args.target ??
+            args.text ??
+            args.label ??
+            args.selector ??
+            step.target ??
+            step.text ??
+            step.label ??
+            "",
+        },
+
+        index,
+      };
+    }
+
+    //------------------------------------------------
+    // FILL / TYPE
+    //------------------------------------------------
+
+    if (tool === "fill" || tool === "input") {
+      return {
+        ...step,
+
+        tool: "type",
+
+        args: {
+          ...args,
+
+          field:
+            args.field ??
+            args.target ??
+            args.label ??
+            args.selector ??
+            step.field ??
+            step.target ??
+            "",
+
+          value: args.value ?? step.value ?? args.text ?? "",
+        },
+
+        index,
+      };
+    }
+
+    //------------------------------------------------
+    // NAVIGATE
+    //------------------------------------------------
+
+    if (tool === "goto" || tool === "open" || tool === "visit") {
+      return {
+        ...step,
+
+        tool: "navigate",
+
+        args: {
+          ...args,
+
+          url:
+            args.url ??
+            args.target ??
+            args.value ??
+            step.url ??
+            step.target ??
+            step.value ??
+            "",
+        },
+
+        index,
+      };
+    }
+
+    //------------------------------------------------
+    // SUBMIT
+    //
+    // Keep planner output if your ToolMap supports it.
+    // Otherwise Resolver can handle it.
+    //------------------------------------------------
+
+    if (tool === "submit" || tool === "submit-form") {
+      return {
+        ...step,
+
+        tool: "submit",
+
+        args: {
+          ...args,
+
+          target: args.target ?? step.target ?? "",
+        },
+
+        index,
+      };
+    }
+
+    //------------------------------------------------
+    // NORMAL
+    //------------------------------------------------
 
     return {
-      ...classification,
+      ...step,
 
-      mode: classification?.mode || classification?.type || "unknown",
+      tool,
+
+      args,
+
+      index,
     };
+  });
+
+  return {
+    ...plan,
+
+    steps,
+  };
+}
+
+//==========================================================
+// FAST PATH
+//==========================================================
+//
+// IMPORTANT
+//
+// fastPath() gets the first chance.
+//
+// Snapshot + Qwen only happens when fastPath cannot
+// understand the command.
+//
+//==========================================================
+
+function getFastPlan(command) {
+  if (!CONFIG.fastPath || typeof fastPath !== "function") {
+    return null;
   }
 
-  throw new Error("CommandRouter does not provide route() or classify().");
+  try {
+    const plan = fastPath(command);
+
+    if (plan && Array.isArray(plan.steps) && plan.steps.length) {
+      stats.fastPathCalls++;
+
+      return normalizePlan(plan);
+    }
+  } catch (err) {
+    if (CONFIG.debug) {
+      warn("[FAST PATH] Failed:", err.message);
+    }
+  }
+
+  return null;
+}
+
+//==========================================================
+// EXECUTE PLAN
+//==========================================================
+//
+// Strictly sequential.
+//
+// Step 1 completes.
+// Then Step 2.
+// Then Step 3.
+//
+// NEVER Promise.all() here.
+//
+//==========================================================
+
+async function executePlan(plan, page) {
+  const normalized = normalizePlan(plan);
+
+  if (!normalized || !normalized.steps.length) {
+    throw new Error("Planner returned an empty execution plan.");
+  }
+
+  const results = [];
+
+  for (let index = 0; index < normalized.steps.length; index++) {
+    const step = normalized.steps[index];
+
+    if (!step) {
+      continue;
+    }
+
+    const stepNumber = index + 1;
+
+    if (CONFIG.debug) {
+      console.log(`[RUN] Step ${stepNumber}/${normalized.steps.length}`);
+
+      console.dir(step, {
+        depth: null,
+      });
+    }
+
+    const started = startTimer();
+
+    try {
+      stats.toolExecutions++;
+
+      //----------------------------------------------------
+      // Execute ONLY ONE step.
+      //----------------------------------------------------
+
+      const result = await toolMap.execute(step);
+
+      const duration = performance.now() - started;
+
+      const stepSuccess = result?.success !== false;
+
+      const item = {
+        index,
+
+        step: stepNumber,
+
+        tool: step.tool,
+
+        args: step.args,
+
+        success: stepSuccess,
+
+        result,
+
+        duration,
+      };
+
+      results.push(item);
+
+      //----------------------------------------------------
+      // Navigation completed.
+      //
+      // Do NOT wait for networkidle.
+      //----------------------------------------------------
+
+      if (step.tool === "navigate" || result?.action === "navigate") {
+        try {
+          await page
+            .waitForLoadState("domcontentloaded", {
+              timeout: CONFIG.navigationTimeout,
+            })
+            .catch(() => {});
+
+          //------------------------------------------------
+          // Small SPA stabilization.
+          //------------------------------------------------
+
+          await sleep(150);
+
+          //------------------------------------------------
+          // DOM changed.
+          //------------------------------------------------
+
+          resolver.invalidateDOMCache?.();
+        } catch (err) {
+          if (CONFIG.debug) {
+            warn("[RUN] Navigation stabilization:", err.message);
+          }
+        }
+      }
+
+      //----------------------------------------------------
+      // If resolver supports automatic DOM refresh,
+      // refresh only when explicitly enabled.
+      //----------------------------------------------------
+
+      if (resolver.options?.autoRefreshDOM) {
+        try {
+          await resolver.ensureFreshDOM?.();
+        } catch (err) {
+          if (CONFIG.debug) {
+            warn("[RUN] DOM refresh:", err.message);
+          }
+        }
+      }
+
+      //----------------------------------------------------
+      // STOP IMMEDIATELY ON FAILURE
+      //----------------------------------------------------
+
+      if (!stepSuccess) {
+        return {
+          success: false,
+
+          results,
+
+          failedStep: item,
+
+          error: result?.error || `Step ${stepNumber} failed.`,
+        };
+      }
+
+      //----------------------------------------------------
+      // Verify browser after each step.
+      //
+      // This catches page/CDP death before the next step.
+      //----------------------------------------------------
+
+      try {
+        const currentPage = await mcp.getPage();
+
+        validateAutomationPage(currentPage);
+
+        page = currentPage;
+      } catch (healthError) {
+        return {
+          success: false,
+
+          results,
+
+          failedStep: item,
+
+          error: `Browser became unavailable after step ${stepNumber}: ${healthError.message}`,
+        };
+      }
+    } catch (err) {
+      const duration = performance.now() - started;
+
+      const failed = {
+        index,
+
+        step: stepNumber,
+
+        tool: step.tool,
+
+        args: step.args,
+
+        success: false,
+
+        error: err.message,
+
+        duration,
+      };
+
+      results.push(failed);
+
+      return {
+        success: false,
+
+        results,
+
+        failedStep: failed,
+
+        error: err.message,
+      };
+    }
+  }
+
+  return {
+    success: true,
+
+    results,
+  };
+}
+
+//==========================================================
+// RUN LOCK
+//==========================================================
+//
+// This is critical.
+//
+// If the frontend accidentally sends:
+//
+// POST /run
+// POST /run
+//
+// only ONE browser automation task is allowed to run.
+//
+//==========================================================
+
+function acquireRunLock(requestId, command) {
+  if (CONFIG.allowParallelRuns) {
+    return true;
+  }
+
+  if (serverState.runLocked) {
+    stats.duplicateRuns++;
+
+    return false;
+  }
+
+  serverState.runLocked = true;
+
+  serverState.activeRun = {
+    requestId,
+
+    command,
+
+    startedAt: Date.now(),
+  };
+
+  return true;
+}
+
+function releaseRunLock() {
+  serverState.runLocked = false;
+
+  serverState.activeRun = null;
 }
 
 //==========================================================
 // STATUS
-//
-// IMPORTANT:
-//
-// This endpoint NEVER calls:
-//
-//   ensureBrowserReady()
-//   mcp.getPage()
-//   mcp.connect()
-//
-// Therefore Electron can connect to:
-//
-// GET http://localhost:9000/status
-//
-// even when Playwright is disconnected.
-//
 //==========================================================
 
 app.get("/status", (req, res) => {
@@ -597,6 +1224,12 @@ app.get("/status", (req, res) => {
         activeRequests: Number(serverState.activeRequests) || 0,
 
         shuttingDown: Boolean(serverState.shuttingDown),
+      },
+
+      execution: {
+        locked: Boolean(serverState.runLocked),
+
+        activeRun: serverState.activeRun,
       },
 
       components: {
@@ -649,28 +1282,60 @@ app.post("/run", async (req, res) => {
 
   const command = String(req.body?.command || "").trim();
 
+  //------------------------------------------------------
+  // VALIDATE
+  //------------------------------------------------------
+
+  if (!command) {
+    stopTimer(started);
+
+    return res.status(400).json({
+      success: false,
+
+      mode: "unknown",
+
+      error: "Missing command.",
+    });
+  }
+
+  //------------------------------------------------------
+  // DUPLICATE PROTECTION
+  //------------------------------------------------------
+
+  if (!acquireRunLock(req.requestId, command)) {
+    stopTimer(started);
+
+    return res.status(409).json({
+      success: false,
+
+      mode: "busy",
+
+      error: "Another browser automation command is already running.",
+
+      activeRun: serverState.activeRun,
+
+      hint: "Wait for the current command to finish before sending another /run request.",
+    });
+  }
+
   try {
-    //------------------------------------------------------
-    // 1. VALIDATE
-    //------------------------------------------------------
-
-    if (!command) {
-      stopTimer(started);
-
-      return res.status(400).json({
-        success: false,
-
-        mode: "unknown",
-
-        error: "Missing command.",
-      });
-    }
+    //----------------------------------------------------
+    // STORE COMMAND
+    //----------------------------------------------------
 
     serverState.lastCommand = command;
 
-    //------------------------------------------------------
-    // 2. ROUTER
-    //------------------------------------------------------
+    if (CONFIG.debug) {
+      console.log("\n================================================");
+
+      console.log("[RUN] Command:", command);
+
+      console.log("================================================\n");
+    }
+
+    //----------------------------------------------------
+    // ROUTER
+    //----------------------------------------------------
 
     let route;
 
@@ -697,67 +1362,16 @@ app.post("/run", async (req, res) => {
         statistics: {
           routerCalls: stats.routerCalls,
 
-          chatCalls: stats.chatCalls,
-
-          plannerCalls: stats.plannerCalls,
-
           duration: stats.lastRequestTime,
         },
       });
     }
 
-    //------------------------------------------------------
-    // 3. NORMALIZE ROUTE
-    //
-    // CommandRouter currently returns:
-    //
-    // {
-    //   type: "chat"
-    // }
-    //
-    // Server pipeline expects:
-    //
-    // {
-    //   mode: "chat"
-    // }
-    //
-    //------------------------------------------------------
+    //----------------------------------------------------
+    // NORMALIZE ROUTE
+    //----------------------------------------------------
 
-    const rawMode = String(
-      route?.mode ?? route?.type ?? route?.route ?? route?.intent ?? "",
-    )
-      .trim()
-      .toLowerCase();
-
-    let mode = rawMode;
-
-    //------------------------------------------------------
-    // CHAT ALIASES
-    //------------------------------------------------------
-
-    if (
-      ["chat", "conversation", "general", "question", "casual"].includes(mode)
-    ) {
-      mode = "chat";
-    }
-
-    //------------------------------------------------------
-    // ACTION ALIASES
-    //------------------------------------------------------
-
-    if (
-      ["action", "browser", "automation", "command", "execute"].includes(mode)
-    ) {
-      mode = "action";
-    }
-
-    route = {
-      ...(route || {}),
-
-      mode,
-
-      type: route?.type || mode,
-    };
+    route = normalizeRoute(route);
 
     serverState.lastRoute = route;
 
@@ -769,23 +1383,50 @@ app.post("/run", async (req, res) => {
       });
     }
 
-    //------------------------------------------------------
-    // 4. CHAT
-    //------------------------------------------------------
+    //----------------------------------------------------
+    // CHAT
+    //
+    // IMPORTANT:
+    //
+    // Browser is NOT touched.
+    //
+    //----------------------------------------------------
 
-    if (mode === "chat") {
-      let chatResult;
-
+    if (route.mode === "chat") {
       try {
-        chatResult = await handleChat(command, {
+        stats.chatCalls++;
+
+        const chatResult = await handleChat(command, {
           route,
 
           requestId: req.requestId,
         });
 
-        stats.chatCalls++;
+        stopTimer(started);
+
+        return res.json(
+          success({
+            mode: "chat",
+
+            command,
+
+            reply: chatResult.reply,
+
+            route,
+
+            statistics: {
+              routerCalls: stats.routerCalls,
+
+              chatCalls: stats.chatCalls,
+
+              plannerCalls: stats.plannerCalls,
+
+              duration: stats.lastRequestTime,
+            },
+          }),
+        );
       } catch (err) {
-        error("[RUN] Chat AI Error:", err.message);
+        error("[RUN] Chat Error:", err.message);
 
         stopTimer(started);
 
@@ -799,53 +1440,15 @@ app.post("/run", async (req, res) => {
           route,
 
           error: `Chat AI failed: ${err.message}`,
-
-          statistics: {
-            routerCalls: stats.routerCalls,
-
-            chatCalls: stats.chatCalls,
-
-            plannerCalls: stats.plannerCalls,
-
-            duration: stats.lastRequestTime,
-          },
         });
       }
-
-      stopTimer(started);
-
-      return res.json(
-        success({
-          mode: "chat",
-
-          command,
-
-          reply: chatResult?.reply || "I don't have a response for that.",
-
-          route,
-
-          statistics: {
-            routerCalls: stats.routerCalls,
-
-            chatCalls: stats.chatCalls,
-
-            plannerCalls: stats.plannerCalls,
-
-            resolverCalls: stats.resolverCalls,
-
-            toolExecutions: stats.toolExecutions,
-
-            duration: stats.lastRequestTime,
-          },
-        }),
-      );
     }
 
-    //------------------------------------------------------
-    // 5. UNKNOWN
-    //------------------------------------------------------
+    //----------------------------------------------------
+    // UNKNOWN MODE
+    //----------------------------------------------------
 
-    if (mode !== "action") {
+    if (route.mode !== "action") {
       stopTimer(started);
 
       return res.status(400).json({
@@ -863,81 +1466,97 @@ app.post("/run", async (req, res) => {
       });
     }
 
-    //------------------------------------------------------
-    // 6. ACTION
-    //------------------------------------------------------
+    //----------------------------------------------------
+    // ACTION
+    //----------------------------------------------------
 
-    await ensureBrowserReady();
+    const page = await ensureBrowserReady();
 
-    const page = await mcp.getPage();
+    validateAutomationPage(page);
 
-    if (!page) {
-      throw new Error("Playwright page is not available.");
-    }
+    //----------------------------------------------------
+    // FAST PATH FIRST
+    //
+    // This is BEFORE snapshot.
+    //
+    // Therefore simple commands don't wait for Qwen.
+    //----------------------------------------------------
 
-    //------------------------------------------------------
-    // 7. FAST PATH
-    // Deterministic browser commands bypass snapshot + LLM.
-    //------------------------------------------------------
+    let plan = getFastPlan(command);
 
-    let plan = CONFIG.fastPath ? fastPath(command) : null;
-    let pageText = "";
+    let plannerSource = plan ? "fast-path" : null;
 
-    if (plan) {
-      serverState.lastPlan = plan;
-      if (CONFIG.debug) console.log("[RUN] FAST PATH:", command);
-    } else {
-      //----------------------------------------------------
-      // 8. SNAPSHOT + LLM PLANNER (only when required)
-      //----------------------------------------------------
+    //----------------------------------------------------
+    // FALLBACK TO LLM PLANNER
+    //----------------------------------------------------
+
+    if (!plan) {
+      let pageText = "";
+
+      //--------------------------------------------------
+      // Snapshot only when planner is actually needed.
+      //--------------------------------------------------
+
       try {
         const snapshot = await captureSnapshot();
+
         pageText = String(snapshot?.text || "");
+
+        if (CONFIG.debug) {
+          console.log("[RUN] Snapshot:", pageText.length, "characters");
+        }
       } catch (err) {
         warn("[RUN] Snapshot unavailable:", err.message);
       }
 
+      //--------------------------------------------------
+      // Qwen
+      //--------------------------------------------------
+
       stats.plannerCalls++;
+
       try {
         plan = await planner.plan(command, pageText);
-    } catch (err) {
-      error("[RUN] Planner Error:", err.message);
 
-      stopTimer(started);
+        plannerSource = "qwen";
+      } catch (err) {
+        error("[RUN] Planner Error:", err.message);
 
-      return res.status(500).json({
-        success: false,
+        stopTimer(started);
 
-        mode: "action",
+        return res.status(500).json({
+          success: false,
 
-        command,
+          mode: "action",
 
-        route,
+          command,
 
-        error: `Planner failed: ${err.message}`,
+          route,
 
-        statistics: {
-          routerCalls: stats.routerCalls,
+          error: `Planner failed: ${err.message}`,
 
-          plannerCalls: stats.plannerCalls,
+          statistics: {
+            plannerCalls: stats.plannerCalls,
 
-          resolverCalls: stats.resolverCalls,
-
-          toolExecutions: stats.toolExecutions,
-
-          duration: stats.lastRequestTime,
-        },
-      });
+            duration: stats.lastRequestTime,
+          },
+        });
       }
     }
 
+    //----------------------------------------------------
+    // NORMALIZE PLAN
+    //----------------------------------------------------
+
+    plan = normalizePlan(plan);
+
     serverState.lastPlan = plan;
 
-    //------------------------------------------------------
-    // 9. VALIDATE PLAN
-    //------------------------------------------------------
+    //----------------------------------------------------
+    // VALIDATE PLAN
+    //----------------------------------------------------
 
-    if (!plan || !Array.isArray(plan.steps)) {
+    if (!plan || !Array.isArray(plan.steps) || !plan.steps.length) {
       stopTimer(started);
 
       return res.status(500).json({
@@ -951,139 +1570,103 @@ app.post("/run", async (req, res) => {
 
         plan,
 
-        error: "Planner returned an invalid execution plan.",
+        error: "Planner returned an empty or invalid execution plan.",
+
+        plannerSource,
       });
     }
 
-    //------------------------------------------------------
-    // 10. EXECUTE
-    //------------------------------------------------------
+    //----------------------------------------------------
+    // NEVER ALLOW CHAT PLAN
+    //----------------------------------------------------
 
-    const results = [];
+    if (
+      String(plan.mode || "")
+        .trim()
+        .toLowerCase() === "chat"
+    ) {
+      stopTimer(started);
 
-    for (let index = 0; index < plan.steps.length; index++) {
-      const step = plan.steps[index];
+      return res.status(500).json({
+        success: false,
 
-      if (!step) {
-        continue;
-      }
+        mode: "action",
 
-      let result;
+        command,
 
-      try {
-        stats.toolExecutions++;
+        route,
 
-        result = await toolMap.execute(step);
-      } catch (err) {
-        error(`[RUN] Step ${index + 1} failed:`, err.message);
+        plan,
 
-        const failedResult = {
-          index,
+        error: "Planner returned chat mode for an action command.",
 
-          tool: step.tool,
-
-          args: step.args,
-
-          success: false,
-
-          error: err.message,
-        };
-
-        results.push(failedResult);
-
-        stopTimer(started);
-
-        return res.status(500).json({
-          success: false,
-
-          mode: "action",
-
-          command,
-
-          route,
-
-          plan,
-
-          steps: results,
-
-          failedStep: failedResult,
-
-          error: err.message,
-        });
-      }
-
-      //----------------------------------------------------
-      // NAVIGATION
-      //----------------------------------------------------
-
-      if (step.tool === "navigate" || result?.action === "navigate") {
-        try {
-          await page.waitForLoadState("domcontentloaded", { timeout: 10000 }).catch(() => {});
-
-          resolver.invalidateDOMCache?.();
-        } catch (err) {
-          if (CONFIG.debug) {
-            warn("[RUN] Navigation wait:", err.message);
-          }
-        }
-      }
-
-      //----------------------------------------------------
-      // REFRESH DOM
-      //----------------------------------------------------
-
-      if (resolver.options?.autoRefreshDOM) {
-        try {
-          await resolver.ensureFreshDOM?.();
-        } catch {}
-      }
-
-      //----------------------------------------------------
-      // STORE RESULT
-      //----------------------------------------------------
-
-      const stepSuccess = result?.success !== false;
-
-      results.push({
-        index,
-
-        tool: step.tool,
-
-        args: step.args,
-
-        success: stepSuccess,
-
-        result,
+        plannerSource,
       });
-
-      //----------------------------------------------------
-      // STOP ON FAILURE
-      //----------------------------------------------------
-
-      if (!stepSuccess) {
-        stopTimer(started);
-
-        return res.status(500).json({
-          success: false,
-
-          mode: "action",
-
-          command,
-
-          route,
-
-          plan,
-
-          steps: results,
-
-          error: result?.error || `Step ${index + 1} failed.`,
-        });
-      }
     }
 
-    //------------------------------------------------------
-    // COMPLETE
-    //------------------------------------------------------
+    //----------------------------------------------------
+    // DEBUG PLAN
+    //----------------------------------------------------
+
+    if (CONFIG.debug) {
+      console.log("[RUN] Planner Source:", plannerSource);
+
+      console.log(`[RUN] Executing ${plan.steps.length} step(s) sequentially.`);
+
+      console.dir(plan, {
+        depth: null,
+      });
+    }
+
+    //----------------------------------------------------
+    // EXECUTE
+    //----------------------------------------------------
+
+    const execution = await executePlan(plan, page);
+
+    //----------------------------------------------------
+    // FAILURE
+    //----------------------------------------------------
+
+    if (!execution.success) {
+      stopTimer(started);
+
+      return res.status(500).json({
+        success: false,
+
+        mode: "action",
+
+        command,
+
+        route,
+
+        plan,
+
+        plannerSource,
+
+        steps: execution.results,
+
+        failedStep: execution.failedStep,
+
+        error: execution.error || "Action execution failed.",
+
+        statistics: {
+          routerCalls: stats.routerCalls,
+
+          plannerCalls: stats.plannerCalls,
+
+          fastPathCalls: stats.fastPathCalls,
+
+          toolExecutions: stats.toolExecutions,
+
+          duration: stats.lastRequestTime,
+        },
+      });
+    }
+
+    //----------------------------------------------------
+    // SUCCESS
+    //----------------------------------------------------
 
     stopTimer(started);
 
@@ -1097,7 +1680,9 @@ app.post("/run", async (req, res) => {
 
         plan,
 
-        steps: results,
+        plannerSource,
+
+        steps: execution.results,
 
         statistics: {
           routerCalls: stats.routerCalls,
@@ -1105,6 +1690,8 @@ app.post("/run", async (req, res) => {
           chatCalls: stats.chatCalls,
 
           plannerCalls: stats.plannerCalls,
+
+          fastPathCalls: stats.fastPathCalls,
 
           resolverCalls: stats.resolverCalls,
 
@@ -1133,17 +1720,21 @@ app.post("/run", async (req, res) => {
       statistics: {
         routerCalls: stats.routerCalls,
 
-        chatCalls: stats.chatCalls,
-
         plannerCalls: stats.plannerCalls,
 
-        resolverCalls: stats.resolverCalls,
+        fastPathCalls: stats.fastPathCalls,
 
         toolExecutions: stats.toolExecutions,
 
         duration: stats.lastRequestTime,
       },
     });
+  } finally {
+    //----------------------------------------------------
+    // ALWAYS RELEASE LOCK
+    //----------------------------------------------------
+
+    releaseRunLock();
   }
 });
 
@@ -1151,25 +1742,81 @@ app.post("/run", async (req, res) => {
 // INIT
 //==========================================================
 
+//==========================================================
+// INIT
+//==========================================================
+
 app.post("/init", async (req, res) => {
+  const started = startTimer();
+
   try {
-    await ensureBrowserReady();
+    const requestedURL = String(req.body?.url || "").trim();
+
+    log(
+      "[INIT] Browser initialization requested",
+      requestedURL ? `URL: ${requestedURL}` : "",
+    );
+
+    //----------------------------------------------------
+    // Attach to Playwright
+    //----------------------------------------------------
+
+    const page = await ensureBrowserReady();
+
+    //----------------------------------------------------
+    // Optional navigation
+    //
+    // The Electron frontend already navigates, so we
+    // normally don't navigate again here.
+    //----------------------------------------------------
+
+    validateAutomationPage(page);
 
     serverState.initialized = true;
 
-    const page = await mcp.getPage();
+    serverState.browserConnected = true;
+
+    serverState.mcpReady = true;
+
+    serverState.startupError = null;
+
+    const url = page.url();
+
+    let title = "";
+
+    try {
+      title = await page.title();
+    } catch {}
+
+    stopTimer(started);
 
     return res.json(
       success({
         message: "Playwright attached successfully.",
 
-        url: page.url(),
+        url,
 
-        title: await page.title(),
+        title,
+
+        browserConnected: true,
+
+        initialized: true,
+
+        duration: stats.lastRequestTime,
       }),
     );
   } catch (err) {
-    error("[INIT]", err);
+    stopTimer(started);
+
+    serverState.initialized = false;
+
+    serverState.browserConnected = false;
+
+    serverState.startupError = err?.message || String(err);
+
+    serverState.lastBrowserError = err?.message || String(err);
+
+    error("[INIT] Browser initialization failed:", err);
 
     return res.status(500).json(failure(err));
   }
@@ -1181,9 +1828,7 @@ app.post("/init", async (req, res) => {
 
 app.get("/health", async (req, res) => {
   try {
-    await ensureBrowserReady();
-
-    const page = await mcp.getPage();
+    const page = await ensureBrowserReady();
 
     return res.json(
       success({
@@ -1199,6 +1844,12 @@ app.get("/health", async (req, res) => {
           chatAI: serverState.chatAIReady,
 
           browser: serverState.browserConnected,
+        },
+
+        execution: {
+          locked: serverState.runLocked,
+
+          activeRun: serverState.activeRun,
         },
 
         statistics: stats,
@@ -1278,7 +1929,7 @@ app.get("/page", async (req, res) => {
 });
 
 //==========================================================
-// TOOLS
+// DIRECT TOOL
 //==========================================================
 
 app.post("/tool", async (req, res) => {
@@ -1295,15 +1946,32 @@ app.post("/tool", async (req, res) => {
       });
     }
 
-    await ensureBrowserReady();
+    const page = await ensureBrowserReady();
 
     stats.toolExecutions++;
 
     const result = await toolMap.execute({
       tool,
-
       args,
     });
+
+    //----------------------------------------------------
+    // Navigation
+    //
+    // No networkidle.
+    //----------------------------------------------------
+
+    if (tool === "navigate" || result?.action === "navigate") {
+      await page
+        .waitForLoadState("domcontentloaded", {
+          timeout: CONFIG.navigationTimeout,
+        })
+        .catch(() => {});
+
+      await sleep(150);
+
+      resolver.invalidateDOMCache?.();
+    }
 
     stopTimer(started);
 
@@ -1321,12 +1989,18 @@ app.post("/tool", async (req, res) => {
   } catch (err) {
     stopTimer(started);
 
+    error("[TOOL ERROR]", err.message);
+
     return res.status(500).json(failure(err));
   }
 });
 
 //==========================================================
 // MULTIPLE TOOLS
+//==========================================================
+//
+// Always sequential.
+//
 //==========================================================
 
 app.post("/tools", async (req, res) => {
@@ -1343,7 +2017,7 @@ app.post("/tools", async (req, res) => {
       });
     }
 
-    await ensureBrowserReady();
+    const page = await ensureBrowserReady();
 
     const results = [];
 
@@ -1358,15 +2032,43 @@ app.post("/tools", async (req, res) => {
         results.push({
           index,
 
+          step: index + 1,
+
           tool: step.tool,
 
-          success: true,
+          success: result?.success !== false,
 
           result,
         });
+
+        //------------------------------------------------
+        // Navigation
+        //------------------------------------------------
+
+        if (step.tool === "navigate" || result?.action === "navigate") {
+          await page
+            .waitForLoadState("domcontentloaded", {
+              timeout: CONFIG.navigationTimeout,
+            })
+            .catch(() => {});
+
+          await sleep(150);
+
+          resolver.invalidateDOMCache?.();
+        }
+
+        //------------------------------------------------
+        // STOP ON FAILURE
+        //------------------------------------------------
+
+        if (result?.success === false) {
+          break;
+        }
       } catch (err) {
         results.push({
           index,
+
+          step: index + 1,
 
           tool: step.tool,
 
@@ -1374,14 +2076,24 @@ app.post("/tools", async (req, res) => {
 
           error: err.message,
         });
+
+        break;
       }
     }
 
     stopTimer(started);
 
+    const allSuccessful =
+      results.length === steps.length &&
+      results.every((item) => item.success !== false);
+
     return res.json(
       success({
         executed: results.length,
+
+        total: steps.length,
+
+        success: allSuccessful,
 
         results,
 
@@ -1409,6 +2121,8 @@ app.get("/history", (req, res) => {
       lastPlan: serverState.lastPlan,
 
       lastSnapshot: Boolean(serverState.lastSnapshot),
+
+      activeRun: serverState.activeRun,
 
       statistics: stats,
     }),
@@ -1453,6 +2167,12 @@ app.get("/metrics", (req, res) => {
       resolver: resolver.getStatistics?.() || {},
 
       browser: mcp.stats || {},
+
+      execution: {
+        locked: serverState.runLocked,
+
+        activeRun: serverState.activeRun,
+      },
 
       uptime: Date.now() - serverState.startedAt,
     }),
@@ -1515,11 +2235,24 @@ app.use((err, req, res, next) => {
 
 //==========================================================
 // HEALTH MONITOR
+//==========================================================
 //
 // IMPORTANT:
 //
-// This runs AFTER HTTP server starts.
-// It must NEVER prevent /status from working.
+// This monitor does NOT reconnect.
+//
+// It only reports the current state.
+//
+// Browser reconnect happens when:
+//   /init
+//   /run
+//   /tool
+//   /snapshot
+//   /html
+//   /page
+//
+// actually requires the browser.
+//
 //==========================================================
 
 const healthMonitor = setInterval(async () => {
@@ -1528,7 +2261,13 @@ const healthMonitor = setInterval(async () => {
   }
 
   try {
-    await mcp.ensureConnected();
+    if (!mcp || typeof mcp.getPage !== "function") {
+      return;
+    }
+
+    const page = await mcp.getPage();
+
+    validateAutomationPage(page);
 
     serverState.browserConnected = true;
 
@@ -1538,10 +2277,10 @@ const healthMonitor = setInterval(async () => {
   } catch (err) {
     serverState.browserConnected = false;
 
-    serverState.lastBrowserError = err.message;
+    serverState.lastBrowserError = err?.message || String(err);
 
     if (CONFIG.debug) {
-      warn("[Health] Browser disconnected:", err.message);
+      warn("[Health] Browser unavailable:", err?.message || String(err));
     }
   }
 }, 30000);
@@ -1563,20 +2302,15 @@ const cleanupMonitor = setInterval(
 
 //==========================================================
 // SERVER STARTUP
+//==========================================================
 //
-// IMPORTANT:
+// HTTP starts first.
 //
-// HTTP starts FIRST.
+// Browser connection happens asynchronously.
 //
-// Browser connection happens AFTER.
+// Ollama is NOT started here.
 //
-// Therefore:
-//
-// http://localhost:9000/status
-//
-// is available even if Playwright
-// or browser connection fails.
-//
+// Your Ollama service is already running separately.
 //==========================================================
 
 let server;
@@ -1601,6 +2335,8 @@ try {
       `💬 Chat AI: ${serverState.chatAIReady ? "READY" : "NOT READY"}`,
     );
 
+    console.log(`⚡ Fast Path: ${CONFIG.fastPath ? "ENABLED" : "DISABLED"}`);
+
     console.log("==========================================");
 
     console.log("");
@@ -1614,7 +2350,7 @@ try {
         try {
           log("Connecting to Playwright...");
 
-          await mcp.connect();
+          const page = await ensureBrowserReady();
 
           serverState.initialized = true;
 
@@ -1626,11 +2362,7 @@ try {
 
           log("Playwright attached successfully.");
 
-          try {
-            const page = await mcp.getPage();
-
-            log("Current URL:", page.url());
-          } catch {}
+          log("Current URL:", page.url());
         } catch (err) {
           serverState.initialized = false;
 
@@ -1643,8 +2375,6 @@ try {
           warn("Browser attach failed:", err.message);
 
           warn("HTTP server remains available.");
-
-          warn("GET /status is still available.");
         }
       })
       .catch((err) => {
@@ -1670,7 +2400,14 @@ try {
 
   error("Failed to start HTTP server:", err);
 }
+//------------------------------------------------
+// Browser connection is intentionally lazy.
+//
+// Electron calls POST /init after the browser
+// window has been created.
+//------------------------------------------------
 
+log("HTTP server ready. Waiting for browser initialization...");
 //==========================================================
 // GRACEFUL SHUTDOWN
 //==========================================================
@@ -1695,6 +2432,8 @@ async function shutdown(signal) {
   try {
     await mcp.disconnect?.();
   } catch {}
+
+  releaseRunLock();
 
   if (server) {
     server.close(() => {

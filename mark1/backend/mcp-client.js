@@ -251,67 +251,104 @@ export default class PlaywrightMCPClient {
   // INTERNAL CONNECT
   //========================================================
 
+  //==========================================================
+  // CONNECT INTERNAL
+  //==========================================================
+
   async connectInternal(force = false) {
     try {
-      this.log("Connecting through BrowserController...");
+      //------------------------------------------------------
+      // Force means discard local Playwright handles.
+      //
+      // IMPORTANT:
+      // This does NOT close Electron.
+      //------------------------------------------------------
 
-      //----------------------------------------------------
-      // Apply options to shared controller
-      //----------------------------------------------------
-
-      if (this.options.autoReconnect !== undefined) {
-        this.browserController.options.autoReconnect =
-          this.options.autoReconnect;
+      if (force) {
+        await this.disconnect();
       }
 
-      if (this.options.waitUntil) {
-        this.browserController.options.waitUntil = this.options.waitUntil;
+      this.log("Connecting to Electron CDP:", this.options.cdpURL);
+
+      //------------------------------------------------------
+      // CONNECT TO ELECTRON
+      //------------------------------------------------------
+
+      const browser = await chromium.connectOverCDP(this.options.cdpURL);
+
+      //------------------------------------------------------
+      // Store browser
+      //------------------------------------------------------
+
+      this.browser = browser;
+
+      //------------------------------------------------------
+      // Browser disconnect
+      //------------------------------------------------------
+
+      browser.on("disconnected", () => {
+        this.connected = false;
+
+        this.browser = null;
+        this.context = null;
+        this.page = null;
+
+        this.warn("Electron CDP connection disconnected.");
+      });
+
+      //------------------------------------------------------
+      // CONTEXT
+      //------------------------------------------------------
+
+      const contexts = browser.contexts();
+
+      if (!contexts.length) {
+        throw new Error("No browser contexts available from Electron CDP.");
       }
 
-      if (this.options.navigationTimeout) {
-        this.browserController.options.navigationTimeout =
-          this.options.navigationTimeout;
-      }
+      this.context = contexts[0];
 
-      //----------------------------------------------------
-      // Connect
-      //----------------------------------------------------
-
-      await this.browserController.connect(force);
-
-      //----------------------------------------------------
-      // Sync state
-      //----------------------------------------------------
-
-      this.syncControllerState();
-
-      //----------------------------------------------------
-      // Discover active page
-      //----------------------------------------------------
+      //------------------------------------------------------
+      // FIND AUTOMATION PAGE
+      //------------------------------------------------------
 
       await this.refreshActivePage();
 
-      //----------------------------------------------------
-      // Attach events
-      //----------------------------------------------------
+      //------------------------------------------------------
+      // EVENTS
+      //------------------------------------------------------
 
-      this.attachEvents();
+      this.attachEventsToAllPages();
+
+      this.attachContextEvents();
+
+      //------------------------------------------------------
+      // CONNECTED
+      //------------------------------------------------------
 
       this.connected = true;
 
-      this.stats.connects++;
+      this.lastConnected = Date.now();
 
-      this.log("Connected successfully:", this.lastURL);
+      this.log("Connected successfully.");
+
+      this.log("Automation page:", this.lastURL);
 
       return this.page;
-    } catch (err) {
+    } catch (error) {
+      //------------------------------------------------------
+      // Clean local state only.
+      //
+      // DO NOT close Electron.
+      //------------------------------------------------------
+
       this.connected = false;
 
-      this.stats.errors++;
+      this.browser = null;
+      this.context = null;
+      this.page = null;
 
-      this.error("Connection failed:", err.message);
-
-      throw err;
+      throw error;
     }
   }
 
@@ -400,38 +437,51 @@ export default class PlaywrightMCPClient {
       return page;
     }
   }
-
   //========================================================
-  // ACTIVE PAGE DISCOVERY
+  // ACTIVE PAGE DISCOVERY WITHOUT RECONNECT
+  //
+  // Used immediately after BrowserController.connect().
+  //
+  // IMPORTANT:
+  // This method NEVER reconnects.
+  //
   //========================================================
 
-  async refreshActivePage() {
-    await this.ensureControllerConnection();
+  async refreshActivePageWithoutReconnect() {
+    this.syncControllerState();
 
-    const pages = this.context.pages();
+    //------------------------------------------------------
+    // Validate context
+    //------------------------------------------------------
+
+    if (!this.context) {
+      throw new Error("Browser context unavailable.");
+    }
+
+    //------------------------------------------------------
+    // Get pages
+    //------------------------------------------------------
+
+    const pages = this.context.pages().filter((page) => !page.isClosed());
 
     if (!pages.length) {
       throw new Error("No browser pages available.");
     }
 
     //------------------------------------------------------
-    // Remove closed pages
+    // Find real web pages
     //------------------------------------------------------
 
-    const activePages = pages.filter((page) => !page.isClosed());
-
-    if (!activePages.length) {
-      throw new Error("All browser pages are closed.");
-    }
+    const realPages = pages.filter((page) => this.isRealBrowserPage(page));
 
     //------------------------------------------------------
-    // Prefer real BrowserView page
+    // Prefer real browser page
     //------------------------------------------------------
 
     let candidate = null;
 
-    if (this.options.browserViewOnly) {
-      candidate = activePages.find((page) => this.isRealBrowserPage(page));
+    if (this.options.browserViewOnly && realPages.length) {
+      candidate = realPages[0];
     }
 
     //------------------------------------------------------
@@ -439,7 +489,7 @@ export default class PlaywrightMCPClient {
     //------------------------------------------------------
 
     if (!candidate) {
-      candidate = activePages[0];
+      candidate = pages[0];
     }
 
     //------------------------------------------------------
@@ -450,11 +500,28 @@ export default class PlaywrightMCPClient {
       this.stats.pageSwitches++;
     }
 
+    //------------------------------------------------------
+    // Set active page
+    //------------------------------------------------------
+
     this.page = candidate;
 
     this.lastURL = candidate.url();
 
-    this.syncControllerState();
+    //------------------------------------------------------
+    // Synchronize controller state without replacing
+    // the selected page unexpectedly.
+    //------------------------------------------------------
+
+    this.browser = this.browserController.browser;
+
+    this.context = this.browserController.context;
+
+    this.connected = !!this.browserController.connected;
+
+    //------------------------------------------------------
+    // Attach events
+    //------------------------------------------------------
 
     this.attachEvents();
 
@@ -462,20 +529,109 @@ export default class PlaywrightMCPClient {
 
     return this.page;
   }
+  //========================================================
+  // ACTIVE PAGE DISCOVERY
+  //========================================================
+
+  async refreshActivePage() {
+    //------------------------------------------------------
+    // This method may reconnect when called externally.
+    //------------------------------------------------------
+
+    await this.ensureControllerConnection();
+
+    return this.refreshActivePageWithoutReconnect();
+  }
 
   //========================================================
   // CONTROLLER CONNECTION
   //========================================================
 
   async ensureControllerConnection() {
-    if (!this.browserController.browser || !this.browserController.context) {
-      await this.browserController.connect();
+    //------------------------------------------------------
+    // Controller must exist
+    //------------------------------------------------------
+
+    if (!this.browserController) {
+      throw new Error("BrowserController instance is unavailable.");
     }
+
+    //------------------------------------------------------
+    // Controller must expose connect()
+    //------------------------------------------------------
+
+    if (typeof this.browserController.connect !== "function") {
+      throw new Error(
+        "BrowserController instance does not expose connect(). " +
+          "Check browser-controller.js default export.",
+      );
+    }
+
+    //------------------------------------------------------
+    // Controller must expose ensureConnected()
+    //------------------------------------------------------
+
+    if (typeof this.browserController.ensureConnected !== "function") {
+      throw new Error(
+        "BrowserController instance does not expose ensureConnected().",
+      );
+    }
+
+    //------------------------------------------------------
+    // Current connection
+    //------------------------------------------------------
+
+    const hasBrowser = !!this.browserController.browser;
+
+    const hasContext = !!this.browserController.context;
+
+    const hasPage =
+      !!this.browserController.page && !this.browserController.page.isClosed();
+
+    const controllerConnected = this.browserController.connected === true;
+
+    //------------------------------------------------------
+    // Already healthy
+    //------------------------------------------------------
+
+    if (hasBrowser && hasContext && hasPage && controllerConnected) {
+      this.syncControllerState();
+
+      return;
+    }
+
+    //------------------------------------------------------
+    // Ask controller to recover
+    //------------------------------------------------------
+
+    this.log("BrowserController connection required.");
+
+    await this.browserController.ensureConnected();
+
+    //------------------------------------------------------
+    // Synchronize
+    //------------------------------------------------------
 
     this.syncControllerState();
 
+    //------------------------------------------------------
+    // Validate
+    //------------------------------------------------------
+
+    if (!this.browser) {
+      throw new Error(
+        "Browser handle unavailable after controller connection.",
+      );
+    }
+
     if (!this.context) {
-      throw new Error("Browser context unavailable.");
+      throw new Error(
+        "Browser context unavailable after controller connection.",
+      );
+    }
+
+    if (!this.page || this.page.isClosed()) {
+      await this.refreshActivePageWithoutReconnect();
     }
   }
 
@@ -577,12 +733,6 @@ export default class PlaywrightMCPClient {
     await this.ensureConnected();
 
     return this.context.pages();
-  }
-
-  async getFrames() {
-    const page = await this.getPage();
-
-    return page.frames();
   }
 
   //========================================================

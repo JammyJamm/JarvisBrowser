@@ -12,7 +12,7 @@
 // Current Page Snapshot
 //       │
 //       ▼
-// LLM Planner (Primary Authority)
+// LLM Planner
 //       │
 //       ▼
 // JSON Parser / Repair
@@ -23,30 +23,40 @@
 //       ▼
 // Plan Validator
 //       │
-//       ├── Valid ───────────────► ToolMap
+//       ├── Valid ───────────────► Executor / ToolMap
 //       │
 //       └── Invalid
+//              │
+//              ├── Deterministic Recovery
 //              │
 //              ▼
 //        LLM Repair Attempt
 //              │
 //              ▼
+//           Validator
+//              │
+//              ▼
 //           ToolMap
 //
-// Features
-// --------
-// ✔ LLM-first planning
-// ✔ Qwen/Ollama support
-// ✔ Page-aware planning
-// ✔ Multi-step planning
-// ✔ Strong action schema
-// ✔ Click target enforcement
-// ✔ Automatic invalid-plan repair
-// ✔ JSON repair
-// ✔ Tool alias normalization
-// ✔ Optional Core Planner fallback
-// ✔ Optional Regex fallback
-// ✔ Performance statistics
+//==========================================================
+//
+// IMPORTANT DESIGN RULE
+//
+// Planner decides:
+//
+//     WHAT should happen
+//
+// Resolver decides:
+//
+//     HOW to find the element
+//
+// ScoringEngine decides:
+//
+//     WHICH DOM candidate is the best match
+//
+// Therefore:
+//
+//     Planner MUST NOT perform fuzzy matching.
 //
 //==========================================================
 
@@ -54,23 +64,22 @@ import CorePlanner from "./planner/planner.js";
 
 export default class Planner {
   constructor(options = {}) {
-    //--------------------------------------------------
-    // Configuration
-    //--------------------------------------------------
+    //======================================================
+    // CONFIGURATION
+    //======================================================
 
     this.options = {
       model: options.model || "qwen3:8b",
 
       endpoint: options.endpoint || "http://localhost:11434/api/generate",
 
-      // IMPORTANT:
-      // LLM is now the PRIMARY planner.
+      // LLM is the primary authority.
       llmFirst: options.llmFirst ?? true,
 
-      // Fallbacks are disabled by default.
-      // Enable only if you explicitly want them.
+      // Optional fallback planner.
       enableCore: options.enableCore ?? false,
 
+      // Optional deterministic fallback.
       enableRegexFallback: options.enableRegexFallback ?? false,
 
       enableLLM: options.enableLLM ?? true,
@@ -81,37 +90,64 @@ export default class Planner {
 
       temperature: options.temperature ?? 0,
 
-      // Number of times the LLM may repair an invalid plan.
       maxRepairAttempts: options.maxRepairAttempts ?? 2,
 
-      // Send enough page information to the LLM.
       maxPageText: options.maxPageText ?? 30000,
+
+      // Prevent excessively large context payloads.
+      maxContextText: options.maxContextText ?? 12000,
+
+      // Maximum number of executable steps.
+      maxSteps: options.maxSteps ?? 50,
+
+      // LLM request retry count.
+      llmRetryAttempts: options.llmRetryAttempts ?? 1,
 
       ...options,
     };
 
-    //--------------------------------------------------
-    // Runtime
-    //--------------------------------------------------
+    //======================================================
+    // RUNTIME
+    //======================================================
 
     this.model = this.options.model;
 
     this.ollama = this.options.endpoint;
 
-    //--------------------------------------------------
-    // Statistics
-    //--------------------------------------------------
+    //======================================================
+    // STATISTICS
+    //======================================================
 
-    this.stats = {
+    this.stats = this.createEmptyStats();
+
+    //======================================================
+    // OPTIONAL CORE PLANNER
+    //======================================================
+
+    this.core = this.options.enableCore ? new CorePlanner(this.options) : null;
+  }
+
+  //========================================================
+  // EMPTY STATS
+  //========================================================
+
+  createEmptyStats() {
+    return {
       requests: 0,
 
       llmPlannerHits: 0,
 
       llmRepairCalls: 0,
 
+      llmRequests: 0,
+
+      llmRetries: 0,
+
       corePlannerHits: 0,
 
       regexPlannerHits: 0,
+
+      recoveryHits: 0,
 
       chatResponses: 0,
 
@@ -124,18 +160,16 @@ export default class Planner {
       llmFailures: 0,
 
       repairedPlans: 0,
+
+      rejectedPlans: 0,
+
+      totalPlanningTime: 0,
     };
-
-    //--------------------------------------------------
-    // Optional Core Planner
-    //--------------------------------------------------
-
-    this.core = this.options.enableCore ? new CorePlanner(this.options) : null;
   }
 
-  //==================================================
+  //========================================================
   // LOGGING
-  //==================================================
+  //========================================================
 
   log(...args) {
     if (this.options.debug) {
@@ -151,16 +185,16 @@ export default class Planner {
     console.error("[Planner]", ...args);
   }
 
-  //==================================================
+  //========================================================
   // PUBLIC PLAN
-  //
-  // LLM IS THE PRIMARY AUTHORITY
-  //==================================================
+  //========================================================
 
   async plan(command, pageText = "", context = {}) {
+    const started = performance.now();
+
     this.stats.requests++;
 
-    command = String(command || "").trim();
+    command = this.cleanText(command);
 
     if (!command) {
       return this.empty();
@@ -168,115 +202,142 @@ export default class Planner {
 
     this.log("Planning command:", command);
 
-    //--------------------------------------------------
-    // LLM FIRST
-    //--------------------------------------------------
+    try {
+      //====================================================
+      // LLM FIRST
+      //====================================================
 
-    if (this.options.enableLLM && this.options.llmFirst) {
-      this.stats.llmPlannerHits++;
+      if (this.options.enableLLM && this.options.llmFirst) {
+        this.stats.llmPlannerHits++;
 
-      const llmResult = await this.llmPlan(command, pageText, context);
+        const llmResult = await this.llmPlan(command, pageText, context);
 
-      //------------------------------------------------
-      // Valid LLM Plan
-      //------------------------------------------------
+        //==================================================
+        // VALID ACTION
+        //==================================================
 
-      if (llmResult?.mode === "action") {
-        this.stats.actionResponses++;
-
-        return llmResult;
-      }
-
-      //------------------------------------------------
-      // Chat Response
-      //------------------------------------------------
-
-      if (llmResult?.mode === "chat") {
-        this.stats.chatResponses++;
-
-        return llmResult;
-      }
-    }
-
-    //--------------------------------------------------
-    // OPTIONAL CORE FALLBACK
-    //--------------------------------------------------
-
-    if (this.options.enableCore) {
-      try {
-        const advanced = await this.core.plan(command, {
-          ...context,
-          pageText,
-        });
-
-        if (advanced?.steps?.length) {
-          const normalized = this.normalizeAdvanced(advanced, command);
-
-          const validation = this.validatePlan(normalized, command);
-
-          if (validation.valid) {
-            this.stats.corePlannerHits++;
-            this.stats.actionResponses++;
-
-            return normalized;
-          }
-
-          this.warn("Core planner produced invalid plan:", validation.errors);
-        }
-      } catch (err) {
-        this.warn("Core planner fallback failed:", err.message);
-      }
-    }
-
-    //--------------------------------------------------
-    // OPTIONAL REGEX FALLBACK
-    //--------------------------------------------------
-
-    if (this.options.enableRegexFallback) {
-      const regex = this.regexPlan(command);
-
-      if (regex?.length) {
-        const fallbackPlan = {
-          mode: "action",
-
-          source: "regex-fallback",
-
-          steps: regex,
-        };
-
-        const validation = this.validatePlan(fallbackPlan, command);
-
-        if (validation.valid) {
-          this.stats.regexPlannerHits++;
+        if (llmResult?.mode === "action") {
           this.stats.actionResponses++;
 
-          return fallbackPlan;
+          return llmResult;
+        }
+
+        //==================================================
+        // CHAT
+        //==================================================
+
+        if (llmResult?.mode === "chat") {
+          this.stats.chatResponses++;
+
+          return llmResult;
         }
       }
+
+      //====================================================
+      // OPTIONAL CORE FALLBACK
+      //====================================================
+
+      if (this.options.enableCore && this.core) {
+        try {
+          const advanced = await this.core.plan(command, {
+            ...context,
+            pageText,
+          });
+
+          if (advanced?.steps?.length) {
+            const normalized = this.normalizeAdvanced(advanced, command);
+
+            const validation = this.validatePlan(normalized, command);
+
+            if (validation.valid) {
+              this.stats.corePlannerHits++;
+              this.stats.actionResponses++;
+
+              return normalized;
+            }
+
+            this.warn("Core planner produced invalid plan:", validation.errors);
+          }
+        } catch (err) {
+          this.warn("Core planner fallback failed:", err?.message || err);
+        }
+      }
+
+      //====================================================
+      // OPTIONAL REGEX FALLBACK
+      //====================================================
+
+      if (this.options.enableRegexFallback) {
+        const regex = this.regexPlan(command);
+
+        if (regex?.length) {
+          const fallbackPlan = {
+            mode: "action",
+            source: "regex-fallback",
+            steps: regex,
+          };
+
+          const validation = this.validatePlan(fallbackPlan, command);
+
+          if (validation.valid) {
+            this.stats.regexPlannerHits++;
+            this.stats.actionResponses++;
+
+            return fallbackPlan;
+          }
+        }
+      }
+
+      //====================================================
+      // NOTHING WORKED
+      //====================================================
+
+      this.stats.rejectedPlans++;
+
+      return {
+        mode: "chat",
+
+        source: "planner",
+
+        reply: "I could not create a valid execution plan for this command.",
+      };
+    } finally {
+      const elapsed = performance.now() - started;
+
+      this.stats.totalPlanningTime += elapsed;
     }
-
-    //--------------------------------------------------
-    // NOTHING WORKED
-    //--------------------------------------------------
-
-    return {
-      mode: "chat",
-
-      source: "planner",
-
-      reply: "I could not create a valid execution plan for this command.",
-    };
   }
 
-  //==================================================
+  //========================================================
+  // TEXT CLEANING
+  //========================================================
+
+  cleanText(value) {
+    return String(value ?? "")
+      .replace(/\u0000/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  //========================================================
   // NORMALIZE ADVANCED PLAN
-  //==================================================
+  //========================================================
 
   normalizeAdvanced(plan, originalCommand = "") {
     const steps = [];
 
-    for (const rawStep of plan?.steps || []) {
-      if (!rawStep) {
+    const rawSteps = Array.isArray(plan?.steps) ? plan.steps : [];
+
+    for (let index = 0; index < rawSteps.length; index++) {
+      if (steps.length >= this.options.maxSteps) {
+        this.warn(`Maximum step limit reached (${this.options.maxSteps}).`);
+
+        break;
+      }
+
+      const rawStep = rawSteps[index];
+
+      if (!rawStep || typeof rawStep !== "object") {
         continue;
       }
 
@@ -288,9 +349,9 @@ export default class Planner {
         ...(rawStep.args || {}),
       };
 
-      //------------------------------------------------
-      // Flatten common fields
-      //------------------------------------------------
+      //====================================================
+      // FLATTEN COMMON FIELDS
+      //====================================================
 
       const fields = [
         "url",
@@ -306,6 +367,10 @@ export default class Planner {
         "direction",
         "amount",
         "message",
+        "label",
+        "name",
+        "option",
+        "index",
       ];
 
       for (const field of fields) {
@@ -314,101 +379,79 @@ export default class Planner {
         }
       }
 
-      //------------------------------------------------
-      // Tool aliases
-      //------------------------------------------------
+      //====================================================
+      // TOOL ALIASES
+      //====================================================
 
-      switch (tool) {
-        case "tap":
-        case "open":
-        case "pressbutton":
-        case "choose":
-          tool = "click";
-          break;
+      tool = this.normalizeTool(tool);
 
-        case "fill":
-        case "enter":
-        case "input":
-        case "write":
-          tool = "type";
-          break;
-
-        case "goto":
-        case "visit":
-        case "go":
-        case "browse":
-          tool = "navigate";
-          break;
-
-        case "sleep":
-        case "pause":
-        case "delay":
-          tool = "wait";
-          break;
-
-        case "tick":
-          tool = "check";
-          break;
-
-        case "untick":
-          tool = "uncheck";
-          break;
-
-        case "move":
-          tool = "hover";
-          break;
-      }
-
-      //------------------------------------------------
+      //====================================================
       // CLICK NORMALIZATION
-      //
-      // CRITICAL:
-      //
-      // LLM may return:
-      //
-      // args: {
-      //   text: "Learn more"
-      // }
-      //
-      // Convert to:
-      //
-      // args: {
-      //   target: "Learn more"
-      // }
-      //------------------------------------------------
+      //====================================================
 
       if (tool === "click") {
-        const clickTarget =
-          args.target ??
-          args.text ??
-          args.label ??
-          args.name ??
-          args.selector ??
-          rawStep.target ??
-          rawStep.text ??
-          rawStep.label ??
-          rawStep.name;
+        const clickTarget = this.extractClickTarget(args, rawStep);
 
-        if (
-          clickTarget !== undefined &&
-          clickTarget !== null &&
-          String(clickTarget).trim()
-        ) {
-          args.target = String(clickTarget).trim();
+        if (clickTarget) {
+          args.target = clickTarget;
         }
 
-        // Remove ambiguity.
+        // Target is canonical.
+        delete args.text;
+        delete args.label;
+        delete args.name;
+      }
+
+      //====================================================
+      // TYPE NORMALIZATION
+      //====================================================
+
+      if (tool === "type") {
+        if (args.field === undefined && args.target !== undefined) {
+          args.field = args.target;
+        }
+
+        if (args.value === undefined && args.text !== undefined) {
+          args.value = args.text;
+        }
+
         delete args.text;
       }
 
-      //------------------------------------------------
-      // CHAT STEP CONVERSION
-      //------------------------------------------------
+      //====================================================
+      // WAIT NORMALIZATION
+      //====================================================
+
+      if (tool === "wait") {
+        args.time = this.normalizeTime(args.time);
+      }
+
+      //====================================================
+      // SCROLL NORMALIZATION
+      //====================================================
+
+      if (tool === "scroll") {
+        args.direction = String(args.direction || "down")
+          .toLowerCase()
+          .trim();
+
+        if (args.amount !== undefined) {
+          const amount = Number(args.amount);
+
+          if (Number.isFinite(amount)) {
+            args.amount = amount;
+          }
+        }
+      }
+
+      //====================================================
+      // CHAT STEP
+      //====================================================
 
       if (tool === "chat") {
-        const message = String(
+        const message = this.cleanText(
           args.message ?? rawStep.message ?? rawStep.raw ?? rawStep.text ?? "",
-        ).trim();
+        );
 
         const converted = this.parseChatInstruction(message);
 
@@ -419,37 +462,163 @@ export default class Planner {
         continue;
       }
 
-      //------------------------------------------------
-      // Skip empty tools
-      //------------------------------------------------
+      //====================================================
+      // IGNORE EMPTY TOOLS
+      //====================================================
 
       if (!tool) {
         continue;
       }
 
-      //------------------------------------------------
-      // Add normalized step
-      //------------------------------------------------
+      //====================================================
+      // NORMALIZED STEP
+      //====================================================
 
       steps.push({
         tool,
-
         args,
       });
     }
 
     return {
-      mode: plan?.mode || "action",
+      mode: plan?.mode === "chat" ? "chat" : "action",
 
       source: plan?.source || "llm",
 
       steps,
+
+      ...(plan?.reply
+        ? {
+            reply: String(plan.reply).trim(),
+          }
+        : {}),
+
+      ...(originalCommand
+        ? {
+            command: originalCommand,
+          }
+        : {}),
     };
   }
 
-  //==================================================
+  //========================================================
+  // TOOL NORMALIZATION
+  //========================================================
+
+  normalizeTool(tool) {
+    const aliases = {
+      tap: "click",
+      pressbutton: "click",
+      choose: "click",
+      clickbutton: "click",
+      clicksmart: "click",
+      "click-smart": "click",
+
+      fill: "type",
+      enter: "type",
+      input: "type",
+      write: "type",
+
+      goto: "navigate",
+      visit: "navigate",
+      go: "navigate",
+      browse: "navigate",
+      openurl: "navigate",
+
+      sleep: "wait",
+      pause: "wait",
+      delay: "wait",
+
+      tick: "check",
+      untick: "uncheck",
+
+      move: "hover",
+
+      find: "search",
+      lookup: "search",
+
+      uncheck: "uncheck",
+
+      back: "back",
+      forward: "forward",
+
+      reload: "refresh",
+      refreshpage: "refresh",
+
+      keypress: "press",
+      keyboard: "press",
+
+      clearfield: "clear",
+    };
+
+    return aliases[tool] || tool;
+  }
+
+  //========================================================
+  // CLICK TARGET EXTRACTION
+  //
+  // IMPORTANT:
+  //
+  // NO FUZZY MATCHING HERE.
+  //
+  // This only extracts the target supplied by the LLM.
+  //========================================================
+
+  extractClickTarget(args = {}, rawStep = {}) {
+    const candidates = [
+      args.target,
+      args.text,
+      args.label,
+      args.name,
+      args.selector,
+
+      rawStep.target,
+      rawStep.text,
+      rawStep.label,
+      rawStep.name,
+    ];
+
+    for (const candidate of candidates) {
+      if (candidate !== undefined && candidate !== null) {
+        const value = String(candidate).trim();
+
+        if (value) {
+          return this.cleanTarget(value);
+        }
+      }
+    }
+
+    return "";
+  }
+
+  //========================================================
+  // CLEAN TARGET
+  //
+  // Removes unnecessary natural-language wrappers,
+  // but does NOT fuzzy-match or change spelling.
+  //========================================================
+
+  cleanTarget(value) {
+    let target = String(value || "").trim();
+
+    target = target
+      .replace(/^["'`]+/, "")
+      .replace(/["'`]+$/, "")
+      .trim();
+
+    target = target.replace(
+      /^(?:the\s+)?(?:button|tab|link|label|element)\s+(?:called\s+|named\s+)?/i,
+      "",
+    );
+
+    target = target.trim();
+
+    return target;
+  }
+
+  //========================================================
   // CHAT INSTRUCTION PARSER
-  //==================================================
+  //========================================================
 
   parseChatInstruction(message) {
     if (!message) {
@@ -458,80 +627,72 @@ export default class Planner {
 
     let match;
 
-    //--------------------------------------------------
+    //======================================================
     // NAVIGATE
-    //--------------------------------------------------
+    //======================================================
 
     match =
-      message.match(/(?:navigate|go)\s+to\s+(https?:\/\/\S+)/i) ||
-      message.match(/open\s+(https?:\/\/\S+)/i);
+      message.match(/^(?:navigate|go)\s+to\s+(https?:\/\/\S+)/i) ||
+      message.match(/^open\s+(https?:\/\/\S+)/i);
 
     if (match) {
       return {
         tool: "navigate",
-
         args: {
           url: match[1],
         },
       };
     }
 
-    //--------------------------------------------------
+    //======================================================
     // CLICK
-    //--------------------------------------------------
+    //======================================================
 
     match = message.match(
-      /^(?:click|tap|press|open)\s+(?:the\s+)?["']?(.+?)["']?$/i,
+      /^(?:click|tap|press|open|choose)\s+(?:the\s+)?(.+)$/i,
     );
 
     if (match) {
-      return {
-        tool: "click",
+      const target = this.cleanTarget(match[1]);
 
-        args: {
-          target: match[1].trim(),
-        },
-      };
+      if (target) {
+        return {
+          tool: "click",
+          args: {
+            target,
+          },
+        };
+      }
     }
 
-    //--------------------------------------------------
+    //======================================================
     // SEARCH
-    //--------------------------------------------------
+    //======================================================
 
-    match = message.match(/^search\s+(?:for\s+)?["']?(.+?)["']?$/i);
+    match = message.match(/^search\s+(?:for\s+)?(.+)$/i);
 
     if (match) {
       return {
         tool: "search",
-
         args: {
           query: match[1].trim(),
         },
       };
     }
 
-    //--------------------------------------------------
+    //======================================================
     // WAIT
-    //--------------------------------------------------
+    //======================================================
 
     match = message.match(
-      /^wait\s+([0-9]+)\s*(ms|milliseconds|s|sec|seconds)?$/i,
+      /^wait\s+([0-9]+(?:\.[0-9]+)?)\s*(ms|milliseconds|s|sec|seconds)?$/i,
     );
 
     if (match) {
-      let time = Number(match[1]);
-
-      const unit = (match[2] || "").toLowerCase();
-
-      if (unit.startsWith("s")) {
-        time *= 1000;
-      }
-
       return {
         tool: "wait",
-
         args: {
-          time,
+          time: this.normalizeTime(`${match[1]} ${match[2] || "ms"}`),
         },
       };
     }
@@ -539,13 +700,47 @@ export default class Planner {
     return null;
   }
 
-  //==================================================
+  //========================================================
+  // TIME NORMALIZATION
+  //========================================================
+
+  normalizeTime(value) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return Math.max(0, Math.round(value));
+    }
+
+    const text = String(value ?? "")
+      .trim()
+      .toLowerCase();
+
+    if (!text) {
+      return 0;
+    }
+
+    const match = text.match(
+      /^([0-9]+(?:\.[0-9]+)?)\s*(ms|milliseconds|s|sec|seconds)?$/i,
+    );
+
+    if (!match) {
+      const numeric = Number(text);
+
+      return Number.isFinite(numeric) ? Math.max(0, Math.round(numeric)) : 0;
+    }
+
+    let time = Number(match[1]);
+
+    const unit = match[2] || "ms";
+
+    if (unit === "s" || unit === "sec" || unit === "seconds") {
+      time *= 1000;
+    }
+
+    return Math.max(0, Math.round(time));
+  }
+
+  //========================================================
   // VALIDATE PLAN
-  //
-  // IMPORTANT:
-  // This prevents invalid plans from reaching
-  // server.js.
-  //==================================================
+  //========================================================
 
   validatePlan(plan, command = "") {
     const errors = [];
@@ -559,6 +754,10 @@ export default class Planner {
       };
     }
 
+    //======================================================
+    // CHAT
+    //======================================================
+
     if (plan.mode === "chat") {
       if (!String(plan.reply || "").trim()) {
         errors.push("Chat response is empty.");
@@ -570,12 +769,22 @@ export default class Planner {
       };
     }
 
+    //======================================================
+    // MODE
+    //======================================================
+
     if (plan.mode !== "action") {
       errors.push(`Invalid plan mode: ${plan.mode}`);
     }
 
+    //======================================================
+    // STEPS
+    //======================================================
+
     if (!Array.isArray(plan.steps) || plan.steps.length === 0) {
       errors.push("Action plan contains no steps.");
+
+      this.stats.validationFailures++;
 
       return {
         valid: false,
@@ -583,11 +792,23 @@ export default class Planner {
       };
     }
 
+    if (plan.steps.length > this.options.maxSteps) {
+      errors.push(
+        `Action plan exceeds maximum step limit (${this.options.maxSteps}).`,
+      );
+    }
+
+    //======================================================
+    // VALIDATE EACH STEP
+    //======================================================
+
     for (let index = 0; index < plan.steps.length; index++) {
       const step = plan.steps[index];
 
-      if (!step) {
-        errors.push(`Step ${index + 1} is empty.`);
+      const number = index + 1;
+
+      if (!step || typeof step !== "object") {
+        errors.push(`Step ${number} is empty.`);
 
         continue;
       }
@@ -596,52 +817,122 @@ export default class Planner {
         .trim()
         .toLowerCase();
 
-      const args = step.args || {};
+      const args = step.args && typeof step.args === "object" ? step.args : {};
 
-      //------------------------------------------------
-      // Tool required
-      //------------------------------------------------
+      //====================================================
+      // TOOL REQUIRED
+      //====================================================
 
       if (!tool) {
-        errors.push(`Step ${index + 1} has no tool.`);
+        errors.push(`Step ${number} has no tool.`);
 
         continue;
       }
 
-      //------------------------------------------------
-      // CLICK TARGET REQUIRED
-      //------------------------------------------------
+      //====================================================
+      // CLICK
+      //====================================================
 
-      if (tool === "click" || tool === "clicksmart" || tool === "click-smart") {
-        const target =
-          args.target ?? args.text ?? args.label ?? args.name ?? args.selector;
+      if (tool === "click") {
+        const target = args.target;
 
         if (target === undefined || target === null || !String(target).trim()) {
-          errors.push(`Step ${index + 1}: click target is missing.`);
+          errors.push(`Step ${number}: click target is missing.`);
         }
       }
 
-      //------------------------------------------------
-      // TYPE VALIDATION
-      //------------------------------------------------
+      //====================================================
+      // TYPE
+      //====================================================
 
       if (tool === "type") {
-        if (!String(args.field || args.target || args.selector || "").trim()) {
-          errors.push(`Step ${index + 1}: type field is missing.`);
+        const field = args.field ?? args.target ?? args.selector;
+
+        if (field === undefined || field === null || !String(field).trim()) {
+          errors.push(`Step ${number}: type field is missing.`);
         }
 
         if (args.value === undefined || args.value === null) {
-          errors.push(`Step ${index + 1}: type value is missing.`);
+          errors.push(`Step ${number}: type value is missing.`);
         }
       }
 
-      //------------------------------------------------
-      // NAVIGATE VALIDATION
-      //------------------------------------------------
+      //====================================================
+      // NAVIGATE
+      //====================================================
 
       if (tool === "navigate") {
         if (!String(args.url || "").trim()) {
-          errors.push(`Step ${index + 1}: navigation URL is missing.`);
+          errors.push(`Step ${number}: navigation URL is missing.`);
+        }
+      }
+
+      //====================================================
+      // SEARCH
+      //====================================================
+
+      if (tool === "search") {
+        if (!String(args.query || "").trim()) {
+          errors.push(`Step ${number}: search query is missing.`);
+        }
+      }
+
+      //====================================================
+      // WAIT
+      //====================================================
+
+      if (tool === "wait") {
+        const time = Number(args.time);
+
+        if (!Number.isFinite(time) || time < 0) {
+          errors.push(`Step ${number}: invalid wait time.`);
+        }
+      }
+
+      //====================================================
+      // SELECT
+      //====================================================
+
+      if (tool === "select") {
+        const field = args.field ?? args.target ?? args.selector;
+
+        const option = args.option ?? args.value;
+
+        if (!String(field || "").trim()) {
+          errors.push(`Step ${number}: select field is missing.`);
+        }
+
+        if (option === undefined || option === null || !String(option).trim()) {
+          errors.push(`Step ${number}: select option is missing.`);
+        }
+      }
+
+      //====================================================
+      // PRESS
+      //====================================================
+
+      if (tool === "press") {
+        if (!String(args.key || "").trim()) {
+          errors.push(`Step ${number}: press key is missing.`);
+        }
+      }
+
+      //====================================================
+      // SCROLL
+      //====================================================
+
+      if (tool === "scroll") {
+        const direction = String(args.direction || "")
+          .trim()
+          .toLowerCase();
+
+        if (
+          direction &&
+          !["up", "down", "left", "right", "top", "bottom"].includes(direction)
+        ) {
+          errors.push(
+            `Step ${number}: invalid scroll direction "${direction}".`,
+          );
         }
       }
     }
@@ -659,35 +950,45 @@ export default class Planner {
     };
   }
 
-  //==================================================
+  //========================================================
   // REPAIR PLAN USING LLM
-  //==================================================
+  //========================================================
 
   async repairPlan(command, pageText, invalidPlan, validationErrors) {
     this.stats.llmRepairCalls++;
 
     const prompt = `
-You are repairing an invalid browser automation plan.
+You are repairing an INVALID browser automation plan.
 
 Return ONLY valid JSON.
 
-The user command is:
+==================================================
+USER COMMAND
+==================================================
 
 ${command}
 
-Current page:
+==================================================
+CURRENT PAGE
+==================================================
 
 ${String(pageText || "").slice(0, this.options.maxPageText)}
 
-Invalid plan:
+==================================================
+INVALID PLAN
+==================================================
 
 ${JSON.stringify(invalidPlan, null, 2)}
 
-Validation errors:
+==================================================
+VALIDATION ERRORS
+==================================================
 
 ${validationErrors.join("\n")}
 
-Available tools:
+==================================================
+AVAILABLE TOOLS
+==================================================
 
 click
 type
@@ -701,23 +1002,67 @@ wait
 navigate
 read
 scroll
+back
+forward
+refresh
+clear
 
-STRICT RULES:
+==================================================
+STRICT RULES
+==================================================
 
-1. Every click MUST have args.target.
-2. Never create a click step with empty args.
-3. If the user says "click Learn more", target MUST be "Learn more".
-4. If the user says "click Login", target MUST be "Login".
-5. Preserve the exact visible target text from the user's command whenever possible.
-6. Do not invent a target.
-7. Every type action requires field and value.
-8. Every navigate action requires url.
-9. Return executable steps only.
-10. Return no explanation.
-11. Do not use markdown.
-12. Return JSON only.
+1. Every click MUST contain args.target.
 
-Correct JSON example:
+2. Never create:
+   "args": {}
+
+3. Never create:
+   "args": {
+      "target": ""
+   }
+
+4. The click target MUST come from the user's command
+   or an unambiguous visible target in the current page.
+
+5. Never invent a target.
+
+6. Preserve the user's exact intended visible text.
+
+7. "Click Login" means target "Login".
+
+8. "Click the Login button" means target "Login".
+
+9. "Click SSO Login" means target "SSO Login".
+
+10. "Click By email / ID" means target "By email / ID".
+
+11. Do NOT replace a target with a CSS selector unless
+    the user explicitly provided a selector.
+
+12. Every type action requires:
+    field
+    value
+
+13. Every navigate action requires:
+    url
+
+14. Every search action requires:
+    query
+
+15. Every press action requires:
+    key
+
+16. Return executable steps only.
+
+17. Return no explanation.
+
+18. Return no markdown.
+
+19. Return JSON only.
+
+==================================================
+CORRECT EXAMPLE
+==================================================
 
 {
   "mode": "action",
@@ -753,9 +1098,9 @@ Correct JSON example:
     return null;
   }
 
-  //==================================================
+  //========================================================
   // LLM PLANNER
-  //==================================================
+  //========================================================
 
   async llmPlan(command, pageText = "", context = {}) {
     const limitedPageText = String(pageText || "").slice(
@@ -763,21 +1108,26 @@ Correct JSON example:
       this.options.maxPageText,
     );
 
+    const safeContext = this.limitContext(context);
+
     const prompt = `
-You are the primary AI planner for Jarvis Browser.
+You are the PRIMARY AI planner for Jarvis Browser.
 
-Your job is to convert the user's natural-language browser command
-into a precise executable JSON plan.
+Your job is to convert the user's natural-language browser
+command into a precise executable JSON plan.
 
-You are the PRIMARY planner.
-Do not delegate planning to regex.
-Do not assume another planner will fix your output.
+You are the planning authority.
+
+The Resolver and ScoringEngine will later determine HOW
+to locate the requested DOM element.
+
+You MUST NOT perform fuzzy matching.
 
 ==================================================
 OUTPUT FORMAT
 ==================================================
 
-For browser actions:
+ACTION:
 
 {
   "mode": "action",
@@ -791,7 +1141,7 @@ For browser actions:
   ]
 }
 
-For conversation:
+CHAT:
 
 {
   "mode": "chat",
@@ -814,12 +1164,16 @@ wait
 navigate
 read
 scroll
+back
+forward
+refresh
+clear
 
 ==================================================
 CRITICAL CLICK RULE
 ==================================================
 
-Every click MUST contain:
+EVERY click MUST contain:
 
 {
   "tool": "click",
@@ -828,14 +1182,14 @@ Every click MUST contain:
   }
 }
 
-NEVER return:
+NEVER:
 
 {
   "tool": "click",
   "args": {}
 }
 
-NEVER return:
+NEVER:
 
 {
   "tool": "click",
@@ -844,78 +1198,123 @@ NEVER return:
   }
 }
 
-If the user says:
+==================================================
+CLICK TARGET EXTRACTION
+==================================================
 
-"click learn more"
+Extract the actual requested target from the user command.
+
+Examples:
+
+User:
+Click Login
 
 Return:
 
 {
-  "mode": "action",
-  "steps": [
-    {
-      "tool": "click",
-      "args": {
-        "target": "learn more"
-      }
-    }
-  ]
+  "tool": "click",
+  "args": {
+    "target": "Login"
+  }
 }
 
-If the user says:
-
-"click the Login button"
+User:
+Click the Login button
 
 Return:
 
 {
-  "mode": "action",
-  "steps": [
-    {
-      "tool": "click",
-      "args": {
-        "target": "Login button"
-      }
-    }
-  ]
+  "tool": "click",
+  "args": {
+    "target": "Login"
+  }
 }
 
-If the user says:
-
-"click SSO Login"
+User:
+Click SSO Login
 
 Return:
 
 {
-  "mode": "action",
-  "steps": [
-    {
-      "tool": "click",
-      "args": {
-        "target": "SSO Login"
-      }
-    }
-  ]
+  "tool": "click",
+  "args": {
+    "target": "SSO Login"
+  }
+}
+
+User:
+Click By email / ID
+
+Return:
+
+{
+  "tool": "click",
+  "args": {
+    "target": "By email / ID"
+  }
+}
+
+User:
+Click Learn more
+
+Return:
+
+{
+  "tool": "click",
+  "args": {
+    "target": "Learn more"
+  }
 }
 
 ==================================================
-TARGET RULE
+IMPORTANT TARGET RULE
 ==================================================
 
-For click commands, extract the target from the user's command.
+The target may be:
 
-The target can be:
+- visible button text
+- visible tab text
+- visible link text
+- visible label
+- accessible name
+- element name
+- explicitly supplied CSS selector
 
-- Button text
-- Link text
-- Visible text
-- Accessible label
-- Element name
-- CSS selector if explicitly provided
+Prefer the visible target text.
 
-Prefer visible text.
+DO NOT convert:
 
-Do NOT leave the target empty.
+"Click Login"
+
+into:
+
+"button[type=submit]"
+
+unless the user explicitly requests a selector.
+
+DO NOT invent selectors.
+
+==================================================
+TAB RULE
+==================================================
+
+If the user asks to click a tab such as:
+
+"Click By email / ID"
+
+the planner must return:
+
+{
+  "tool": "click",
+  "args": {
+    "target": "By email / ID"
+  }
+}
+
+The Resolver may later determine that the visible text
+belongs to a child span/label inside the actual clickable tab.
+
+The planner does NOT need to select the parent DOM element.
 
 ==================================================
 TYPE RULE
@@ -923,7 +1322,7 @@ TYPE RULE
 
 For:
 
-"Type admin into username"
+Type admin into username
 
 Return:
 
@@ -935,13 +1334,27 @@ Return:
   }
 }
 
+For:
+
+Fill tamiltanishh@gmail.com into E-mail or ID
+
+Return:
+
+{
+  "tool": "type",
+  "args": {
+    "field": "E-mail or ID",
+    "value": "tamiltanishh@gmail.com"
+  }
+}
+
 ==================================================
 NAVIGATION RULE
 ==================================================
 
 For:
 
-"Navigate to https://google.com"
+Navigate to https://google.com
 
 Return:
 
@@ -953,14 +1366,48 @@ Return:
 }
 
 ==================================================
+SEARCH RULE
+==================================================
+
+For:
+
+Search Playwright
+
+Return:
+
+{
+  "tool": "search",
+  "args": {
+    "query": "Playwright"
+  }
+}
+
+==================================================
+WAIT RULE
+==================================================
+
+For:
+
+Wait 2 seconds
+
+Return:
+
+{
+  "tool": "wait",
+  "args": {
+    "time": 2000
+  }
+}
+
+==================================================
 MULTI-STEP RULE
 ==================================================
 
 For:
 
-"Open Google and click Images"
+Open Google and click Images
 
-Return multiple steps:
+Return:
 
 {
   "mode": "action",
@@ -990,7 +1437,7 @@ ${limitedPageText}
 CONTEXT
 ==================================================
 
-${JSON.stringify(context || {})}
+${JSON.stringify(safeContext, null, 2)}
 
 ==================================================
 USER COMMAND
@@ -1006,21 +1453,34 @@ FINAL RULES
 - No markdown.
 - No explanation.
 - No code fences.
-- Never produce an empty click target.
-- Never produce click args without target.
-- Preserve the user's intended target.
-- Use the current page only to improve target understanding.
-- If the command is actionable, return mode "action".
-- If the command is conversational, return mode "chat".
+- Actionable command => mode "action".
+- Conversation => mode "chat".
+- Every click requires args.target.
+- Never return empty click target.
+- Preserve the user's target.
+- Do not fuzzy match.
+- Do not invent targets.
+- Do not invent selectors.
+- Planner decides WHAT.
+- Resolver decides HOW.
 `;
 
     const result = await this.callLLM(prompt);
 
-    //--------------------------------------------------
+    //======================================================
     // LLM FAILED
-    //--------------------------------------------------
+    //======================================================
 
     if (!result) {
+      // Try exact deterministic recovery first.
+      const recovered = this.recoverSimpleCommand(command);
+
+      if (recovered) {
+        this.stats.recoveryHits++;
+
+        return recovered;
+      }
+
       return {
         mode: "chat",
 
@@ -1030,33 +1490,29 @@ FINAL RULES
       };
     }
 
-    //--------------------------------------------------
-    // Normalize
-    //--------------------------------------------------
+    //======================================================
+    // NORMALIZE
+    //======================================================
 
     let normalized = this.normalizeAdvanced(result, command);
 
-    //--------------------------------------------------
-    // Validate
-    //--------------------------------------------------
+    //======================================================
+    // VALIDATE
+    //======================================================
 
     let validation = this.validatePlan(normalized, command);
 
-    //--------------------------------------------------
-    // Valid
-    //--------------------------------------------------
+    //======================================================
+    // VALID
+    //======================================================
 
     if (validation.valid) {
       return normalized;
     }
 
-    //--------------------------------------------------
-    // Attempt deterministic recovery for simple
-    // click commands.
-    //
-    // This is NOT fuzzy matching.
-    // It only extracts the exact user target.
-    //--------------------------------------------------
+    //======================================================
+    // DETERMINISTIC RECOVERY
+    //======================================================
 
     const recovered = this.recoverSimpleCommand(command);
 
@@ -1064,18 +1520,22 @@ FINAL RULES
       const recoveredValidation = this.validatePlan(recovered, command);
 
       if (recoveredValidation.valid) {
+        this.stats.recoveryHits++;
+
         this.log("Recovered invalid LLM plan:", recovered);
 
         return recovered;
       }
     }
 
-    //--------------------------------------------------
-    // Ask LLM to repair its own plan
-    //--------------------------------------------------
+    //======================================================
+    // LLM SELF REPAIR
+    //======================================================
 
     for (let attempt = 0; attempt < this.options.maxRepairAttempts; attempt++) {
-      this.log(`LLM repair attempt ${attempt + 1}`);
+      this.log(
+        `LLM repair attempt ${attempt + 1}/${this.options.maxRepairAttempts}`,
+      );
 
       const repaired = await this.repairPlan(
         command,
@@ -1088,14 +1548,19 @@ FINAL RULES
         return repaired;
       }
 
-      normalized = this.normalizeAdvanced(result, command);
-
+      // IMPORTANT:
+      // Do not restore the original invalid plan.
+      //
+      // Keep the most recent normalized plan and
+      // validation state.
+      //
+      // A new repair call gets the latest failure.
       validation = this.validatePlan(normalized, command);
     }
 
-    //--------------------------------------------------
-    // Final failure
-    //--------------------------------------------------
+    //======================================================
+    // FINAL FAILURE
+    //======================================================
 
     return {
       mode: "chat",
@@ -1106,112 +1571,177 @@ FINAL RULES
     };
   }
 
-  //==================================================
-  // LLM CALL
-  //==================================================
+  //========================================================
+  // LIMIT CONTEXT
+  //========================================================
 
-  async callLLM(prompt) {
-    const controller = new AbortController();
-
-    const timeout = setTimeout(() => controller.abort(), this.options.timeout);
+  limitContext(context) {
+    if (!context || typeof context !== "object") {
+      return {};
+    }
 
     try {
-      const response = await fetch(this.ollama, {
-        method: "POST",
+      const serialized = JSON.stringify(context);
 
-        signal: controller.signal,
-
-        headers: {
-          "Content-Type": "application/json",
-        },
-
-        body: JSON.stringify({
-          model: this.model,
-
-          prompt,
-
-          stream: false,
-
-          format: "json",
-
-          options: {
-            temperature: this.options.temperature,
-          },
-        }),
-      });
-
-      clearTimeout(timeout);
-
-      if (!response.ok) {
-        throw new Error(`LLM request failed (${response.status})`);
+      if (serialized.length <= this.options.maxContextText) {
+        return context;
       }
 
-      const json = await response.json();
-
-      const raw = json?.response || "";
-
-      //------------------------------------------------
-      // Direct JSON parse
-      //------------------------------------------------
-
-      let parsed = this.safeParse(raw);
-
-      if (parsed) {
-        return parsed;
-      }
-
-      //------------------------------------------------
-      // JSON repair
-      //------------------------------------------------
-
-      this.stats.parseFailures++;
-
-      parsed = this.repairJSON(raw);
-
-      if (parsed) {
-        return parsed;
-      }
-
-      this.warn("Unable to parse LLM response:", raw);
-
-      return null;
-    } catch (err) {
-      clearTimeout(timeout);
-
-      this.stats.llmFailures++;
-
-      this.error("LLM planner failed:", err.message);
-
-      return null;
+      return {
+        context: serialized.slice(0, this.options.maxContextText),
+        truncated: true,
+      };
+    } catch {
+      return {};
     }
   }
 
-  //==================================================
+  //========================================================
+  // LLM CALL
+  //========================================================
+
+  async callLLM(prompt) {
+    let lastError = null;
+
+    const attempts = Math.max(1, Number(this.options.llmRetryAttempts) + 1);
+
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      if (attempt > 0) {
+        this.stats.llmRetries++;
+
+        this.log(`Retrying LLM request (${attempt}/${attempts - 1})`);
+      }
+
+      const controller = new AbortController();
+
+      const timeout = setTimeout(() => {
+        controller.abort();
+      }, this.options.timeout);
+
+      try {
+        this.stats.llmRequests++;
+
+        const response = await fetch(this.ollama, {
+          method: "POST",
+
+          signal: controller.signal,
+
+          headers: {
+            "Content-Type": "application/json",
+          },
+
+          body: JSON.stringify({
+            model: this.model,
+
+            prompt,
+
+            stream: false,
+
+            format: "json",
+
+            options: {
+              temperature: this.options.temperature,
+            },
+          }),
+        });
+
+        clearTimeout(timeout);
+
+        if (!response.ok) {
+          throw new Error(`LLM request failed (${response.status})`);
+        }
+
+        const json = await response.json();
+
+        const raw = json?.response || "";
+
+        if (!raw) {
+          throw new Error("LLM returned an empty response.");
+        }
+
+        //================================================
+        // DIRECT JSON
+        //================================================
+
+        let parsed = this.safeParse(raw);
+
+        if (parsed) {
+          return parsed;
+        }
+
+        //================================================
+        // JSON REPAIR
+        //================================================
+
+        this.stats.parseFailures++;
+
+        parsed = this.repairJSON(raw);
+
+        if (parsed) {
+          return parsed;
+        }
+
+        throw new Error("Unable to parse LLM JSON response.");
+      } catch (err) {
+        clearTimeout(timeout);
+
+        lastError = err;
+
+        const message =
+          err?.name === "AbortError"
+            ? `LLM request timed out after ${this.options.timeout}ms`
+            : err?.message || String(err);
+
+        this.warn(`LLM attempt ${attempt + 1} failed:`, message);
+
+        if (attempt === attempts - 1) {
+          this.stats.llmFailures++;
+
+          this.error("LLM planner failed:", message);
+        }
+      }
+    }
+
+    return null;
+  }
+
+  //========================================================
   // SIMPLE COMMAND RECOVERY
   //
-  // Exact extraction only.
-  // No fuzzy matching.
-  //==================================================
+  // EXACT EXTRACTION ONLY
+  //
+  // NO FUZZY MATCHING
+  //========================================================
 
   recoverSimpleCommand(command) {
-    const text = String(command || "").trim();
+    const text = String(command || "")
+      .replace(/\s+/g, " ")
+      .trim();
 
-    //--------------------------------------------------
+    if (!text) {
+      return null;
+    }
+
+    let match;
+
+    //======================================================
     // CLICK
-    //--------------------------------------------------
+    //======================================================
 
-    let match = text.match(
-      /^(?:click|tap|press|open|choose)\s+(?:the\s+)?["']?(.+?)["']?\s*$/i,
+    match = text.match(
+      /^(?:click|tap|press|open|choose)\s+(?:the\s+)?(.+?)\s*$/i,
     );
 
     if (match) {
-      const target = String(match[1] || "").trim();
+      let target = match[1].trim();
+
+      target = this.cleanTarget(target);
 
       if (target) {
         return {
           mode: "action",
 
-          source: "llm-recovery",
+          source: "deterministic-recovery",
 
           steps: [
             {
@@ -1226,19 +1756,19 @@ FINAL RULES
       }
     }
 
-    //--------------------------------------------------
-    // NAVIGATE
-    //--------------------------------------------------
+    //======================================================
+    // NAVIGATION
+    //======================================================
 
     match = text.match(
-      /^(?:go\s+to|navigate\s+to|visit|browse)\s+(https?:\/\/\S+)$/i,
+      /^(?:go\s+to|navigate\s+to|visit|browse|open)\s+(https?:\/\/\S+)$/i,
     );
 
     if (match) {
       return {
         mode: "action",
 
-        source: "llm-recovery",
+        source: "deterministic-recovery",
 
         steps: [
           {
@@ -1252,12 +1782,66 @@ FINAL RULES
       };
     }
 
+    //======================================================
+    // SEARCH
+    //======================================================
+
+    match = text.match(/^(?:search|find|lookup)\s+(?:for\s+)?(.+)$/i);
+
+    if (match) {
+      return {
+        mode: "action",
+
+        source: "deterministic-recovery",
+
+        steps: [
+          {
+            tool: "search",
+
+            args: {
+              query: match[1].trim(),
+            },
+          },
+        ],
+      };
+    }
+
+    //======================================================
+    // WAIT
+    //======================================================
+
+    match = text.match(
+      /^wait\s+([0-9]+(?:\.[0-9]+)?)\s*(ms|milliseconds|s|sec|seconds)?$/i,
+    );
+
+    if (match) {
+      return {
+        mode: "action",
+
+        source: "deterministic-recovery",
+
+        steps: [
+          {
+            tool: "wait",
+
+            args: {
+              time: this.normalizeTime(`${match[1]} ${match[2] || "ms"}`),
+            },
+          },
+        ],
+      };
+    }
+
     return null;
   }
 
-  //==================================================
+  //========================================================
   // FAST REGEX FALLBACK
-  //==================================================
+  //
+  // OPTIONAL ONLY
+  //
+  // NO FUZZY MATCHING
+  //========================================================
 
   regexPlan(command) {
     if (!command) {
@@ -1275,27 +1859,31 @@ FINAL RULES
     for (const cmd of commands) {
       let match;
 
-      //------------------------------------------------
+      //====================================================
       // CLICK
-      //------------------------------------------------
+      //====================================================
 
       match = cmd.match(/^(?:click|tap|press|open|choose)\s+(.+)$/i);
 
       if (match) {
-        steps.push({
-          tool: "click",
+        const target = this.cleanTarget(match[1].trim());
 
-          args: {
-            target: match[1].trim(),
-          },
-        });
+        if (target) {
+          steps.push({
+            tool: "click",
+
+            args: {
+              target,
+            },
+          });
+        }
 
         continue;
       }
 
-      //------------------------------------------------
+      //====================================================
       // TYPE
-      //------------------------------------------------
+      //====================================================
 
       match = cmd.match(
         /^(?:type|fill|enter|input)\s+(.+?)\s+(?:into|in|as|to|with)\s+(.+)$/i,
@@ -1315,9 +1903,9 @@ FINAL RULES
         continue;
       }
 
-      //------------------------------------------------
+      //====================================================
       // SEARCH
-      //------------------------------------------------
+      //====================================================
 
       match = cmd.match(/^(?:search|find|lookup)\s+(.+)$/i);
 
@@ -1333,37 +1921,29 @@ FINAL RULES
         continue;
       }
 
-      //------------------------------------------------
+      //====================================================
       // WAIT
-      //------------------------------------------------
+      //====================================================
 
       match = cmd.match(
-        /^wait\s+([0-9]+)\s*(ms|milliseconds|s|sec|seconds)?$/i,
+        /^wait\s+([0-9]+(?:\.[0-9]+)?)\s*(ms|milliseconds|s|sec|seconds)?$/i,
       );
 
       if (match) {
-        let time = Number(match[1]);
-
-        const unit = (match[2] || "").toLowerCase();
-
-        if (unit.startsWith("s")) {
-          time *= 1000;
-        }
-
         steps.push({
           tool: "wait",
 
           args: {
-            time,
+            time: this.normalizeTime(`${match[1]} ${match[2] || "ms"}`),
           },
         });
 
         continue;
       }
 
-      //------------------------------------------------
+      //====================================================
       // NAVIGATE
-      //------------------------------------------------
+      //====================================================
 
       match = cmd.match(/^(?:go\s+to|navigate\s+to|visit|browse)\s+(.+)$/i);
 
@@ -1383,9 +1963,9 @@ FINAL RULES
     return steps.length ? steps : null;
   }
 
-  //==================================================
+  //========================================================
   // SAFE JSON PARSER
-  //==================================================
+  //========================================================
 
   safeParse(text) {
     if (!text) {
@@ -1398,17 +1978,19 @@ FINAL RULES
         .replace(/```/g, "")
         .trim();
 
-      //------------------------------------------------
-      // Direct parse first
-      //------------------------------------------------
+      //====================================================
+      // DIRECT PARSE
+      //====================================================
 
       try {
         return JSON.parse(cleaned);
-      } catch {}
+      } catch {
+        // Continue.
+      }
 
-      //------------------------------------------------
-      // Extract JSON object
-      //------------------------------------------------
+      //====================================================
+      // EXTRACT OBJECT
+      //====================================================
 
       const start = cleaned.indexOf("{");
 
@@ -1424,9 +2006,9 @@ FINAL RULES
     }
   }
 
-  //==================================================
+  //========================================================
   // JSON REPAIR
-  //==================================================
+  //========================================================
 
   repairJSON(text) {
     if (!text) {
@@ -1444,12 +2026,13 @@ FINAL RULES
 
       const end = repaired.lastIndexOf("}");
 
-      if (start === -1 || end === -1) {
+      if (start === -1 || end === -1 || end <= start) {
         return null;
       }
 
       repaired = repaired.substring(start, end + 1);
 
+      // Remove common trailing commas.
       repaired = repaired.replace(/,\s*}/g, "}");
 
       repaired = repaired.replace(/,\s*]/g, "]");
@@ -1460,9 +2043,9 @@ FINAL RULES
     }
   }
 
-  //==================================================
+  //========================================================
   // RESPONSE NORMALIZATION
-  //==================================================
+  //========================================================
 
   normalizeResponse(result) {
     if (!result) {
@@ -1480,13 +2063,19 @@ FINAL RULES
     return result;
   }
 
-  //==================================================
+  //========================================================
   // STATISTICS
-  //==================================================
+  //========================================================
 
   getStats() {
     return {
       ...this.stats,
+
+      averagePlanningTime: this.stats.requests
+        ? Number(
+            (this.stats.totalPlanningTime / this.stats.requests).toFixed(2),
+          )
+        : 0,
 
       model: this.model,
 
@@ -1506,45 +2095,27 @@ FINAL RULES
         temperature: this.options.temperature,
 
         maxRepairAttempts: this.options.maxRepairAttempts,
+
+        maxPageText: this.options.maxPageText,
+
+        maxSteps: this.options.maxSteps,
       },
     };
   }
 
-  //==================================================
+  //========================================================
   // RESET STATS
-  //==================================================
+  //========================================================
 
   resetStats() {
-    this.stats = {
-      requests: 0,
-
-      llmPlannerHits: 0,
-
-      llmRepairCalls: 0,
-
-      corePlannerHits: 0,
-
-      regexPlannerHits: 0,
-
-      chatResponses: 0,
-
-      actionResponses: 0,
-
-      parseFailures: 0,
-
-      validationFailures: 0,
-
-      llmFailures: 0,
-
-      repairedPlans: 0,
-    };
+    this.stats = this.createEmptyStats();
 
     return this.stats;
   }
 
-  //==================================================
+  //========================================================
   // EMPTY
-  //==================================================
+  //========================================================
 
   empty() {
     return {
@@ -1556,9 +2127,9 @@ FINAL RULES
     };
   }
 
-  //==================================================
+  //========================================================
   // SELF TEST
-  //==================================================
+  //========================================================
 
   async selfTest() {
     const samples = [
@@ -1567,6 +2138,10 @@ FINAL RULES
       "click learn more",
 
       "Click the SSO Login button",
+
+      "Click By email / ID",
+
+      "Click the Login tab",
 
       "Type admin into username",
 
@@ -1588,7 +2163,6 @@ FINAL RULES
 
       results.push({
         command: sample,
-
         result,
       });
     }
@@ -1596,17 +2170,53 @@ FINAL RULES
     return results;
   }
 
-  //==================================================
+  //========================================================
+  // LOCAL VALIDATION TEST
+  //
+  // Does NOT call Ollama.
+  //
+  // Useful for checking normalization/recovery.
+  //========================================================
+
+  localSelfTest() {
+    const samples = [
+      "Click Login",
+      "click the Login button",
+      "Click SSO Login",
+      "Click By email / ID",
+      "Navigate to https://google.com",
+      "Search Playwright",
+      "Wait 2 seconds",
+    ];
+
+    return samples.map((command) => {
+      const recovered = this.recoverSimpleCommand(command);
+
+      const validation = recovered
+        ? this.validatePlan(recovered, command)
+        : {
+            valid: false,
+            errors: ["No deterministic recovery available."],
+          };
+
+      return {
+        command,
+        plan: recovered,
+        valid: validation.valid,
+        errors: validation.errors,
+      };
+    });
+  }
+
+  //========================================================
   // BENCHMARK
-  //==================================================
+  //========================================================
 
   async benchmark(commands = []) {
     if (!commands.length) {
       commands = [
         "Click Login",
-
         "click learn more",
-
         "Navigate to https://google.com",
       ];
     }
@@ -1632,9 +2242,9 @@ FINAL RULES
     };
   }
 
-  //==================================================
+  //========================================================
   // CONFIGURATION
-  //==================================================
+  //========================================================
 
   dumpConfiguration() {
     return {
@@ -1650,9 +2260,9 @@ FINAL RULES
     };
   }
 
-  //==================================================
+  //========================================================
   // HEALTH
-  //==================================================
+  //========================================================
 
   async health() {
     return {
@@ -1674,25 +2284,25 @@ FINAL RULES
     };
   }
 
-  //==================================================
+  //========================================================
   // VERSION
-  //==================================================
+  //========================================================
 
   version() {
     return {
       name: "Ultra Intelligent LLM-First Planner",
 
-      version: "3.0.0",
+      version: "4.0.0",
 
-      planner: "LLM First + Validation + Self Repair",
+      planner: "LLM First + Validation + Deterministic Recovery + Self Repair",
 
       model: this.model,
     };
   }
 
-  //==================================================
+  //========================================================
   // EXPORT CONFIGURATION
-  //==================================================
+  //========================================================
 
   exportConfiguration() {
     return {

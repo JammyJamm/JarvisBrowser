@@ -2,31 +2,21 @@
 //
 // backend/browser-controller.js
 //
-// Browser Controller
+// Ultra Intelligent Browser Controller
 //
-// IMPORTANT ARCHITECTURE
+// FIXED VERSION
 //
-// Electron
-//      │
-//      ├── WebView  ← REAL USER BROWSER
-//      │
-//      └── CDP :9222
-//              │
-//              ▼
-//       BrowserController
-//              │
-//              ▼
-//        Playwright
-//
-// Navigation MUST happen through Electron WebView.
-//
-// Playwright/CDP is used for:
-//   - DOM
-//   - click
-//   - type
-//   - frames
-//   - inspection
-//   - automation
+// Main fixes
+// ----------
+// ✔ Never select devtools:// pages
+// ✔ Prefer real web pages
+// ✔ Stable CDP connection
+// ✔ Do not reconnect just because one page closed
+// ✔ Fast health checks
+// ✔ Reduced reconnect delay
+// ✔ SPA-friendly waiting
+// ✔ Prevent duplicate connections
+// ✔ Automatic active-page recovery
 //
 //==========================================================
 
@@ -34,34 +24,28 @@ import { chromium } from "playwright";
 
 class BrowserController {
   constructor(options = {}) {
-    //--------------------------------------------------
-    // CONFIGURATION
-    //--------------------------------------------------
-
     this.options = {
       cdpURL: "http://127.0.0.1:9222",
 
-      reconnectInterval: 1000,
-
-      maxReconnectAttempts: 10,
+      // Faster recovery
+      reconnectInterval: 500,
+      maxReconnectAttempts: 5,
 
       autoReconnect: true,
 
+      // IMPORTANT:
+      // Do NOT use networkidle as the default.
       waitUntil: "domcontentloaded",
 
-      navigationTimeout: 60000,
+      navigationTimeout: 30000,
 
-      healthCheckTimeout: 5000,
+      // Short health check
+      healthCheckTimeout: 3000,
+
+      // DOM/application rendering grace period
+      pageReadyTimeout: 5000,
 
       debug: false,
-
-      //------------------------------------------------
-      // IMPORTANT
-      //
-      // Navigation is handled by Electron WebView.
-      //------------------------------------------------
-
-      useElectronNavigation: true,
 
       ...options,
     };
@@ -71,103 +55,52 @@ class BrowserController {
     //--------------------------------------------------
 
     this.browser = null;
-
     this.context = null;
-
     this.page = null;
 
     //--------------------------------------------------
-    // STATE
+    // CONNECTION STATE
     //--------------------------------------------------
 
     this.connected = false;
-
     this.connecting = false;
-
     this.connectionPromise = null;
 
     this.lastConnected = 0;
-
     this.lastURL = "";
-
-    //--------------------------------------------------
-    // ELECTRON BRIDGE
-    //--------------------------------------------------
-
-    this.navigationHandler = null;
-
-    this.navigationState = {
-      pending: false,
-
-      requestedURL: null,
-
-      startedAt: 0,
-
-      completedAt: 0,
-    };
-
-    //--------------------------------------------------
-    // DOWNLOAD / DIALOG
-    //--------------------------------------------------
-
-    this.lastDownload = null;
-
-    this.lastDialog = null;
 
     //--------------------------------------------------
     // EVENTS
     //--------------------------------------------------
 
     this.attachedPages = new WeakSet();
-
     this.contextEventsAttached = false;
 
     //--------------------------------------------------
-    // STATS
+    // STATISTICS
     //--------------------------------------------------
 
-    this.stats = this.createStatistics();
-  }
-
-  //==================================================
-  // STATISTICS
-  //==================================================
-
-  createStatistics() {
-    return {
+    this.stats = {
       reconnects: 0,
-
       pageSwitches: 0,
-
       navigations: 0,
-
       downloads: 0,
-
       dialogs: 0,
-
       crashes: 0,
-
       pageCloses: 0,
-
       popups: 0,
-
       healthChecks: 0,
-
       screenshots: 0,
-
       tabsCreated: 0,
-
       tabsClosed: 0,
-
       evaluations: 0,
-
       retries: 0,
     };
   }
 
-  //==================================================
-  // LOG
-  //==================================================
+  //==========================================================
+  // LOGGING
+  //==========================================================
 
   log(...args) {
     if (this.options.debug) {
@@ -183,45 +116,67 @@ class BrowserController {
     console.error("[BrowserController]", ...args);
   }
 
-  //==================================================
-  // ELECTRON NAVIGATION BRIDGE
-  //==================================================
+  //==========================================================
+  // PAGE FILTER
   //
-  // Electron main process should register:
+  // VERY IMPORTANT
   //
-  // browserController.setNavigationHandler(
-  //   async (url) => {
-  //      ...
-  //   }
-  // );
+  // Electron DevTools creates pages such as:
   //
-  //==================================================
+  // devtools://devtools/bundled/...
+  //
+  // Those pages must NEVER become the automation target.
+  //==========================================================
 
-  setNavigationHandler(handler) {
-    if (handler !== null && typeof handler !== "function") {
-      throw new TypeError("Navigation handler must be a function or null.");
+  isAutomationPage(page) {
+    if (!page || page.isClosed()) {
+      return false;
     }
 
-    this.navigationHandler = handler;
+    const url = String(page.url() || "")
+      .trim()
+      .toLowerCase();
 
-    this.log(
-      "Electron navigation handler:",
-      handler ? "REGISTERED" : "CLEARED",
-    );
+    if (!url) {
+      return false;
+    }
+
+    const blockedProtocols = [
+      "devtools:",
+      "chrome:",
+      "chrome-extension:",
+      "edge:",
+      "about:",
+      "view-source:",
+    ];
+
+    if (blockedProtocols.some((protocol) => url.startsWith(protocol))) {
+      return false;
+    }
+
+    return true;
   }
 
-  hasNavigationHandler() {
-    return typeof this.navigationHandler === "function";
+  //==========================================================
+  // GET VALID PAGES
+  //==========================================================
+
+  getAutomationPages() {
+    if (!this.context) {
+      return [];
+    }
+
+    return this.context.pages().filter((page) => this.isAutomationPage(page));
   }
 
-  //==================================================
+  //==========================================================
   // CONNECTION
-  //==================================================
+  //==========================================================
 
   async connect(force = false) {
-    //--------------------------------------------------
-    // Already healthy
-    //--------------------------------------------------
+    //--------------------------------------------------------
+    // Existing healthy connection
+    //--------------------------------------------------------
 
     if (
       !force &&
@@ -229,14 +184,15 @@ class BrowserController {
       this.browser &&
       this.context &&
       this.page &&
-      !this.page.isClosed()
+      !this.page.isClosed() &&
+      this.isAutomationPage(this.page)
     ) {
       return this.page;
     }
 
-    //--------------------------------------------------
-    // Prevent duplicate connect
-    //--------------------------------------------------
+    //--------------------------------------------------------
+    // Prevent duplicate connection attempts
+    //--------------------------------------------------------
 
     if (this.connecting && this.connectionPromise) {
       return this.connectionPromise;
@@ -250,14 +206,13 @@ class BrowserController {
       return await this.connectionPromise;
     } finally {
       this.connecting = false;
-
       this.connectionPromise = null;
     }
   }
 
-  //==================================================
-  // INTERNAL CONNECT
-  //==================================================
+  //==========================================================
+  // CONNECT INTERNAL
+  //==========================================================
 
   async connectInternal(force = false) {
     if (force) {
@@ -266,15 +221,31 @@ class BrowserController {
 
     this.log("Connecting to Electron CDP:", this.options.cdpURL);
 
-    //--------------------------------------------------
-    // CONNECT TO CDP
-    //--------------------------------------------------
+    //--------------------------------------------------------
+    // CONNECT
+    //--------------------------------------------------------
 
     this.browser = await chromium.connectOverCDP(this.options.cdpURL);
 
-    //--------------------------------------------------
+    //--------------------------------------------------------
+    // BROWSER DISCONNECT
+    //
+    // This means Electron/Chromium itself disappeared.
+    //--------------------------------------------------------
+
+    this.browser.on("disconnected", () => {
+      this.connected = false;
+
+      this.browser = null;
+      this.context = null;
+      this.page = null;
+
+      this.warn("Electron CDP connection disconnected.");
+    });
+
+    //--------------------------------------------------------
     // CONTEXT
-    //--------------------------------------------------
+    //--------------------------------------------------------
 
     const contexts = this.browser.contexts();
 
@@ -284,107 +255,119 @@ class BrowserController {
 
     this.context = contexts[0];
 
-    //--------------------------------------------------
-    // PAGE
-    //--------------------------------------------------
+    //--------------------------------------------------------
+    // FIND REAL WEB PAGE
+    //--------------------------------------------------------
 
     await this.refreshActivePage();
 
-    //--------------------------------------------------
-    // EVENTS
-    //--------------------------------------------------
+    //--------------------------------------------------------
+    // ATTACH EVENTS
+    //--------------------------------------------------------
 
     this.attachEventsToAllPages();
-
     this.attachContextEvents();
 
-    //--------------------------------------------------
-    // STATE
-    //--------------------------------------------------
+    //--------------------------------------------------------
+    // CONNECTED
+    //--------------------------------------------------------
 
     this.connected = true;
-
     this.lastConnected = Date.now();
 
-    this.log("Playwright attached successfully.");
+    this.log("Connected successfully.");
 
-    this.log("Current URL:", this.lastURL);
+    this.log("Automation page:", this.lastURL);
 
     return this.page;
   }
 
-  //==================================================
+  //==========================================================
   // DISCONNECT
-  //==================================================
+  //
+  // IMPORTANT:
+  // Never call browser.close() because this is an Electron
+  // browser connected through CDP.
+  //==========================================================
 
   async disconnect() {
     this.connected = false;
 
     this.page = null;
-
     this.context = null;
-
-    //--------------------------------------------------
-    // IMPORTANT
-    //
-    // NEVER browser.close() here.
-    //
-    // CDP is attached to Electron.
-    // Closing the Playwright browser object can
-    // interfere with the Electron browser lifecycle.
-    //--------------------------------------------------
-
     this.browser = null;
 
-    this.attachedPages = new WeakSet();
+    this.connectionPromise = null;
 
+    this.attachedPages = new WeakSet();
     this.contextEventsAttached = false;
 
     this.lastURL = "";
   }
 
-  //==================================================
-  // ENSURE CONNECTION
-  //==================================================
+  //==========================================================
+  // HEALTH CHECK
+  //==========================================================
 
   async ensureConnected() {
     this.stats.healthChecks++;
 
-    //--------------------------------------------------
+    //--------------------------------------------------------
     // FAST PATH
-    //--------------------------------------------------
+    //--------------------------------------------------------
 
     if (
       this.connected &&
       this.browser &&
       this.context &&
       this.page &&
-      !this.page.isClosed()
+      !this.page.isClosed() &&
+      this.isAutomationPage(this.page)
     ) {
       try {
-        await this.page.title({
-          timeout: this.options.healthCheckTimeout,
-        });
+        await this.page.evaluate(() => document.readyState);
 
         return this.page;
-      } catch {
-        this.warn("Current Playwright page is unreachable.");
+      } catch (error) {
+        this.warn("Current automation page is unavailable:", error.message);
 
-        this.connected = false;
+        this.page = null;
       }
     }
 
-    //--------------------------------------------------
-    // NO AUTO RECONNECT
-    //--------------------------------------------------
+    //--------------------------------------------------------
+    // FIND ANOTHER LIVE PAGE BEFORE RECONNECTING
+    //--------------------------------------------------------
+
+    if (this.browser && this.context) {
+      const pages = this.getAutomationPages();
+
+      if (pages.length) {
+        this.page = pages[pages.length - 1];
+
+        this.lastURL = this.page.url();
+
+        this.connected = true;
+
+        this.attachPageEvents(this.page);
+
+        this.log("Recovered existing automation page:", this.lastURL);
+
+        return this.page;
+      }
+    }
+
+    //--------------------------------------------------------
+    // DISABLE RECONNECT
+    //--------------------------------------------------------
 
     if (!this.options.autoReconnect) {
       throw new Error("Browser is disconnected.");
     }
 
-    //--------------------------------------------------
+    //--------------------------------------------------------
     // RECONNECT
-    //--------------------------------------------------
+    //--------------------------------------------------------
 
     this.stats.reconnects++;
 
@@ -396,17 +379,15 @@ class BrowserController {
       attempt++
     ) {
       try {
-        this.log(
-          `Reconnect attempt ${attempt}/${this.options.maxReconnectAttempts}`,
-        );
+        this.log(`Reconnect ${attempt}/${this.options.maxReconnectAttempts}`);
 
         const page = await this.connect(true);
 
         return page;
-      } catch (err) {
-        lastError = err;
+      } catch (error) {
+        lastError = error;
 
-        this.warn(`Reconnect attempt ${attempt} failed:`, err.message);
+        this.warn(`Reconnect ${attempt} failed:`, error.message);
 
         if (attempt < this.options.maxReconnectAttempts) {
           await this.sleep(this.options.reconnectInterval);
@@ -421,24 +402,48 @@ class BrowserController {
     );
   }
 
-  //==================================================
+  //==========================================================
   // ACTIVE PAGE
-  //==================================================
+  //==========================================================
 
   async refreshActivePage() {
     if (!this.context) {
       throw new Error("Browser context not available.");
     }
 
-    const pages = this.context.pages().filter((page) => !page.isClosed());
+    //--------------------------------------------------------
+    // ONLY REAL WEB PAGES
+    //--------------------------------------------------------
 
-    if (!pages.length) {
-      throw new Error("No Playwright pages found.");
+    const pages = this.getAutomationPages();
+
+    //--------------------------------------------------------
+    // DEBUG
+    //--------------------------------------------------------
+
+    if (this.options.debug) {
+      const allPages = this.context.pages();
+
+      console.log("[BrowserController] All CDP pages:");
+
+      for (const page of allPages) {
+        console.log(
+          "  -",
+          page.url(),
+          this.isAutomationPage(page) ? "[AUTOMATION]" : "[IGNORED]",
+        );
+      }
     }
 
-    //--------------------------------------------------
+    if (!pages.length) {
+      throw new Error(
+        "No automation page found. Electron has no active web page.",
+      );
+    }
+
+    //--------------------------------------------------------
     // KEEP CURRENT PAGE
-    //--------------------------------------------------
+    //--------------------------------------------------------
 
     if (this.page && !this.page.isClosed() && pages.includes(this.page)) {
       this.lastURL = this.page.url();
@@ -446,11 +451,29 @@ class BrowserController {
       return this.page;
     }
 
-    //--------------------------------------------------
-    // SELECT LAST PAGE
-    //--------------------------------------------------
+    //--------------------------------------------------------
+    // PREFER CURRENT NON-DEVTOOLS PAGE
+    //--------------------------------------------------------
 
-    const active = pages[pages.length - 1];
+    const previousURL = this.lastURL;
+
+    let active = null;
+
+    if (previousURL) {
+      active = pages.find((page) => page.url() === previousURL);
+    }
+
+    //--------------------------------------------------------
+    // OTHERWISE USE LAST REAL PAGE
+    //--------------------------------------------------------
+
+    if (!active) {
+      active = pages[pages.length - 1];
+    }
+
+    //--------------------------------------------------------
+    // SWITCH
+    //--------------------------------------------------------
 
     if (this.page && this.page !== active) {
       this.stats.pageSwitches++;
@@ -460,14 +483,28 @@ class BrowserController {
 
     this.lastURL = this.page.url();
 
-    this.log("Active Playwright page:", this.lastURL);
+    this.attachPageEvents(this.page);
+
+    this.log("Active automation page:", this.lastURL);
 
     return this.page;
   }
 
-  //==================================================
-  // GET PAGE
-  //==================================================
+  //==========================================================
+  // GETTERS
+  //==========================================================
+
+  async getBrowser() {
+    await this.ensureConnected();
+
+    return this.browser;
+  }
+
+  async getContext() {
+    await this.ensureConnected();
+
+    return this.context;
+  }
 
   async getPage() {
     await this.ensureConnected();
@@ -477,264 +514,163 @@ class BrowserController {
     return this.page;
   }
 
-  //==================================================
-  // GET BROWSER
-  //==================================================
-
-  async getBrowser() {
-    await this.ensureConnected();
-
-    return this.browser;
-  }
-
-  //==================================================
-  // GET CONTEXT
-  //==================================================
-
-  async getContext() {
-    await this.ensureConnected();
-
-    return this.context;
-  }
-
-  //==================================================
-  // GET PAGES
-  //==================================================
-
   async getPages() {
     await this.ensureConnected();
 
-    return this.context.pages().filter((page) => !page.isClosed());
+    return this.getAutomationPages();
   }
 
-  //==================================================
+  async getFrames() {
+    const page = await this.getPage();
+
+    return page.frames();
+  }
+
+  //==========================================================
+  // PAGE READY
+  //
+  // IMPORTANT:
+  // Do not wait for networkidle.
+  //
+  // Modern sites can keep analytics/websocket requests open
+  // forever.
+  //==========================================================
+
+  async waitForReady(timeout = 5000) {
+    const page = await this.getPage();
+
+    await page
+      .waitForLoadState("domcontentloaded", {
+        timeout,
+      })
+      .catch(() => {});
+
+    //--------------------------------------------------------
+    // Small rendering check
+    //--------------------------------------------------------
+
+    const started = Date.now();
+
+    while (Date.now() - started < timeout) {
+      try {
+        const readyState = await page.evaluate(() => document.readyState);
+
+        if (readyState === "interactive" || readyState === "complete") {
+          return page;
+        }
+      } catch {
+        break;
+      }
+
+      await this.sleep(100);
+    }
+
+    return page;
+  }
+
+  //==========================================================
   // NAVIGATION
-  //==================================================
-  //
-  // THIS IS THE MOST IMPORTANT CHANGE.
-  //
-  // DO NOT:
-  //
-  // await page.goto(url)
-  //
-  // when Electron WebView is the real browser UI.
-  //
-  // Instead:
-  //
-  // BrowserController
-  //       ↓
-  // Electron navigation handler
-  //       ↓
-  // WebView
-  //
-  //==================================================
+  //==========================================================
 
   async goto(url, options = {}) {
     if (!url) {
       throw new Error("URL is required.");
     }
 
-    const targetURL = String(url);
-
-    await this.getPage();
-
-    const previousURL = this.lastURL;
-
-    //--------------------------------------------------
-    // ELECTRON WEBVIEW NAVIGATION
-    //--------------------------------------------------
-
-    if (this.options.useElectronNavigation && this.hasNavigationHandler()) {
-      this.log("Navigating Electron WebView:", targetURL);
-
-      this.navigationState = {
-        pending: true,
-
-        requestedURL: targetURL,
-
-        startedAt: Date.now(),
-
-        completedAt: 0,
-      };
-
-      try {
-        await this.navigationHandler(targetURL, options);
-
-        //------------------------------------------------
-        // Wait for Playwright/CDP to observe navigation
-        //------------------------------------------------
-
-        const timeout = options.timeout ?? this.options.navigationTimeout;
-
-        await this.waitForURLChange(targetURL, timeout);
-
-        this.stats.navigations++;
-
-        this.lastURL = this.page.url();
-
-        this.navigationState.pending = false;
-
-        this.navigationState.completedAt = Date.now();
-
-        this.log("WebView navigation completed:", this.lastURL);
-
-        return this.page;
-      } catch (err) {
-        this.navigationState.pending = false;
-
-        this.warn("Electron WebView navigation failed:", err.message);
-
-        throw err;
-      }
-    }
-
-    //--------------------------------------------------
-    // FALLBACK
-    //--------------------------------------------------
-    //
-    // This should NOT be used when the WebView is
-    // available.
-    //
-    //--------------------------------------------------
-
-    this.warn("Electron navigation handler is not registered.");
-
-    this.warn("Falling back to Playwright page.goto().");
-
     const page = await this.getPage();
 
-    await page.goto(targetURL, {
-      waitUntil: options.waitUntil ?? this.options.waitUntil,
+    const targetURL = String(url).trim();
 
-      timeout: options.timeout ?? this.options.navigationTimeout,
+    const previousURL = page.url();
+
+    this.log("Navigating:", targetURL);
+
+    await page.goto(targetURL, {
+      waitUntil: options.waitUntil || this.options.waitUntil,
+
+      timeout: options.timeout || this.options.navigationTimeout,
 
       ...options,
     });
 
-    this.lastURL = page.url();
+    await this.waitForReady(this.options.pageReadyTimeout);
 
-    if (previousURL !== this.lastURL) {
+    const currentURL = page.url();
+
+    if (previousURL !== currentURL) {
       this.stats.navigations++;
     }
+
+    this.lastURL = currentURL;
+
+    this.invalidateIfNeeded();
 
     return page;
   }
 
-  //==================================================
-  // WAIT FOR URL
-  //==================================================
+  //==========================================================
+  // WAIT NAVIGATION
+  //==========================================================
 
-  async waitForURLChange(targetURL, timeout = 60000) {
-    const started = Date.now();
+  async waitForNavigation(timeout = 10000) {
+    const page = await this.getPage();
 
-    while (Date.now() - started < timeout) {
-      if (this.page && !this.page.isClosed()) {
-        const currentURL = this.page.url();
+    await page
+      .waitForLoadState(this.options.waitUntil, {
+        timeout,
+      })
+      .catch(() => {});
 
-        this.lastURL = currentURL;
+    this.lastURL = page.url();
 
-        //------------------------------------------------
-        // Exact
-        //------------------------------------------------
-
-        if (currentURL === targetURL) {
-          return currentURL;
-        }
-
-        //------------------------------------------------
-        // URL may normalize
-        //------------------------------------------------
-
-        try {
-          const requested = new URL(targetURL);
-
-          const current = new URL(currentURL);
-
-          if (
-            requested.origin === current.origin &&
-            requested.pathname === current.pathname &&
-            requested.search === current.search
-          ) {
-            return currentURL;
-          }
-        } catch {
-          // Ignore invalid URL parsing
-        }
-      }
-
-      await this.sleep(100);
-    }
-
-    //--------------------------------------------------
-    // IMPORTANT
-    //
-    // Some SPA navigation doesn't change URL.
-    //
-    //--------------------------------------------------
-
-    if (this.page && !this.page.isClosed()) {
-      const currentURL = this.page.url();
-
-      if (currentURL !== "about:blank") {
-        this.lastURL = currentURL;
-
-        return currentURL;
-      }
-    }
-
-    throw new Error(`Navigation timeout waiting for '${targetURL}'.`);
+    return page;
   }
 
-  //==================================================
+  //==========================================================
   // RELOAD
-  //==================================================
+  //==========================================================
 
   async reload(options = {}) {
     const page = await this.getPage();
 
-    //--------------------------------------------------
-    // Reload is also controlled by WebView.
-    //
-    // If Electron exposes a reload handler, use it.
-    //--------------------------------------------------
-
-    if (this.options.useElectronNavigation && this.navigationHandler) {
-      const currentURL = page.url();
-
-      await this.navigationHandler(currentURL, {
-        ...options,
-
-        reload: true,
-      });
-
-      await this.waitForURLChange(
-        currentURL,
-        options.timeout ?? this.options.navigationTimeout,
-      );
-
-      return page;
-    }
-
-    //--------------------------------------------------
-    // FALLBACK
-    //--------------------------------------------------
-
     await page.reload({
-      waitUntil: options.waitUntil ?? this.options.waitUntil,
+      waitUntil: options.waitUntil || this.options.waitUntil,
 
-      timeout: options.timeout ?? this.options.navigationTimeout,
+      timeout: options.timeout || this.options.navigationTimeout,
 
       ...options,
     });
+
+    await this.waitForReady(this.options.pageReadyTimeout);
 
     this.lastURL = page.url();
 
     return page;
   }
 
-  //==================================================
+  //==========================================================
+  // HTML
+  //==========================================================
+
+  async html() {
+    const page = await this.getPage();
+
+    return page.content();
+  }
+
+  //==========================================================
+  // TEXT
+  //==========================================================
+
+  async text() {
+    const page = await this.getPage();
+
+    return page.evaluate(() => document.body?.innerText || "");
+  }
+
+  //==========================================================
   // URL
-  //==================================================
+  //==========================================================
 
   async url() {
     const page = await this.getPage();
@@ -744,29 +680,9 @@ class BrowserController {
     return this.lastURL;
   }
 
-  //==================================================
-  // HTML
-  //==================================================
-
-  async html() {
-    const page = await this.getPage();
-
-    return page.content();
-  }
-
-  //==================================================
-  // TEXT
-  //==================================================
-
-  async text() {
-    const page = await this.getPage();
-
-    return page.evaluate(() => document.body?.innerText || "");
-  }
-
-  //==================================================
+  //==========================================================
   // TITLE
-  //==================================================
+  //==========================================================
 
   async title() {
     const page = await this.getPage();
@@ -774,9 +690,9 @@ class BrowserController {
     return page.title();
   }
 
-  //==================================================
+  //==========================================================
   // SCREENSHOT
-  //==================================================
+  //==========================================================
 
   async screenshot(options = {}) {
     const page = await this.getPage();
@@ -791,19 +707,12 @@ class BrowserController {
     return result;
   }
 
-  //==================================================
+  //==========================================================
   // NEW TAB
-  //==================================================
+  //==========================================================
 
   async newTab(url = "about:blank") {
     await this.ensureConnected();
-
-    //--------------------------------------------------
-    // New tabs should eventually be created by
-    // Electron's WebView/tab manager.
-    //
-    // For now this remains Playwright fallback.
-    //--------------------------------------------------
 
     const page = await this.context.newPage();
 
@@ -828,14 +737,14 @@ class BrowserController {
     return page;
   }
 
-  //==================================================
+  //==========================================================
   // SWITCH PAGE
-  //==================================================
+  //==========================================================
 
   async switchToPage(index = 0) {
     await this.ensureConnected();
 
-    const pages = this.context.pages().filter((page) => !page.isClosed());
+    const pages = this.getAutomationPages();
 
     if (index < 0 || index >= pages.length) {
       throw new Error(
@@ -858,15 +767,47 @@ class BrowserController {
     return this.page;
   }
 
-  //==================================================
-  // FRAMES
-  //==================================================
+  //==========================================================
+  // LAST PAGE
+  //==========================================================
 
-  async getFrames() {
+  async switchToLastPage() {
+    const pages = await this.getPages();
+
+    if (!pages.length) {
+      throw new Error("No automation pages available.");
+    }
+
+    return this.switchToPage(pages.length - 1);
+  }
+
+  //==========================================================
+  // CLOSE CURRENT PAGE
+  //==========================================================
+
+  async closeCurrentPage() {
     const page = await this.getPage();
 
-    return page.frames();
+    await page.close().catch(() => {});
+
+    this.stats.tabsClosed++;
+
+    this.page = null;
+
+    const pages = this.getAutomationPages();
+
+    if (pages.length) {
+      this.page = pages[pages.length - 1];
+
+      this.lastURL = this.page.url();
+    }
+
+    return this.page;
   }
+
+  //==========================================================
+  // FRAMES
+  //==========================================================
 
   async getMainFrame() {
     const page = await this.getPage();
@@ -898,23 +839,15 @@ class BrowserController {
         return found;
       }
 
-      await this.sleep(250);
+      await this.sleep(200);
     }
 
     throw new Error("Frame not found.");
   }
 
-  async evaluateInFrame(frame, fn, arg = null) {
-    if (!frame) {
-      throw new Error("Frame is required.");
-    }
-
-    return frame.evaluate(fn, arg);
-  }
-
-  //==================================================
-  // EVALUATE
-  //==================================================
+  //==========================================================
+  // EVALUATION
+  //==========================================================
 
   async evaluate(fn, arg = null) {
     const page = await this.getPage();
@@ -932,14 +865,14 @@ class BrowserController {
     return page.evaluateHandle(fn, arg);
   }
 
-  //==================================================
+  //==========================================================
   // BRING TO FRONT
-  //==================================================
+  //==========================================================
 
   async bringToFront() {
     const page = await this.getPage();
 
-    await page.bringToFront();
+    await page.bringToFront().catch(() => {});
 
     return page;
   }
@@ -948,49 +881,9 @@ class BrowserController {
     return this.bringToFront();
   }
 
-  //==================================================
-  // COOKIES
-  //==================================================
-
-  async cookies() {
-    await this.ensureConnected();
-
-    return this.context.cookies();
-  }
-
-  async clearCookies() {
-    await this.ensureConnected();
-
-    await this.context.clearCookies();
-  }
-
-  //==================================================
-  // DOWNLOAD
-  //==================================================
-
-  getLastDownload() {
-    return this.lastDownload;
-  }
-
-  clearDownload() {
-    this.lastDownload = null;
-  }
-
-  //==================================================
-  // DIALOG
-  //==================================================
-
-  getLastDialog() {
-    return this.lastDialog;
-  }
-
-  clearDialog() {
-    this.lastDialog = null;
-  }
-
-  //==================================================
+  //==========================================================
   // CONTEXT EVENTS
-  //==================================================
+  //==========================================================
 
   attachContextEvents() {
     if (!this.context || this.contextEventsAttached) {
@@ -1000,29 +893,27 @@ class BrowserController {
     this.contextEventsAttached = true;
 
     this.context.on("page", (page) => {
+      if (!this.isAutomationPage(page)) {
+        this.log("Ignoring non-automation page:", page.url());
+
+        return;
+      }
+
       this.stats.popups++;
 
-      this.log("New Playwright page:", page.url());
+      this.log("New automation page:", page.url());
 
       this.attachPageEvents(page);
 
-      //------------------------------------------------
-      // DO NOT blindly make every new page active.
-      //
-      // Only select it if the current page is dead.
-      //------------------------------------------------
+      this.page = page;
 
-      if (!this.page || this.page.isClosed()) {
-        this.page = page;
-
-        this.lastURL = page.url();
-      }
+      this.lastURL = page.url();
     });
   }
 
-  //==================================================
-  // PAGE EVENTS
-  //==================================================
+  //==========================================================
+  // ALL PAGE EVENTS
+  //==========================================================
 
   attachEventsToAllPages() {
     if (!this.context) {
@@ -1030,9 +921,15 @@ class BrowserController {
     }
 
     for (const page of this.context.pages()) {
-      this.attachPageEvents(page);
+      if (this.isAutomationPage(page)) {
+        this.attachPageEvents(page);
+      }
     }
   }
+
+  //==========================================================
+  // PAGE EVENTS
+  //==========================================================
 
   attachPageEvents(page) {
     if (!page || page.isClosed() || this.attachedPages.has(page)) {
@@ -1041,9 +938,9 @@ class BrowserController {
 
     this.attachedPages.add(page);
 
-    //--------------------------------------------------
+    //--------------------------------------------------------
     // DOWNLOAD
-    //--------------------------------------------------
+    //--------------------------------------------------------
 
     page.on("download", (download) => {
       this.lastDownload = download;
@@ -1053,100 +950,108 @@ class BrowserController {
       this.log("Download:", download.suggestedFilename());
     });
 
-    //--------------------------------------------------
+    //--------------------------------------------------------
     // DIALOG
-    //--------------------------------------------------
+    //--------------------------------------------------------
 
     page.on("dialog", async (dialog) => {
       this.lastDialog = dialog;
 
       this.stats.dialogs++;
 
-      this.log("Dialog:", dialog.type(), dialog.message());
+      this.warn("Dialog:", dialog.type(), dialog.message());
     });
 
-    //--------------------------------------------------
-    // NAVIGATION OBSERVER
-    //--------------------------------------------------
+    //--------------------------------------------------------
+    // NAVIGATION
+    //--------------------------------------------------------
 
     page.on("framenavigated", (frame) => {
       if (frame === page.mainFrame()) {
         this.lastURL = frame.url();
 
-        this.log("Playwright observed WebView navigation:", this.lastURL);
-
-        //------------------------------------------------
-        // Complete pending Electron navigation
-        //------------------------------------------------
-
-        if (this.navigationState.pending) {
-          this.navigationState.completedAt = Date.now();
-        }
+        this.log("Navigated:", this.lastURL);
       }
     });
 
-    //--------------------------------------------------
+    //--------------------------------------------------------
     // CRASH
-    //--------------------------------------------------
+    //--------------------------------------------------------
 
     page.on("crash", () => {
       this.stats.crashes++;
 
       if (page === this.page) {
-        this.connected = false;
-
         this.page = null;
       }
 
-      this.warn("Playwright page crashed.");
+      this.warn("Automation page crashed.");
     });
 
-    //--------------------------------------------------
+    //--------------------------------------------------------
     // CLOSE
-    //--------------------------------------------------
+    //
+    // IMPORTANT:
+    //
+    // Page close != Electron close
+    //
+    //--------------------------------------------------------
 
     page.on("close", () => {
       this.stats.pageCloses++;
 
-      this.warn("Playwright page closed.");
-
       if (page === this.page) {
         this.page = null;
-
-        this.connected = false;
       }
+
+      const livePages = this.getAutomationPages();
+
+      if (livePages.length) {
+        this.page = livePages[livePages.length - 1];
+
+        this.lastURL = this.page.url();
+
+        this.attachPageEvents(this.page);
+
+        this.warn(
+          "Automation page closed; switched to another live page:",
+          this.lastURL,
+        );
+
+        return;
+      }
+
+      //--------------------------------------------------
+      // IMPORTANT:
+      //
+      // Do NOT immediately call connect(true).
+      //
+      // Electron may still be alive while the BrowserView
+      // is being recreated.
+      //--------------------------------------------------
+
+      this.warn(
+        "Automation page closed. No live web page currently available.",
+      );
     });
   }
 
-  //==================================================
-  // WAIT
-  //==================================================
-
-  async wait(milliseconds = 1000) {
-    await this.sleep(milliseconds);
-
-    return {
-      success: true,
-
-      action: "wait",
-
-      milliseconds,
-    };
-  }
-
-  //==================================================
-  // WAIT SELECTOR
-  //==================================================
+  //==========================================================
+  // WAIT FOR SELECTOR
+  //==========================================================
 
   async waitForSelector(selector, options = {}) {
     const page = await this.getPage();
 
-    return page.waitForSelector(selector, options);
+    return page.waitForSelector(selector, {
+      timeout: 5000,
+      ...options,
+    });
   }
 
-  //==================================================
-  // WAIT FUNCTION
-  //==================================================
+  //==========================================================
+  // WAIT FOR FUNCTION
+  //==========================================================
 
   async waitForFunction(fn, arg = null, options = {}) {
     const page = await this.getPage();
@@ -1154,35 +1059,42 @@ class BrowserController {
     return page.waitForFunction(fn, arg, options);
   }
 
-  //==================================================
+  //==========================================================
   // WAIT URL
-  //==================================================
+  //==========================================================
 
   async waitForURL(matcher, options = {}) {
     const page = await this.getPage();
 
-    await page.waitForURL(matcher, options);
+    await page.waitForURL(matcher, {
+      timeout: 10000,
+      ...options,
+    });
 
     this.lastURL = page.url();
 
     return this.lastURL;
   }
 
-  //==================================================
+  //==========================================================
   // WAIT LOAD STATE
-  //==================================================
+  //==========================================================
 
-  async waitForLoadState(state = "networkidle") {
+  async waitForLoadState(state = "domcontentloaded") {
     const page = await this.getPage();
 
-    await page.waitForLoadState(state);
+    await page
+      .waitForLoadState(state, {
+        timeout: 10000,
+      })
+      .catch(() => {});
 
     return true;
   }
 
-  //==================================================
+  //==========================================================
   // SAFE
-  //==================================================
+  //==========================================================
 
   async safe(action, fallback = null) {
     if (typeof action !== "function") {
@@ -1191,96 +1103,79 @@ class BrowserController {
 
     try {
       return await action();
-    } catch (err) {
-      this.error("Safe execution failed:", err.message);
+    } catch (error) {
+      this.error("Safe execution failed:", error.message);
 
       return fallback;
     }
   }
 
-  //==================================================
-  // RETRY
-  //==================================================
+  //==========================================================
+  // INVALIDATE
+  //==========================================================
 
-  async retry(action, retries = 3, delay = 500) {
-    if (typeof action !== "function") {
-      throw new TypeError("retry() requires a function.");
-    }
-
-    const attempts = Math.max(1, Number(retries) || 1);
-
-    let lastError = null;
-
-    for (let attempt = 1; attempt <= attempts; attempt++) {
-      try {
-        return await action();
-      } catch (err) {
-        lastError = err;
-
-        this.stats.retries++;
-
-        this.warn(`Retry ${attempt}/${attempts}:`, err.message);
-
-        if (attempt < attempts) {
-          await this.sleep(delay);
-        }
-      }
-    }
-
-    throw lastError;
+  invalidateIfNeeded() {
+    // Hook for resolver/MCP cache invalidation.
+    //
+    // BrowserController intentionally does not own the
+    // Resolver DOM cache.
   }
 
-  //==================================================
+  //==========================================================
   // SLEEP
-  //==================================================
+  //==========================================================
 
-  async sleep(milliseconds) {
-    return new Promise((resolve) =>
-      setTimeout(resolve, Math.max(0, milliseconds || 0)),
-    );
+  async sleep(milliseconds = 100) {
+    return new Promise((resolve) => setTimeout(resolve, milliseconds));
   }
 
-  //==================================================
-  // STATISTICS
-  //==================================================
+  //==========================================================
+  // DEBUG
+  //==========================================================
 
-  resetStatistics() {
-    this.stats = this.createStatistics();
-  }
+  //==========================================================
+  // DEBUG
+  //==========================================================
 
-  getStatistics() {
+  async inspect() {
+    const pages = this.context ? this.context.pages() : [];
+
     return {
-      ...this.stats,
-
       connected: this.connected,
 
-      browser: !!this.browser,
+      cdpURL: this.options.cdpURL,
 
-      context: !!this.context,
+      activePage: this.page ? this.page.url() : null,
 
-      page: !!this.page && !this.page.isClosed(),
+      pages: pages.map((page) => ({
+        url: page.url(),
+        automationPage: this.isAutomationPage(page),
+        closed: page.isClosed(),
+      })),
 
-      currentURL: this.lastURL,
-
-      pages: this.context
-        ? this.context.pages().filter((page) => !page.isClosed()).length
-        : 0,
-
-      lastConnected: this.lastConnected,
-
-      navigationPending: this.navigationState.pending,
-
-      requestedURL: this.navigationState.requestedURL,
+      stats: {
+        ...this.stats,
+      },
     };
-  }
-
-  printStatistics() {
-    console.table(this.getStatistics());
   }
 }
 
 //==========================================================
-// SINGLETON
+// SHARED BROWSER CONTROLLER INSTANCE
+//==========================================================
+//
+// DO NOT export the class here.
+//
+// mcp-client.js expects:
+//
+// browserController.connect()
+// browserController.ensureConnected()
+// browserController.browser
+// browserController.context
+// browserController.page
+//
 //==========================================================
 
-export default new BrowserController();
+const browserController = new BrowserController();
+
+export default browserController;
