@@ -5492,30 +5492,144 @@ export default class Resolver {
       }
 
       //--------------------------------------------------
+      // NORMALIZE INPUT
+      //--------------------------------------------------
+
+      const rawInput = String(input).trim();
+
+      const normalizedInput = rawInput
+        .toLowerCase()
+        .replace(/[_-]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      this.log("==========================================");
+      this.log("RESOLVE INPUT:", rawInput);
+      this.log("NORMALIZED INPUT:", normalizedInput);
+      this.log("==========================================");
+
+      //--------------------------------------------------
+      // DIRECT CANVAS COMMAND
+      //
+      // This is intentionally checked BEFORE the
+      // intent parser.
+      //
+      // This prevents:
+      //
+      // "Read canvas"
+      //
+      // from being interpreted as an unsupported action.
+      //--------------------------------------------------
+
+      const isCanvasCommand =
+        normalizedInput === "read canvas" ||
+        normalizedInput === "read the canvas" ||
+        normalizedInput === "canvas" ||
+        normalizedInput === "readcanvas" ||
+        normalizedInput === "read canvas data" ||
+        normalizedInput === "extract canvas" ||
+        normalizedInput === "extract canvas data";
+
+      if (isCanvasCommand) {
+        this.log("==========================================");
+        this.log("CANVAS COMMAND DETECTED");
+        this.log("COMMAND:", rawInput);
+        this.log("ACTION: readCanvas");
+        this.log("==========================================");
+
+        try {
+          //------------------------------------------------
+          // IMPORTANT:
+          //
+          // readCanvas() must already exist in this class.
+          //------------------------------------------------
+
+          const canvasResult = await this.readCanvas();
+
+          this.log("==========================================");
+          this.log("CANVAS READ SUCCESS");
+          this.log("CANVAS RESULT:", JSON.stringify(canvasResult, null, 2));
+          this.log("==========================================");
+
+          return {
+            success: true,
+
+            results: [
+              {
+                success: true,
+                action: "readCanvas",
+                command: rawInput,
+                data: canvasResult,
+              },
+            ],
+          };
+        } catch (canvasError) {
+          this.log("==========================================");
+          this.log("CANVAS READ FAILED");
+          this.log("ERROR:", canvasError.message);
+          this.log("==========================================");
+
+          return {
+            success: false,
+
+            results: [
+              {
+                success: false,
+                action: "readCanvas",
+                command: rawInput,
+                error: canvasError.message,
+              },
+            ],
+          };
+        }
+      }
+
+      //--------------------------------------------------
       // Parse command once
       //--------------------------------------------------
 
-      const parsed = this.intentParser.parse(input);
+      const parsed = this.intentParser.parse(rawInput);
 
       this.log("Parsed intent:", JSON.stringify(parsed, null, 2));
 
       if (!parsed.steps?.length) {
-        throw new Error(`Unable to understand command '${input}'`);
+        throw new Error(`Unable to understand command '${rawInput}'`);
       }
 
       const results = [];
 
+      //--------------------------------------------------
+      // PROCESS STEPS
+      //--------------------------------------------------
+
       for (const step of parsed.steps) {
+        //------------------------------------------------
+        // NORMALIZE ACTION
+        //------------------------------------------------
+
+        const action = String(step.action || "")
+          .toLowerCase()
+          .replace(/[_-]+/g, "")
+          .trim();
+
+        this.log("==========================================");
+        this.log("PROCESSING STEP");
+        this.log("ACTION:", action);
+        this.log("STEP:", JSON.stringify(step, null, 2));
+        this.log("==========================================");
+
         //------------------------------------------------
         // CLICK
         //------------------------------------------------
 
-        if (step.action === "click") {
+        if (action === "click") {
           const target = step.target || step.value;
 
           if (!target) {
             throw new Error("Click target is missing");
           }
+
+          this.log("CLICK:", target);
 
           results.push(await this.clickSmart(target));
 
@@ -5526,10 +5640,69 @@ export default class Resolver {
         // TYPE
         //------------------------------------------------
 
-        if (step.action === "type") {
-          results.push(
-            await this.typeSmart(step.target || step.value, step.value),
-          );
+        if (action === "type") {
+          const target = step.target || step.field;
+          const value = step.value ?? step.text ?? "";
+
+          if (!target) {
+            throw new Error("Type target is missing");
+          }
+
+          this.log("TYPE TARGET:", target);
+          this.log("TYPE VALUE:", value);
+
+          results.push(await this.typeSmart(target, value));
+
+          continue;
+        }
+
+        //------------------------------------------------
+        // READ CANVAS
+        //
+        // Supports parser actions such as:
+        //
+        // readCanvas
+        // read_canvas
+        // read-canvas
+        // canvas
+        //------------------------------------------------
+
+        if (
+          action === "readcanvas" ||
+          action === "canvas" ||
+          action === "extractcanvas"
+        ) {
+          this.log("==========================================");
+          this.log("READ CANVAS ACTION");
+          this.log("==========================================");
+
+          try {
+            const canvasResult = await this.readCanvas({
+              target: step.target || step.value || null,
+            });
+
+            this.log("Canvas data received:");
+
+            this.log(JSON.stringify(canvasResult, null, 2));
+
+            results.push({
+              success: true,
+
+              action: "readCanvas",
+
+              data: canvasResult,
+            });
+          } catch (canvasError) {
+            this.log("Read canvas failed:", canvasError.message);
+
+            results.push({
+              success: false,
+
+              action: "readCanvas",
+
+              error: canvasError.message,
+            });
+          }
 
           continue;
         }
@@ -5538,7 +5711,7 @@ export default class Resolver {
         // NAVIGATE
         //------------------------------------------------
 
-        if (step.action === "navigate") {
+        if (action === "navigate") {
           const page = await this.mcp.getPage();
 
           const url = step.url || step.target || step.value;
@@ -5586,15 +5759,21 @@ export default class Resolver {
         // WAIT
         //------------------------------------------------
 
-        if (step.action === "wait") {
+        if (action === "wait") {
           const page = await this.mcp.getPage();
 
-          await page.waitForTimeout(step.value || step.time || 1000);
+          const waitTime = Number(step.value || step.time || 1000);
+
+          this.log("WAIT:", waitTime, "ms");
+
+          await page.waitForTimeout(waitTime);
 
           results.push({
             success: true,
 
             action: "wait",
+
+            duration: waitTime,
           });
 
           continue;
@@ -5603,6 +5782,8 @@ export default class Resolver {
         //------------------------------------------------
         // UNSUPPORTED
         //------------------------------------------------
+
+        this.log("UNSUPPORTED ACTION:", step.action);
 
         results.push({
           success: false,
@@ -5613,8 +5794,20 @@ export default class Resolver {
         });
       }
 
+      //--------------------------------------------------
+      // FINAL RESULT
+      //--------------------------------------------------
+
+      const success = results.every((result) => result.success);
+
+      this.log("==========================================");
+      this.log("RESOLVE COMPLETE");
+      this.log("SUCCESS:", success);
+      this.log("RESULTS:", JSON.stringify(results, null, 2));
+      this.log("==========================================");
+
       return {
-        success: results.every((result) => result.success),
+        success,
 
         results,
       };
@@ -5638,7 +5831,478 @@ export default class Resolver {
       };
     }
   }
+  //==========================================================
+  // READ CANVAS - CONTINUOUS CANVAS CHANGE MONITOR
+  //==========================================================
+  //
+  // Usage:
+  //
+  // await this.readCanvas();
+  //
+  // Or:
+  //
+  // await this.readCanvas({
+  //   interval: 250,
+  //   duration: 0
+  // });
+  //
+  // duration:
+  //   0 = monitor continuously
+  //   >0 = monitor for specified milliseconds
+  //
+  // Every time canvas data changes, a JSON object is logged.
+  //
+  //==========================================================
 
+  async readCanvas({
+    interval = 250,
+    duration = 0,
+    includeImageData = false,
+    includeNumbers = true,
+  } = {}) {
+    const started = Date.now();
+
+    const page = await this.mcp.getPage();
+
+    if (!page || page.isClosed()) {
+      throw new Error("Browser page is closed");
+    }
+
+    this.log("==========================================");
+    this.log("READ CANVAS STARTED");
+    this.log("==========================================");
+
+    this.log(
+      "Canvas monitor options:",
+      JSON.stringify(
+        {
+          interval,
+          duration,
+          includeImageData,
+          includeNumbers,
+        },
+        null,
+        2,
+      ),
+    );
+
+    //--------------------------------------------------------
+    // HASH FUNCTION
+    //--------------------------------------------------------
+
+    const hashString = (value) => {
+      const str = String(value || "");
+
+      let hash = 0;
+
+      for (let i = 0; i < str.length; i++) {
+        hash = (hash << 5) - hash + str.charCodeAt(i);
+        hash |= 0;
+      }
+
+      return String(hash);
+    };
+
+    //--------------------------------------------------------
+    // EXTRACT CANVAS DATA
+    //--------------------------------------------------------
+
+    const extractCanvasData = async () => {
+      return await page.evaluate(
+        ({ includeImageData, includeNumbers }) => {
+          const canvases = Array.from(document.querySelectorAll("canvas"));
+
+          const results = [];
+
+          //--------------------------------------------------
+          // NUMBER EXTRACTION
+          //--------------------------------------------------
+
+          const extractNumbers = (text) => {
+            if (!text) {
+              return [];
+            }
+
+            const matches = String(text).match(/[-+]?(?:\d+(?:\.\d+)?|\.\d+)/g);
+
+            if (!matches) {
+              return [];
+            }
+
+            return [...new Set(matches)].map((value) => {
+              const number = Number(value);
+
+              return Number.isFinite(number) ? number : value;
+            });
+          };
+
+          //--------------------------------------------------
+          // CANVAS LOOP
+          //--------------------------------------------------
+
+          for (let index = 0; index < canvases.length; index++) {
+            const canvas = canvases[index];
+
+            try {
+              const rect = canvas.getBoundingClientRect();
+
+              const visible =
+                rect.width > 0 &&
+                rect.height > 0 &&
+                window.getComputedStyle(canvas).display !== "none" &&
+                window.getComputedStyle(canvas).visibility !== "hidden";
+
+              if (!visible) {
+                continue;
+              }
+
+              //------------------------------------------------
+              // BASIC INFORMATION
+              //------------------------------------------------
+
+              const width = canvas.width;
+              const height = canvas.height;
+
+              const cssWidth = rect.width;
+              const cssHeight = rect.height;
+
+              const id = canvas.id || "";
+
+              const className =
+                typeof canvas.className === "string" ? canvas.className : "";
+
+              //------------------------------------------------
+              // CANVAS CONTEXT
+              //------------------------------------------------
+
+              let ctx = null;
+
+              try {
+                ctx = canvas.getContext("2d", {
+                  willReadFrequently: true,
+                });
+              } catch (_) {
+                ctx = null;
+              }
+
+              let imageData = null;
+              let pixelHash = "";
+
+              //------------------------------------------------
+              // READ PIXELS
+              //------------------------------------------------
+
+              if (ctx && width > 0 && height > 0) {
+                try {
+                  imageData = ctx.getImageData(0, 0, width, height);
+
+                  //------------------------------------------------
+                  // CREATE COMPACT PIXEL HASH
+                  //
+                  // Reading every pixel can be expensive on
+                  // large canvases, so sample pixels.
+                  //------------------------------------------------
+
+                  const data = imageData.data;
+
+                  const sampleSize = Math.min(data.length, 50000);
+
+                  const sample = [];
+
+                  const step = Math.max(
+                    4,
+                    Math.floor(data.length / sampleSize),
+                  );
+
+                  for (let i = 0; i < data.length; i += step) {
+                    sample.push(data[i]);
+                  }
+
+                  pixelHash = String(
+                    sample.reduce(
+                      (hash, value) => ((hash << 5) - hash + value) | 0,
+                      0,
+                    ),
+                  );
+                } catch (_) {
+                  imageData = null;
+                }
+              }
+
+              //------------------------------------------------
+              // CANVAS TEXT
+              //
+              // Canvas text itself is not available as DOM
+              // text. toDataURL gives us a representation of
+              // the rendered canvas.
+              //------------------------------------------------
+
+              let dataUrl = "";
+
+              try {
+                dataUrl = canvas.toDataURL("image/png");
+              } catch (_) {
+                dataUrl = "";
+              }
+
+              //------------------------------------------------
+              // PAGE TEXT NEAR CANVAS
+              //------------------------------------------------
+
+              let parentText = "";
+
+              try {
+                const parent =
+                  canvas.parentElement ||
+                  canvas.closest("div") ||
+                  document.body;
+
+                parentText = String(parent?.innerText || "").trim();
+              } catch (_) {
+                parentText = "";
+              }
+
+              //------------------------------------------------
+              // NUMBERS
+              //------------------------------------------------
+
+              const numbers = includeNumbers ? extractNumbers(parentText) : [];
+
+              //------------------------------------------------
+              // BUILD RESULT
+              //------------------------------------------------
+
+              const result = {
+                index,
+
+                id,
+
+                className,
+
+                width,
+
+                height,
+
+                cssWidth,
+
+                cssHeight,
+
+                visible,
+
+                numbers,
+
+                parentText,
+
+                pixelHash,
+
+                dataChangedSource: {
+                  pixelHash,
+                  dataUrlLength: dataUrl.length,
+                },
+              };
+
+              //------------------------------------------------
+              // OPTIONAL IMAGE DATA
+              //------------------------------------------------
+
+              if (includeImageData && imageData) {
+                result.imageData = Array.from(imageData.data);
+              }
+
+              //------------------------------------------------
+              // OPTIONAL DATA URL
+              //------------------------------------------------
+
+              if (includeImageData) {
+                result.dataUrl = dataUrl;
+              }
+
+              results.push(result);
+            } catch (canvasError) {
+              results.push({
+                index,
+                error: canvasError?.message || String(canvasError),
+              });
+            }
+          }
+
+          return {
+            timestamp: new Date().toISOString(),
+
+            url: window.location.href,
+
+            canvasCount: canvases.length,
+
+            canvases: results,
+          };
+        },
+        {
+          includeImageData,
+          includeNumbers,
+        },
+      );
+    };
+
+    //--------------------------------------------------------
+    // CREATE SNAPSHOT HASH
+    //--------------------------------------------------------
+
+    const createSnapshotHash = (data) => {
+      const compact = data.canvases.map((canvas) => ({
+        index: canvas.index,
+        id: canvas.id,
+        width: canvas.width,
+        height: canvas.height,
+        pixelHash: canvas.pixelHash,
+        dataUrlLength: canvas.dataChangedSource?.dataUrlLength || 0,
+        numbers: canvas.numbers || [],
+        parentText: canvas.parentText || "",
+      }));
+
+      return hashString(JSON.stringify(compact));
+    };
+
+    //--------------------------------------------------------
+    // INITIAL SNAPSHOT
+    //--------------------------------------------------------
+
+    let previousHash = null;
+
+    let changeNumber = 0;
+
+    //--------------------------------------------------------
+    // CONTINUOUS MONITOR
+    //--------------------------------------------------------
+
+    while (true) {
+      //------------------------------------------------------
+      // PAGE CHECK
+      //------------------------------------------------------
+
+      if (page.isClosed()) {
+        this.log("READ CANVAS STOPPED: page closed");
+        break;
+      }
+
+      //------------------------------------------------------
+      // DURATION CHECK
+      //------------------------------------------------------
+
+      if (duration > 0 && Date.now() - started >= duration) {
+        this.log("READ CANVAS STOPPED: duration reached");
+
+        break;
+      }
+
+      //------------------------------------------------------
+      // READ CURRENT CANVAS
+      //------------------------------------------------------
+
+      let currentData;
+
+      try {
+        currentData = await extractCanvasData();
+      } catch (error) {
+        this.log("READ CANVAS ERROR:", error?.message || String(error));
+
+        await page.waitForTimeout(interval);
+
+        continue;
+      }
+
+      //------------------------------------------------------
+      // CREATE HASH
+      //------------------------------------------------------
+
+      const currentHash = createSnapshotHash(currentData);
+
+      //------------------------------------------------------
+      // DETECT CHANGE
+      //------------------------------------------------------
+
+      if (previousHash === null) {
+        previousHash = currentHash;
+
+        changeNumber++;
+
+        const initialLog = {
+          event: "canvas_initial_data",
+
+          changeNumber,
+
+          timestamp: currentData.timestamp,
+
+          url: currentData.url,
+
+          canvasCount: currentData.canvasCount,
+
+          canvases: currentData.canvases,
+        };
+
+        this.log("CANVAS DATA:", JSON.stringify(initialLog, null, 2));
+      } else if (currentHash !== previousHash) {
+        //----------------------------------------------------
+        // DATA CHANGED
+        //----------------------------------------------------
+
+        changeNumber++;
+
+        const changedLog = {
+          event: "canvas_data_changed",
+
+          changeNumber,
+
+          timestamp: currentData.timestamp,
+
+          url: currentData.url,
+
+          canvasCount: currentData.canvasCount,
+
+          canvases: currentData.canvases,
+        };
+
+        this.log("==========================================");
+
+        this.log("CANVAS DATA CHANGED:");
+
+        this.log(JSON.stringify(changedLog, null, 2));
+
+        this.log("==========================================");
+
+        previousHash = currentHash;
+      }
+
+      //------------------------------------------------------
+      // WAIT
+      //------------------------------------------------------
+
+      await page.waitForTimeout(interval);
+    }
+
+    //--------------------------------------------------------
+    // RESULT
+    //--------------------------------------------------------
+
+    const result = {
+      success: true,
+
+      action: "readCanvas",
+
+      continuous: duration === 0,
+
+      duration,
+
+      interval,
+
+      changesDetected: changeNumber,
+
+      message: "Canvas monitoring completed",
+    };
+
+    this.log("READ CANVAS RESULT:", JSON.stringify(result, null, 2));
+
+    return result;
+  }
   //==========================================================
   // STATISTICS
   //==========================================================
