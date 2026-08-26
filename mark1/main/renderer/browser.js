@@ -28,7 +28,9 @@ function renderBrowser() {
           title: document.title,
           body: document.body.innerText.slice(0, 2000),
           links: [...document.querySelectorAll("a")].map(a => a.innerText).slice(0,20),
-          buttons: [...document.querySelectorAll("button")].map(b => b.innerText).slice(0,20)
+          buttons: [...document.querySelectorAll("button")].map(b => b.innerText).slice(0,20),
+          svgCount: document.querySelectorAll("svg").length,
+          iframeCount: document.querySelectorAll("iframe").length
         })
       `);
 

@@ -28,6 +28,9 @@ export const ACTION_TYPES = {
   CLOSE_TAB: "close_tab",
   SCREENSHOT: "screenshot",
   EXECUTE_JS: "execute_js",
+  GET_SVG: "get_svg",
+  GET_IFRAME_SVG: "get_iframe_svg",
+  GET_IFRAME_DATA: "get_iframe_data",
 };
 
 /**
@@ -174,6 +177,49 @@ export const ACTION_MAP = [
     patterns: [/take screenshot|capture screen/i],
     build: () => ({
       type: ACTION_TYPES.SCREENSHOT,
+    }),
+  },
+
+  {
+    name: "get_iframe_svg",
+    patterns: [
+      /get svg from iframe/i,
+      /extract svg from iframe/i,
+      /get iframe svg/i,
+      /extract iframe svg/i,
+      /svg data from iframe/i,
+    ],
+    build: () => ({
+      type: ACTION_TYPES.GET_IFRAME_SVG,
+      tool: "get_iframe_svg",
+      args: { onlyIframes: true },
+    }),
+  },
+
+  {
+    name: "get_iframe_data",
+    patterns: [
+      /get data from (?:parent )?(?:class|container)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?\s+(?:from|in|inside|within)\s+(?:the\s+)?iframe/i,
+      /extract data from (?:parent )?(?:class|container)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?\s+(?:from|in|inside|within)\s+(?:the\s+)?iframe/i,
+      /get (?:parent )?class\s+([a-zA-Z0-9_.-]+)\s+data\s+from\s+iframe/i,
+    ],
+    build: (input, match) => ({
+      type: ACTION_TYPES.GET_IFRAME_DATA,
+      tool: "get_iframe_data",
+      args: {
+        target: match ? match[1] : input,
+        onlyIframes: true,
+      },
+    }),
+  },
+
+  {
+    name: "get_svg",
+    patterns: [/get svg/i, /extract svg/i, /read svg/i, /svg data/i],
+    build: () => ({
+      type: ACTION_TYPES.GET_SVG,
+      tool: "get_svg",
+      args: {},
     }),
   },
 

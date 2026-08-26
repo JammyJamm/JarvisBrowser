@@ -38,6 +38,15 @@
 //==========================================================
 
 import browserController from "./browser-controller.js";
+import {
+  getFrameSVGs,
+  getAllSVGsFromFrames,
+  getSVGDataFromIframe,
+  getFrameContainerData,
+  getIframeContainerData,
+  getSVGBySelector,
+  clickSVGElement,
+} from "./utils/iframeContent.js";
 
 export default class PlaywrightMCPClient {
   constructor(options = {}) {
@@ -1364,6 +1373,92 @@ export default class PlaywrightMCPClient {
   }
 
   //========================================================
+  // SVG EXTRACTION
+  //========================================================
+
+  async getFrameSVGs(frame, options = {}) {
+    await this.ensureConnected();
+    const targetFrame = frame || (await this.getMainFrame());
+    if (!targetFrame) return [];
+    return await getFrameSVGs(targetFrame, options);
+  }
+
+  async getIframeSVGs(options = {}) {
+    await this.ensureConnected();
+    const page = await this.getPage();
+    if (!page) {
+      throw new Error("No active browser page available.");
+    }
+    return await getSVGDataFromIframe(page, {
+      onlyIframes: options.onlyIframes !== false,
+      ...options,
+    });
+  }
+
+  async getAllSVGs(options = {}) {
+    await this.ensureConnected();
+    const page = await this.getPage();
+    if (!page) {
+      throw new Error("No active browser page available.");
+    }
+    return await getAllSVGsFromFrames(page, options);
+  }
+
+  async getSVGData(options = {}) {
+    return await this.getIframeSVGs(options);
+  }
+
+  async getSVGBySelector(selector, options = {}) {
+    await this.ensureConnected();
+    const page = await this.getPage();
+    if (!page) {
+      throw new Error("No active browser page available.");
+    }
+    return await getSVGBySelector(page, selector, options);
+  }
+
+  async clickSVG(selectorOrCriteria, options = {}) {
+    await this.ensureConnected();
+    const frames = await this.getFrames();
+    for (const frame of frames) {
+      const res = await clickSVGElement(frame, selectorOrCriteria, options);
+      if (res.success) return res;
+    }
+    return {
+      success: false,
+      error: `SVG element '${selectorOrCriteria}' not found in any frame.`,
+    };
+  }
+
+  //========================================================
+  // CONTAINER DATA EXTRACTION
+  //========================================================
+
+  async getFrameContainerData(frame, containerSelectorOrClass, options = {}) {
+    await this.ensureConnected();
+    const targetFrame = frame || (await this.getMainFrame());
+    if (!targetFrame) return null;
+    return await getFrameContainerData(
+      targetFrame,
+      containerSelectorOrClass,
+      options,
+    );
+  }
+
+  async getIframeContainerData(containerSelectorOrClass, options = {}) {
+    await this.ensureConnected();
+    const page = await this.getPage();
+    if (!page) {
+      throw new Error("No active browser page available.");
+    }
+    return await getIframeContainerData(
+      page,
+      containerSelectorOrClass,
+      options,
+    );
+  }
+
+  //========================================================
   // DOWNLOAD MANAGER
   //========================================================
 
@@ -1870,6 +1965,38 @@ export default class PlaywrightMCPClient {
       {
         name: "waitForURL",
         description: "Wait for URL change",
+      },
+
+      {
+        name: "get_svg",
+        description: "Get SVG elements and vector data from page or iframes",
+      },
+
+      {
+        name: "get_iframe_svg",
+        description: "Extract SVG vector data from all or targeted iframes",
+      },
+
+      {
+        name: "extract_svg",
+        description: "Extract SVG paths, shapes, text, and bounding box data",
+      },
+
+      {
+        name: "click_svg",
+        description: "Click an SVG element or path inside frame",
+      },
+
+      {
+        name: "get_iframe_data",
+        description:
+          "Extract all data (text, SVGs, buttons, HTML) from a parent class or container inside iframes",
+      },
+
+      {
+        name: "get_container_data",
+        description:
+          "Extract structured content and SVGs from a specific parent selector or class",
       },
     ];
   }

@@ -235,6 +235,10 @@ export default class CommandRouter {
       /^(logout|log out|sign out)\b/,
 
       /^(search|find)\b/,
+
+      /^(get|extract|fetch|read|scrape|inspect)\b/,
+
+      /\bsvg\b/i,
     ];
 
     const matchedAction = actionPatterns.find((pattern) => pattern.test(text));

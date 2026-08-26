@@ -203,6 +203,164 @@ ipcMain.handle("browser-url", async () => {
 });
 
 /* ---------------------------------------------------- */
+/* NEW: Return SVGs from BrowserView and IFrames        */
+/* ---------------------------------------------------- */
+
+ipcMain.handle("browser-svg", async (_, options = {}) => {
+  if (!browserView) return [];
+  try {
+    const script = `
+      (() => {
+        function extractSVGsFromDoc(doc, frameInfo = {}) {
+          if (!doc) return [];
+          const svgs = Array.from(doc.querySelectorAll("svg"));
+          return svgs.map((el, i) => {
+            const rect = el.getBoundingClientRect();
+            const paths = Array.from(el.querySelectorAll("path")).map(p => ({
+              d: p.getAttribute("d") || "",
+              fill: p.getAttribute("fill") || undefined,
+              stroke: p.getAttribute("stroke") || undefined,
+              id: p.id || undefined,
+              className: p.getAttribute("class") || undefined,
+            }));
+            const texts = Array.from(el.querySelectorAll("text, tspan")).map(t => (t.textContent || "").trim()).filter(Boolean);
+            return {
+              index: i,
+              id: el.id || undefined,
+              className: el.getAttribute("class") || undefined,
+              viewBox: el.getAttribute("viewBox") || undefined,
+              width: el.getAttribute("width") || Math.round(rect.width) || undefined,
+              height: el.getAttribute("height") || Math.round(rect.height) || undefined,
+              boundingBox: {
+                x: Math.round(rect.x),
+                y: Math.round(rect.y),
+                width: Math.round(rect.width),
+                height: Math.round(rect.height),
+              },
+              text: texts.join(" ") || (el.textContent || "").trim() || undefined,
+              pathCount: paths.length,
+              paths,
+              outerHTML: el.outerHTML,
+              ...frameInfo
+            };
+          });
+        }
+
+        const allResults = [];
+        allResults.push(...extractSVGsFromDoc(document, { isIframe: false, frameUrl: window.location.href }));
+
+        const iframes = Array.from(document.querySelectorAll("iframe"));
+        iframes.forEach((iframe, idx) => {
+          try {
+            const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
+            if (iframeDoc) {
+              const iframeSVGs = extractSVGsFromDoc(iframeDoc, {
+                isIframe: true,
+                iframeIndex: idx,
+                frameUrl: iframe.src || iframe.contentWindow?.location?.href || "",
+                frameName: iframe.name || iframe.id || "",
+              });
+              allResults.push(...iframeSVGs);
+            }
+          } catch (e) {
+            // Handled via backend CDP for cross-origin iframes
+          }
+        });
+
+        return allResults;
+      })();
+    `;
+    return await browserView.webContents.executeJavaScript(script);
+  } catch (err) {
+    console.error("browser-svg error:", err);
+    return [];
+  }
+});
+
+/* ---------------------------------------------------- */
+/* NEW: Return Container / Parent Class Data            */
+/* ---------------------------------------------------- */
+
+ipcMain.handle("browser-container-data", async (_, selectorOrClass) => {
+  if (!browserView) return [];
+  try {
+    const script = `
+      (() => {
+        const query = ${JSON.stringify(String(selectorOrClass || "").trim())};
+        if (!query) return [];
+
+        function extractContainerFromDoc(doc, frameInfo = {}) {
+          if (!doc) return [];
+          const found = [];
+          try {
+            const direct = doc.querySelectorAll(query);
+            if (direct.length) found.push(...direct);
+          } catch {}
+
+          if (!query.startsWith(".") && !query.startsWith("#") && !query.startsWith("[")) {
+            try {
+              const byClass = doc.querySelectorAll(\`.\${query}, [class~="\${query}"], [class*="\${query}"]\`);
+              for (const el of byClass) {
+                if (!found.includes(el)) found.push(el);
+              }
+            } catch {}
+          }
+
+          return found.map((el, i) => {
+            const rect = el.getBoundingClientRect();
+            const svgs = Array.from(el.querySelectorAll("svg")).map((sEl, sIdx) => ({
+              index: sIdx,
+              id: sEl.id || undefined,
+              className: sEl.getAttribute("class") || undefined,
+              viewBox: sEl.getAttribute("viewBox") || undefined,
+              outerHTML: sEl.outerHTML,
+            }));
+
+            return {
+              index: i,
+              tagName: el.tagName.toLowerCase(),
+              id: el.id || undefined,
+              className: el.getAttribute("class") || undefined,
+              text: (el.innerText || el.textContent || "").trim(),
+              svgCount: svgs.length,
+              svgs,
+              innerHTML: el.innerHTML,
+              outerHTML: el.outerHTML,
+              ...frameInfo
+            };
+          });
+        }
+
+        const allResults = [];
+        allResults.push(...extractContainerFromDoc(document, { isIframe: false, frameUrl: window.location.href }));
+
+        const iframes = Array.from(document.querySelectorAll("iframe"));
+        iframes.forEach((iframe, idx) => {
+          try {
+            const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
+            if (iframeDoc) {
+              const iframeContainers = extractContainerFromDoc(iframeDoc, {
+                isIframe: true,
+                iframeIndex: idx,
+                frameUrl: iframe.src || iframe.contentWindow?.location?.href || "",
+                frameName: iframe.name || iframe.id || "",
+              });
+              allResults.push(...iframeContainers);
+            }
+          } catch (e) {}
+        });
+
+        return allResults;
+      })();
+    `;
+    return await browserView.webContents.executeJavaScript(script);
+  } catch (err) {
+    console.error("browser-container-data error:", err);
+    return [];
+  }
+});
+
+/* ---------------------------------------------------- */
 /* NEW: Execute JS inside BrowserView                   */
 /* ---------------------------------------------------- */
 

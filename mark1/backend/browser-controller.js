@@ -21,6 +21,16 @@
 //==========================================================
 
 import { chromium } from "playwright";
+import {
+  getFrameSVGs,
+  getAllSVGsFromFrames,
+  getSVGDataFromIframe,
+  getFrameContainerData,
+  getIframeContainerData,
+  findFramesWithSVGs,
+  getSVGBySelector,
+  clickSVGElement,
+} from "./utils/iframeContent.js";
 
 class BrowserController {
   constructor(options = {}) {
@@ -1130,8 +1140,89 @@ class BrowserController {
   }
 
   //==========================================================
-  // DEBUG
+  // SVG EXTRACTION
   //==========================================================
+
+  async getFrameSVGs(frame, options = {}) {
+    await this.ensureConnected();
+    const targetFrame = frame || this.page?.mainFrame();
+    if (!targetFrame) return [];
+    return await getFrameSVGs(targetFrame, options);
+  }
+
+  async getIframeSVGs(options = {}) {
+    await this.ensureConnected();
+    if (!this.page) {
+      throw new Error("No active browser page available.");
+    }
+    return await getSVGDataFromIframe(this.page, {
+      onlyIframes: options.onlyIframes !== false,
+      ...options,
+    });
+  }
+
+  async getAllSVGs(options = {}) {
+    await this.ensureConnected();
+    if (!this.page) {
+      throw new Error("No active browser page available.");
+    }
+    return await getAllSVGsFromFrames(this.page, options);
+  }
+
+  async getSVGData(options = {}) {
+    return await this.getIframeSVGs(options);
+  }
+
+  async getSVGBySelector(selector, options = {}) {
+    await this.ensureConnected();
+    if (!this.page) {
+      throw new Error("No active browser page available.");
+    }
+    return await getSVGBySelector(this.page, selector, options);
+  }
+
+  async clickSVG(selectorOrCriteria, options = {}) {
+    await this.ensureConnected();
+    if (!this.page) {
+      throw new Error("No active browser page available.");
+    }
+    const frames = await this.getFrames();
+    for (const frame of frames) {
+      const res = await clickSVGElement(frame, selectorOrCriteria, options);
+      if (res.success) return res;
+    }
+    return {
+      success: false,
+      error: `SVG element '${selectorOrCriteria}' not found in any frame.`,
+    };
+  }
+
+  //==========================================================
+  // CONTAINER DATA EXTRACTION
+  //==========================================================
+
+  async getFrameContainerData(frame, containerSelectorOrClass, options = {}) {
+    await this.ensureConnected();
+    const targetFrame = frame || this.page?.mainFrame();
+    if (!targetFrame) return null;
+    return await getFrameContainerData(
+      targetFrame,
+      containerSelectorOrClass,
+      options,
+    );
+  }
+
+  async getIframeContainerData(containerSelectorOrClass, options = {}) {
+    await this.ensureConnected();
+    if (!this.page) {
+      throw new Error("No active browser page available.");
+    }
+    return await getIframeContainerData(
+      this.page,
+      containerSelectorOrClass,
+      options,
+    );
+  }
 
   //==========================================================
   // DEBUG

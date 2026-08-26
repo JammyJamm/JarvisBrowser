@@ -298,6 +298,10 @@ export default class ToolMap {
 
     const normalizedTool = this.normalizeToolName(tool);
 
+    if (normalizedAlias === normalizedTool) {
+      return this;
+    }
+
     this.aliases.set(
       normalizedAlias,
 
@@ -1035,6 +1039,209 @@ export default class ToolMap {
     );
 
     //--------------------------------------------------
+    // GET SVG
+    //--------------------------------------------------
+
+    this.register(
+      "get_svg",
+
+      async (args = {}) => {
+        const options = {
+          selector: args.selector ?? args.target ?? "svg",
+          frameUrl: args.frameUrl ?? args.url ?? undefined,
+          frameName: args.frameName ?? args.name ?? undefined,
+          frameIndex: typeof args.frameIndex === "number" ? args.frameIndex : undefined,
+          includeHTML: args.includeHTML !== false,
+          includePaths: args.includePaths !== false,
+          includeShapes: args.includeShapes !== false,
+          includeText: args.includeText !== false,
+          includeBBox: args.includeBBox !== false,
+          includeAttributes: args.includeAttributes !== false,
+          onlyIframes: Boolean(args.onlyIframes),
+          onlyVisible: Boolean(args.onlyVisible),
+          filter: args.filter ?? undefined,
+          limit: typeof args.limit === "number" ? args.limit : 100,
+        };
+
+        if (this.hasResolverMethod("getSVGs")) {
+          this.stats.resolverExecutions++;
+          return await this.resolver.getSVGs(options);
+        }
+
+        if (this.hasMCPMethod("getAllSVGs")) {
+          this.stats.mcpExecutions++;
+          return await this.mcp.getAllSVGs(options);
+        }
+
+        if (this.hasMCPMethod("getIframeSVGs")) {
+          this.stats.mcpExecutions++;
+          return await this.mcp.getIframeSVGs(options);
+        }
+
+        throw new Error("SVG extraction is not available.");
+      },
+
+      {
+        category: "inspection",
+        description: "Get SVG elements and data from page or iframes.",
+      },
+    );
+
+    //--------------------------------------------------
+    // GET IFRAME SVG
+    //--------------------------------------------------
+
+    this.register(
+      "get_iframe_svg",
+
+      async (args = {}) => {
+        const options = {
+          selector: args.selector ?? args.target ?? "svg",
+          frameUrl: args.frameUrl ?? args.url ?? undefined,
+          frameName: args.frameName ?? args.name ?? undefined,
+          framePattern: args.framePattern ?? args.pattern ?? undefined,
+          frameIndex: typeof args.frameIndex === "number" ? args.frameIndex : undefined,
+          includeHTML: args.includeHTML !== false,
+          includePaths: args.includePaths !== false,
+          includeShapes: args.includeShapes !== false,
+          includeText: args.includeText !== false,
+          includeBBox: args.includeBBox !== false,
+          includeAttributes: args.includeAttributes !== false,
+          onlyIframes: args.onlyIframes !== false,
+          onlyVisible: Boolean(args.onlyVisible),
+          filter: args.filter ?? undefined,
+          limit: typeof args.limit === "number" ? args.limit : 100,
+        };
+
+        if (this.hasResolverMethod("getIframeSVGs")) {
+          this.stats.resolverExecutions++;
+          return await this.resolver.getIframeSVGs(options);
+        }
+
+        if (this.hasMCPMethod("getIframeSVGs")) {
+          this.stats.mcpExecutions++;
+          return await this.mcp.getIframeSVGs(options);
+        }
+
+        throw new Error("Iframe SVG extraction is not available.");
+      },
+
+      {
+        category: "inspection",
+        description: "Extract SVG data specifically from all or targeted iframes.",
+      },
+    );
+
+    //--------------------------------------------------
+    // EXTRACT SVG
+    //--------------------------------------------------
+
+    this.register(
+      "extract_svg",
+
+      async (args = {}) => {
+        if (
+          args.iframe ||
+          args.onlyIframes ||
+          args.frameUrl ||
+          args.frameName ||
+          args.frameIndex !== undefined
+        ) {
+          const handler = this.tools.get("get_iframe_svg");
+          return await handler(args);
+        }
+        const handler = this.tools.get("get_svg");
+        return await handler(args);
+      },
+
+      {
+        category: "inspection",
+        description: "Extract SVG vector and shape data from page or iframes.",
+      },
+    );
+
+    //--------------------------------------------------
+    // CLICK SVG
+    //--------------------------------------------------
+
+    this.register(
+      "click_svg",
+
+      async (args = {}) => {
+        const target = this.getTarget(args);
+        if (!target) throw new Error("Target for click_svg is required.");
+
+        if (this.hasMCPMethod("clickSVG")) {
+          this.stats.mcpExecutions++;
+          return await this.mcp.clickSVG(target, args);
+        }
+
+        throw new Error("Click SVG functionality is not available.");
+      },
+
+      {
+        category: "interaction",
+        description: "Click an SVG element or path inside frame.",
+      },
+    );
+
+    //--------------------------------------------------
+    // GET IFRAME CONTAINER DATA
+    //--------------------------------------------------
+
+    this.register(
+      "get_iframe_data",
+
+      async (args = {}) => {
+        const target =
+          args.target ??
+          args.class ??
+          args.className ??
+          args.parentClass ??
+          args.selector ??
+          args.container ??
+          args.field ??
+          "";
+
+        if (!target) {
+          throw new Error("Target class or container selector is required.");
+        }
+
+        const options = {
+          target,
+          frameUrl: args.frameUrl ?? args.url ?? undefined,
+          frameName: args.frameName ?? args.name ?? undefined,
+          framePattern: args.framePattern ?? args.pattern ?? undefined,
+          frameIndex:
+            typeof args.frameIndex === "number" ? args.frameIndex : undefined,
+          includeHTML: args.includeHTML !== false,
+          includeSVGs: args.includeSVGs !== false,
+          includeChildren: args.includeChildren !== false,
+          includeBBox: args.includeBBox !== false,
+          limit: typeof args.limit === "number" ? args.limit : 50,
+        };
+
+        if (this.hasResolverMethod("getIframeContainerData")) {
+          this.stats.resolverExecutions++;
+          return await this.resolver.getIframeContainerData(target, options);
+        }
+
+        if (this.hasMCPMethod("getIframeContainerData")) {
+          this.stats.mcpExecutions++;
+          return await this.mcp.getIframeContainerData(target, options);
+        }
+
+        throw new Error("Iframe container data extraction is not available.");
+      },
+
+      {
+        category: "inspection",
+        description:
+          "Extract data (text, SVGs, buttons, HTML) from parent class or container in iframe.",
+      },
+    );
+
+    //--------------------------------------------------
     // TOOL ALIASES
     //--------------------------------------------------
 
@@ -1069,6 +1276,30 @@ export default class ToolMap {
     this.registerAlias("previous", "back");
 
     this.registerAlias("next", "forward");
+
+    this.registerAlias("svg", "get_svg");
+
+    this.registerAlias("getsvg", "get_svg");
+
+    this.registerAlias("readsvg", "get_svg");
+
+    this.registerAlias("svgdata", "get_svg");
+
+    this.registerAlias("iframesvg", "get_iframe_svg");
+
+    this.registerAlias("getiframesvg", "get_iframe_svg");
+
+    this.registerAlias("extractsvg", "extract_svg");
+
+    this.registerAlias("clicksvg", "click_svg");
+
+    this.registerAlias("iframedata", "get_iframe_data");
+
+    this.registerAlias("getiframedata", "get_iframe_data");
+
+    this.registerAlias("containerdata", "get_iframe_data");
+
+    this.registerAlias("getcontainerdata", "get_iframe_data");
   }
 
   //==================================================

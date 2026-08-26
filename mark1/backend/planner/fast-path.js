@@ -42,6 +42,69 @@ function parseSingle(raw) {
     return { tool: "reload", args: {} };
   }
 
+  if (
+    (m = command.match(
+      /^(?:get|extract|fetch|read)\s+(?:all\s+)?data\s+(?:from|in|inside|within)\s+(?:the\s+)?(?:parent\s+)?(?:class|container|selector|element)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?\s+(?:from|in|inside|within)\s+(?:the\s+)?(?:iframe|frame)(?:\s+(.+))?$/i,
+    ))
+  ) {
+    const targetClass = clean(m[1]);
+    const frameUrl = m[2] ? clean(m[2]) : undefined;
+    return {
+      tool: "get_iframe_data",
+      args: {
+        target: targetClass,
+        onlyIframes: true,
+        ...(frameUrl ? { frameUrl } : {}),
+      },
+    };
+  }
+
+  if (
+    (m = command.match(
+      /^(?:get|extract|fetch|read)\s+(?:all\s+)?svg(?:s|\s+data)?\s+(?:from|in|inside|within)\s+(?:the\s+)?(?:parent\s+)?(?:class|container|selector|element)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?\s+(?:from|in|inside|within)\s+(?:the\s+)?(?:iframe|frame)(?:\s+(.+))?$/i,
+    ))
+  ) {
+    const targetClass = clean(m[1]);
+    const frameUrl = m[2] ? clean(m[2]) : undefined;
+    return {
+      tool: "get_iframe_svg",
+      args: {
+        parentClass: targetClass,
+        onlyIframes: true,
+        ...(frameUrl ? { frameUrl } : {}),
+      },
+    };
+  }
+
+  if (
+    /^(?:get|extract|fetch|read)\s+(?:the\s+)?(?:all\s+)?svg(?:s|\s+data)?\s+(?:from|in|inside|within)\s+(?:the\s+)?(?:iframe|frame)(?:\s+(.+))?$/i.test(
+      command,
+    ) ||
+    /^(?:get|extract|fetch|read)\s+(?:the\s+)?(?:all\s+)?(?:iframe|frame)\s+svg(?:s|\s+data)?(?:\s+(.+))?$/i.test(
+      command,
+    )
+  ) {
+    const frameMatch = command.match(
+      /(?:(?:iframe|frame)\s+(.+)|(?:from|in|inside|within)\s+(?:the\s+)?(?:iframe|frame)\s+(.+))$/i,
+    );
+    const target = frameMatch ? clean(frameMatch[1] || frameMatch[2]) : "";
+    return {
+      tool: "get_iframe_svg",
+      args: {
+        onlyIframes: true,
+        ...(target ? { frameUrl: target } : {}),
+      },
+    };
+  }
+
+  if (
+    /^(?:get|extract|fetch|read)\s+(?:the\s+)?(?:all\s+)?svg(?:s|\s+data)?(?:\s+(?:from|in|on)\s+(?:the\s+)?(?:page|dom))?$/i.test(
+      command,
+    )
+  ) {
+    return { tool: "get_svg", args: {} };
+  }
+
   return null;
 }
 
@@ -105,6 +168,8 @@ export function isBrowserActionText(command) {
 
   return lines.every((line) => {
     const text = line.toLowerCase();
-    return /^(click|press|tap|type|enter|fill|write|go\s+to|goto|navigate\s+to|open|back|go\s+back|forward|go\s+forward|refresh|reload)\b/i.test(text);
+    return /^(click|press|tap|type|enter|fill|write|go\s+to|goto|navigate\s+to|open|back|go\s+back|forward|go\s+forward|refresh|reload|get|extract|fetch|read)\b/i.test(
+      text,
+    );
   });
 }

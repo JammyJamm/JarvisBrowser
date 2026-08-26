@@ -60,6 +60,15 @@ import CommandRouter from "./command-router.js";
 import { fastPath } from "./planner/fast-path.js";
 
 import aiEngine from "./aiEngine.js";
+import {
+  getFrameSVGs,
+  getAllSVGsFromFrames,
+  getSVGDataFromIframe,
+  getFrameContainerData,
+  getIframeContainerData,
+  findFramesWithSVGs,
+  getAllFrames,
+} from "./utils/iframeContent.js";
 
 //==========================================================
 // EXPRESS
@@ -1921,6 +1930,312 @@ app.get("/page", async (req, res) => {
     return res.json(
       success({
         page: info,
+      }),
+    );
+  } catch (err) {
+    return res.status(500).json(failure(err));
+  }
+});
+
+//==========================================================
+// SVG / IFRAME SVG
+//==========================================================
+
+app.get("/svg", async (req, res) => {
+  try {
+    const page = await ensureBrowserReady();
+
+    const options = {
+      selector: req.query.selector || "svg",
+      frameUrl: req.query.frameUrl || undefined,
+      frameName: req.query.frameName || undefined,
+      framePattern: req.query.framePattern || undefined,
+      frameIndex:
+        req.query.frameIndex !== undefined
+          ? Number(req.query.frameIndex)
+          : undefined,
+      onlyIframes: req.query.onlyIframes === "true",
+      includeHTML: req.query.includeHTML !== "false",
+      includePaths: req.query.includePaths !== "false",
+      includeShapes: req.query.includeShapes !== "false",
+      includeText: req.query.includeText !== "false",
+      includeBBox: req.query.includeBBox !== "false",
+      includeAttributes: req.query.includeAttributes !== "false",
+      onlyVisible: req.query.onlyVisible === "true",
+      filter: req.query.filter || undefined,
+      limit: req.query.limit ? Number(req.query.limit) : 100,
+    };
+
+    let result;
+    if (options.onlyIframes) {
+      result = await getSVGDataFromIframe(page, options);
+    } else {
+      const framesData = await getAllSVGsFromFrames(page, options);
+      const totalSVGs = framesData.reduce((sum, f) => sum + f.svgCount, 0);
+      result = {
+        success: true,
+        totalFrames: framesData.length,
+        totalSVGs,
+        frames: framesData,
+      };
+    }
+
+    return res.json(success(result));
+  } catch (err) {
+    return res.status(500).json(failure(err));
+  }
+});
+
+app.post("/svg", async (req, res) => {
+  try {
+    const page = await ensureBrowserReady();
+    const body = req.body || {};
+
+    const options = {
+      selector: body.selector || "svg",
+      frameUrl: body.frameUrl || undefined,
+      frameName: body.frameName || undefined,
+      framePattern: body.framePattern || undefined,
+      frameIndex:
+        body.frameIndex !== undefined ? Number(body.frameIndex) : undefined,
+      onlyIframes: Boolean(body.onlyIframes),
+      includeHTML: body.includeHTML !== false,
+      includePaths: body.includePaths !== false,
+      includeShapes: body.includeShapes !== false,
+      includeText: body.includeText !== false,
+      includeBBox: body.includeBBox !== false,
+      includeAttributes: body.includeAttributes !== false,
+      onlyVisible: Boolean(body.onlyVisible),
+      filter: body.filter || undefined,
+      limit: body.limit ? Number(body.limit) : 100,
+    };
+
+    let result;
+    if (options.onlyIframes) {
+      result = await getSVGDataFromIframe(page, options);
+    } else {
+      const framesData = await getAllSVGsFromFrames(page, options);
+      const totalSVGs = framesData.reduce((sum, f) => sum + f.svgCount, 0);
+      result = {
+        success: true,
+        totalFrames: framesData.length,
+        totalSVGs,
+        frames: framesData,
+      };
+    }
+
+    return res.json(success(result));
+  } catch (err) {
+    return res.status(500).json(failure(err));
+  }
+});
+
+app.get("/iframe/svg", async (req, res) => {
+  try {
+    const page = await ensureBrowserReady();
+
+    const options = {
+      selector: req.query.selector || "svg",
+      parentClass:
+        req.query.parentClass ||
+        req.query.class ||
+        req.query.className ||
+        undefined,
+      container:
+        req.query.container ||
+        req.query.parentSelector ||
+        req.query.containerSelector ||
+        undefined,
+      frameUrl: req.query.frameUrl || undefined,
+      frameName: req.query.frameName || undefined,
+      framePattern: req.query.framePattern || undefined,
+      frameIndex:
+        req.query.frameIndex !== undefined
+          ? Number(req.query.frameIndex)
+          : undefined,
+      onlyIframes: true,
+      includeHTML: req.query.includeHTML !== "false",
+      includePaths: req.query.includePaths !== "false",
+      includeShapes: req.query.includeShapes !== "false",
+      includeText: req.query.includeText !== "false",
+      includeBBox: req.query.includeBBox !== "false",
+      includeAttributes: req.query.includeAttributes !== "false",
+      onlyVisible: req.query.onlyVisible === "true",
+      filter: req.query.filter || undefined,
+      limit: req.query.limit ? Number(req.query.limit) : 100,
+    };
+
+    const result = await getSVGDataFromIframe(page, options);
+    return res.json(success(result));
+  } catch (err) {
+    return res.status(500).json(failure(err));
+  }
+});
+
+app.post("/iframe/svg", async (req, res) => {
+  try {
+    const page = await ensureBrowserReady();
+    const body = req.body || {};
+
+    const options = {
+      selector: body.selector || "svg",
+      parentClass:
+        body.parentClass ||
+        body.class ||
+        body.className ||
+        undefined,
+      container:
+        body.container ||
+        body.parentSelector ||
+        body.containerSelector ||
+        undefined,
+      frameUrl: body.frameUrl || undefined,
+      frameName: body.frameName || undefined,
+      framePattern: body.framePattern || undefined,
+      frameIndex:
+        body.frameIndex !== undefined ? Number(body.frameIndex) : undefined,
+      onlyIframes: true,
+      includeHTML: body.includeHTML !== false,
+      includePaths: body.includePaths !== false,
+      includeShapes: body.includeShapes !== false,
+      includeText: body.includeText !== false,
+      includeBBox: body.includeBBox !== false,
+      includeAttributes: body.includeAttributes !== false,
+      onlyVisible: Boolean(body.onlyVisible),
+      filter: body.filter || undefined,
+      limit: body.limit ? Number(body.limit) : 100,
+    };
+
+    const result = await getSVGDataFromIframe(page, options);
+    return res.json(success(result));
+  } catch (err) {
+    return res.status(500).json(failure(err));
+  }
+});
+
+//==========================================================
+// CONTAINER DATA FROM IFRAME (e.g. .dGBOyn)
+//==========================================================
+
+app.get("/iframe/data", async (req, res) => {
+  try {
+    const page = await ensureBrowserReady();
+    const target =
+      req.query.class ||
+      req.query.className ||
+      req.query.selector ||
+      req.query.container ||
+      req.query.target ||
+      req.query.parentClass ||
+      "";
+
+    if (!target) {
+      return res.status(400).json(
+        failure(
+          new Error(
+            "Target class or selector is required (e.g., ?class=dGBOyn or ?selector=.dGBOyn)",
+          ),
+        ),
+      );
+    }
+
+    const options = {
+      target,
+      frameUrl: req.query.frameUrl || undefined,
+      frameName: req.query.frameName || undefined,
+      framePattern: req.query.framePattern || undefined,
+      frameIndex:
+        req.query.frameIndex !== undefined
+          ? Number(req.query.frameIndex)
+          : undefined,
+      onlyIframes: req.query.onlyIframes !== "false",
+      includeHTML: req.query.includeHTML !== "false",
+      includeSVGs: req.query.includeSVGs !== "false",
+      includeChildren: req.query.includeChildren !== "false",
+      includeBBox: req.query.includeBBox !== "false",
+      limit: req.query.limit ? Number(req.query.limit) : 50,
+    };
+
+    const result = await getIframeContainerData(page, target, options);
+    return res.json(success(result));
+  } catch (err) {
+    return res.status(500).json(failure(err));
+  }
+});
+
+app.post("/iframe/data", async (req, res) => {
+  try {
+    const page = await ensureBrowserReady();
+    const body = req.body || {};
+    const target =
+      body.class ||
+      body.className ||
+      body.selector ||
+      body.container ||
+      body.target ||
+      body.parentClass ||
+      "";
+
+    if (!target) {
+      return res.status(400).json(
+        failure(
+          new Error(
+            "Target class or selector is required in request body.",
+          ),
+        ),
+      );
+    }
+
+    const options = {
+      target,
+      frameUrl: body.frameUrl || undefined,
+      frameName: body.frameName || undefined,
+      framePattern: body.framePattern || undefined,
+      frameIndex:
+        body.frameIndex !== undefined ? Number(body.frameIndex) : undefined,
+      onlyIframes: body.onlyIframes !== false,
+      includeHTML: body.includeHTML !== false,
+      includeSVGs: body.includeSVGs !== false,
+      includeChildren: body.includeChildren !== false,
+      includeBBox: body.includeBBox !== false,
+      limit: body.limit ? Number(body.limit) : 50,
+    };
+
+    const result = await getIframeContainerData(page, target, options);
+    return res.json(success(result));
+  } catch (err) {
+    return res.status(500).json(failure(err));
+  }
+});
+
+app.get("/iframes", async (req, res) => {
+  try {
+    const page = await ensureBrowserReady();
+    const frames = await getAllFrames(page);
+    const mainFrame = page.mainFrame();
+
+    const result = [];
+    for (const [index, frame] of frames.entries()) {
+      let svgCount = 0;
+      try {
+        svgCount = await frame.locator("svg").count();
+      } catch {}
+
+      result.push({
+        index,
+        url: frame.url(),
+        name: frame.name(),
+        isMainFrame: frame === mainFrame,
+        parentUrl: frame.parentFrame()?.url() || null,
+        svgCount,
+      });
+    }
+
+    return res.json(
+      success({
+        totalFrames: frames.length,
+        iframesCount: frames.filter((f) => f !== mainFrame).length,
+        frames: result,
       }),
     );
   } catch (err) {

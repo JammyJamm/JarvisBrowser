@@ -37,7 +37,14 @@ import Planner from "./planner/planner.js";
 import ScoringEngine from "./planner/scoring-engine.js";
 import { SelfHealing } from "./planner/self-healing.js";
 
-import { clickInsideEvolutionFrame } from "./utils/iframeContent.js";
+import {
+  clickInsideEvolutionFrame,
+  getFrameSVGs,
+  getAllSVGsFromFrames,
+  getSVGDataFromIframe,
+  getFrameContainerData,
+  getIframeContainerData,
+} from "./utils/iframeContent.js";
 
 export default class Resolver {
   constructor(mcp, options = {}) {
@@ -5485,142 +5492,88 @@ export default class Resolver {
   // RESOLVE
   //==========================================================
 
+  //==========================================================
+  // RESOLVE
+  //==========================================================
+
   async resolve(input) {
-    return this.safeExecute(async () => {
-      if (!input) {
+    return await this.safeExecute(async () => {
+      const rawInput = String(input || "").trim();
+
+      if (!rawInput) {
         throw new Error("Resolver input is empty");
       }
 
-      //--------------------------------------------------
-      // NORMALIZE INPUT
-      //--------------------------------------------------
-
-      const rawInput = String(input).trim();
-
-      const normalizedInput = rawInput
-        .toLowerCase()
-        .replace(/[_-]+/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
-
       this.log("==========================================");
       this.log("RESOLVE INPUT:", rawInput);
-      this.log("NORMALIZED INPUT:", normalizedInput);
       this.log("==========================================");
 
-      //--------------------------------------------------
-      // DIRECT CANVAS COMMAND
+      //------------------------------------------------------
+      // 1. SVG COMMAND - MUST BE FIRST
       //
-      // This is intentionally checked BEFORE the
-      // intent parser.
-      //
-      // This prevents:
-      //
-      // "Read canvas"
-      //
-      // from being interpreted as an unsupported action.
-      //--------------------------------------------------
+      // read dGBOyn
+      // read svg dGBOyn
+      //------------------------------------------------------
 
-      const isCanvasCommand =
-        normalizedInput === "read canvas" ||
-        normalizedInput === "read the canvas" ||
-        normalizedInput === "canvas" ||
-        normalizedInput === "readcanvas" ||
-        normalizedInput === "read canvas data" ||
-        normalizedInput === "extract canvas" ||
-        normalizedInput === "extract canvas data";
+      const svgMatch = rawInput.match(
+        /^read\s+(?:svg\s+)?([A-Za-z_][A-Za-z0-9_-]*)$/i,
+      );
 
-      if (isCanvasCommand) {
+      if (svgMatch) {
+        const className = svgMatch[1];
+
         this.log("==========================================");
-        this.log("CANVAS COMMAND DETECTED");
-        this.log("COMMAND:", rawInput);
-        this.log("ACTION: readCanvas");
+        this.log("SVG COMMAND INTERCEPTED");
+        this.log("CLASS:", className);
         this.log("==========================================");
 
-        try {
-          //------------------------------------------------
-          // IMPORTANT:
-          //
-          // readCanvas() must already exist in this class.
-          //------------------------------------------------
+        const data = await this.readSVGFromIframe(className);
 
-          const canvasResult = await this.readCanvas();
-
-          this.log("==========================================");
-          this.log("CANVAS READ SUCCESS");
-          this.log("CANVAS RESULT:", JSON.stringify(canvasResult, null, 2));
-          this.log("==========================================");
-
-          return {
-            success: true,
-
-            results: [
-              {
-                success: true,
-                action: "readCanvas",
-                command: rawInput,
-                data: canvasResult,
-              },
-            ],
-          };
-        } catch (canvasError) {
-          this.log("==========================================");
-          this.log("CANVAS READ FAILED");
-          this.log("ERROR:", canvasError.message);
-          this.log("==========================================");
-
-          return {
-            success: false,
-
-            results: [
-              {
-                success: false,
-                action: "readCanvas",
-                command: rawInput,
-                error: canvasError.message,
-              },
-            ],
-          };
-        }
+        return {
+          success: true,
+          results: [
+            {
+              success: true,
+              action: "readSVGFromIframe",
+              className,
+              data,
+            },
+          ],
+        };
       }
 
-      //--------------------------------------------------
-      // Parse command once
-      //--------------------------------------------------
+      //------------------------------------------------------
+      // 2. NORMAL COMMAND PARSER
+      //------------------------------------------------------
 
       const parsed = this.intentParser.parse(rawInput);
 
-      this.log("Parsed intent:", JSON.stringify(parsed, null, 2));
+      this.log("PARSED:", JSON.stringify(parsed, null, 2));
 
-      if (!parsed.steps?.length) {
+      if (!parsed?.steps?.length) {
         throw new Error(`Unable to understand command '${rawInput}'`);
       }
 
       const results = [];
 
-      //--------------------------------------------------
-      // PROCESS STEPS
-      //--------------------------------------------------
+      //------------------------------------------------------
+      // 3. EXECUTE EACH STEP
+      //------------------------------------------------------
 
       for (const step of parsed.steps) {
-        //------------------------------------------------
-        // NORMALIZE ACTION
-        //------------------------------------------------
-
         const action = String(step.action || "")
           .toLowerCase()
           .replace(/[_-]+/g, "")
           .trim();
 
         this.log("==========================================");
-        this.log("PROCESSING STEP");
         this.log("ACTION:", action);
-        this.log("STEP:", JSON.stringify(step, null, 2));
+        this.log("STEP:", JSON.stringify(step));
         this.log("==========================================");
 
-        //------------------------------------------------
+        //----------------------------------------------------
         // CLICK
-        //------------------------------------------------
+        //----------------------------------------------------
 
         if (action === "click") {
           const target = step.target || step.value;
@@ -5629,186 +5582,85 @@ export default class Resolver {
             throw new Error("Click target is missing");
           }
 
-          this.log("CLICK:", target);
-
           results.push(await this.clickSmart(target));
 
           continue;
         }
 
-        //------------------------------------------------
-        // TYPE
-        //------------------------------------------------
+        //----------------------------------------------------
+        // TYPE / FILL
+        //----------------------------------------------------
 
-        if (action === "type") {
+        if (action === "type" || action === "fill") {
           const target = step.target || step.field;
+
           const value = step.value ?? step.text ?? "";
 
           if (!target) {
             throw new Error("Type target is missing");
           }
 
-          this.log("TYPE TARGET:", target);
-          this.log("TYPE VALUE:", value);
-
           results.push(await this.typeSmart(target, value));
 
           continue;
         }
 
-        //------------------------------------------------
-        // READ CANVAS
-        //
-        // Supports parser actions such as:
-        //
-        // readCanvas
-        // read_canvas
-        // read-canvas
-        // canvas
-        //------------------------------------------------
-
-        if (
-          action === "readcanvas" ||
-          action === "canvas" ||
-          action === "extractcanvas"
-        ) {
-          this.log("==========================================");
-          this.log("READ CANVAS ACTION");
-          this.log("==========================================");
-
-          try {
-            const canvasResult = await this.readCanvas({
-              target: step.target || step.value || null,
-            });
-
-            this.log("Canvas data received:");
-
-            this.log(JSON.stringify(canvasResult, null, 2));
-
-            results.push({
-              success: true,
-
-              action: "readCanvas",
-
-              data: canvasResult,
-            });
-          } catch (canvasError) {
-            this.log("Read canvas failed:", canvasError.message);
-
-            results.push({
-              success: false,
-
-              action: "readCanvas",
-
-              error: canvasError.message,
-            });
-          }
-
-          continue;
-        }
-
-        //------------------------------------------------
+        //----------------------------------------------------
         // NAVIGATE
-        //------------------------------------------------
+        //----------------------------------------------------
 
         if (action === "navigate") {
-          const page = await this.mcp.getPage();
-
           const url = step.url || step.target || step.value;
 
           if (!url) {
-            throw new Error("Navigation URL missing");
+            throw new Error("Navigation URL is missing");
           }
 
-          this.log("NAVIGATE:", url);
+          results.push(await this.navigate(url));
 
-          await page.goto(url, {
-            waitUntil: "domcontentloaded",
-          });
+          continue;
+        }
 
-          //------------------------------------------------
-          // Navigation invalidates all cached DOM data.
-          //------------------------------------------------
+        //----------------------------------------------------
+        // SUBMIT
+        //----------------------------------------------------
 
-          this.clearDOMCache();
+        if (action === "submit") {
+          results.push(await this.submitSmart(step.target || step.value));
 
-          this.lastURL = page.url();
+          continue;
+        }
 
-          //------------------------------------------------
-          // Give SPA/framework UI time to render.
-          //------------------------------------------------
+        //----------------------------------------------------
+        // SVG ACTION
+        //----------------------------------------------------
 
-          await page.waitForTimeout(this.options.navigationRenderDelay);
+        if (action === "readsvg" || action === "readsvgfromiframe") {
+          const className = step.target || step.value;
 
-          await page.waitForLoadState("load").catch(() => {});
-
-          this.log("Navigation ready:", page.url());
+          if (!className) {
+            throw new Error("SVG parent class is missing");
+          }
 
           results.push({
             success: true,
-
-            action: "navigate",
-
-            url: page.url(),
+            action: "readSVGFromIframe",
+            className,
+            data: await this.readSVGFromIframe(className),
           });
 
           continue;
         }
 
-        //------------------------------------------------
-        // WAIT
-        //------------------------------------------------
+        //----------------------------------------------------
+        // UNKNOWN ACTION
+        //----------------------------------------------------
 
-        if (action === "wait") {
-          const page = await this.mcp.getPage();
-
-          const waitTime = Number(step.value || step.time || 1000);
-
-          this.log("WAIT:", waitTime, "ms");
-
-          await page.waitForTimeout(waitTime);
-
-          results.push({
-            success: true,
-
-            action: "wait",
-
-            duration: waitTime,
-          });
-
-          continue;
-        }
-
-        //------------------------------------------------
-        // UNSUPPORTED
-        //------------------------------------------------
-
-        this.log("UNSUPPORTED ACTION:", step.action);
-
-        results.push({
-          success: false,
-
-          action: step.action,
-
-          error: "Unsupported action",
-        });
+        throw new Error(`Unsupported action '${step.action}'`);
       }
 
-      //--------------------------------------------------
-      // FINAL RESULT
-      //--------------------------------------------------
-
-      const success = results.every((result) => result.success);
-
-      this.log("==========================================");
-      this.log("RESOLVE COMPLETE");
-      this.log("SUCCESS:", success);
-      this.log("RESULTS:", JSON.stringify(results, null, 2));
-      this.log("==========================================");
-
       return {
-        success,
-
+        success: results.every((result) => result?.success !== false),
         results,
       };
     });
@@ -5853,6 +5705,288 @@ export default class Resolver {
   // Every time canvas data changes, a JSON object is logged.
   //
   //==========================================================
+
+  //==========================================================
+  // READ SVG FROM IFRAME
+  //==========================================================
+
+  async readSVGFromIframe(className = "dGBOyn") {
+    const page = await this.mcp.getPage();
+
+    if (!page || page.isClosed()) {
+      throw new Error("Browser page is closed");
+    }
+
+    const targetClassName = String(className || "").trim();
+
+    if (!targetClassName) {
+      throw new Error("SVG parent class name is required");
+    }
+
+    this.log("==========================================");
+    this.log("READ SVG FROM IFRAME");
+    this.log("PARENT CLASS:", targetClassName);
+    this.log("==========================================");
+
+    // Retry because iframe / SVG may load dynamically
+    const MAX_ATTEMPTS = 10;
+    const RETRY_DELAY = 500;
+
+    let lastFrameInfo = [];
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      const frames = page.frames();
+
+      this.log(`SVG SEARCH ATTEMPT ${attempt}/${MAX_ATTEMPTS}`);
+
+      this.log("FRAME COUNT:", frames.length);
+
+      lastFrameInfo = [];
+
+      for (let frameIndex = 0; frameIndex < frames.length; frameIndex++) {
+        const frame = frames[frameIndex];
+
+        try {
+          if (!frame) {
+            continue;
+          }
+
+          const frameUrl = frame.url();
+
+          const result = await frame.evaluate((targetClassName) => {
+            //------------------------------------------------
+            // FIND ALL ELEMENTS WITH THE TARGET CLASS
+            //
+            // Using classList.contains() is safer than only
+            // document.querySelector(".className")
+            //------------------------------------------------
+
+            const matchingElements = Array.from(
+              document.querySelectorAll("*"),
+            ).filter((element) => {
+              return (
+                element.classList && element.classList.contains(targetClassName)
+              );
+            });
+
+            if (!matchingElements.length) {
+              return {
+                found: false,
+                hasSVG: false,
+                matches: 0,
+              };
+            }
+
+            //------------------------------------------------
+            // CHECK EVERY MATCHING PARENT
+            //------------------------------------------------
+
+            const parents = [];
+
+            for (
+              let parentIndex = 0;
+              parentIndex < matchingElements.length;
+              parentIndex++
+            ) {
+              const parent = matchingElements[parentIndex];
+
+              const parentTag = String(parent.tagName || "").toLowerCase();
+
+              //------------------------------------------------
+              // PARENT ITSELF MAY BE SVG
+              //------------------------------------------------
+
+              const svgs =
+                parentTag === "svg"
+                  ? [parent]
+                  : Array.from(parent.querySelectorAll("svg"));
+
+              parents.push({
+                parentIndex,
+                parentTag,
+                className: parent.className || null,
+                svgCount: svgs.length,
+              });
+
+              //------------------------------------------------
+              // NO SVG IN THIS MATCH
+              //------------------------------------------------
+
+              if (!svgs.length) {
+                continue;
+              }
+
+              //------------------------------------------------
+              // EXTRACT SVG DATA
+              //------------------------------------------------
+
+              const svgData = svgs.map((svg, svgIndex) => {
+                const svgAttributes = Object.fromEntries(
+                  Array.from(svg.attributes).map((attr) => [
+                    attr.name,
+                    attr.value,
+                  ]),
+                );
+
+                const elements = Array.from(svg.querySelectorAll("*")).map(
+                  (element) => ({
+                    tag: element.tagName.toLowerCase(),
+
+                    attributes: Object.fromEntries(
+                      Array.from(element.attributes).map((attr) => [
+                        attr.name,
+                        attr.value,
+                      ]),
+                    ),
+
+                    text:
+                      element.children.length === 0
+                        ? (element.textContent || "").trim() || null
+                        : null,
+                  }),
+                );
+
+                return {
+                  index: svgIndex,
+
+                  dataRole:
+                    svg.getAttribute("data-role") ||
+                    parent.getAttribute?.("data-role") ||
+                    null,
+
+                  outerHTML: svg.outerHTML,
+
+                  attributes: svgAttributes,
+
+                  elements,
+                };
+              });
+
+              //------------------------------------------------
+              // SUCCESS
+              //------------------------------------------------
+
+              return {
+                found: true,
+                hasSVG: true,
+
+                parentClass: targetClassName,
+
+                parentIndex,
+
+                parentTag,
+
+                totalMatchingParents: matchingElements.length,
+
+                svgCount: svgData.length,
+
+                svgs: svgData,
+              };
+            }
+
+            //------------------------------------------------
+            // CLASS FOUND BUT NO SVG
+            //------------------------------------------------
+
+            return {
+              found: true,
+              hasSVG: false,
+
+              parentClass: targetClassName,
+
+              totalMatchingParents: matchingElements.length,
+
+              parents,
+            };
+          }, targetClassName);
+
+          //------------------------------------------------
+          // LOG FRAME RESULT
+          //------------------------------------------------
+
+          lastFrameInfo.push({
+            frameIndex,
+            frameUrl,
+            found: result?.found || false,
+            hasSVG: result?.hasSVG || false,
+            matches: result?.totalMatchingParents || 0,
+          });
+
+          this.log(
+            "SVG FRAME RESULT:",
+            JSON.stringify({
+              frameIndex,
+              frameUrl,
+              found: result?.found,
+              hasSVG: result?.hasSVG,
+              matches: result?.totalMatchingParents || result?.matches || 0,
+            }),
+          );
+
+          //------------------------------------------------
+          // SUCCESS
+          //------------------------------------------------
+
+          if (result?.found === true && result?.hasSVG === true) {
+            this.log("==========================================");
+            this.log("SVG FOUND SUCCESSFULLY");
+            this.log("FRAME INDEX:", frameIndex);
+            this.log("FRAME URL:", frameUrl);
+            this.log("SVG COUNT:", result.svgCount);
+            this.log("==========================================");
+
+            return {
+              success: true,
+
+              frameIndex,
+
+              frameUrl,
+
+              attempt,
+
+              ...result,
+            };
+          }
+        } catch (error) {
+          this.log(`SVG FRAME ${frameIndex} FAILED:`, error.message);
+
+          lastFrameInfo.push({
+            frameIndex,
+            frameUrl: (() => {
+              try {
+                return frame.url();
+              } catch {
+                return "unknown";
+              }
+            })(),
+            error: error.message,
+          });
+        }
+      }
+
+      //------------------------------------------------
+      // WAIT BEFORE NEXT ATTEMPT
+      //------------------------------------------------
+
+      if (attempt < MAX_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY));
+      }
+    }
+
+    //------------------------------------------------
+    // FINAL FAILURE
+    //------------------------------------------------
+
+    this.log("==========================================");
+    this.log("SVG NOT FOUND");
+    this.log("TARGET CLASS:", targetClassName);
+    this.log("LAST FRAME INFO:", JSON.stringify(lastFrameInfo, null, 2));
+    this.log("==========================================");
+
+    throw new Error(
+      `Parent class ".${targetClassName}" was not found with SVG content after ${MAX_ATTEMPTS} attempts`,
+    );
+  }
 
   async readCanvas({
     interval = 250,
@@ -6379,5 +6513,46 @@ export default class Resolver {
         score: Number(x.score).toFixed(2),
       })),
     );
+  }
+
+  //==========================================================
+  // SVG METHODS
+  //==========================================================
+
+  async getSVGs(options = {}) {
+    if (this.mcp && typeof this.mcp.getAllSVGs === "function") {
+      return await this.mcp.getAllSVGs(options);
+    }
+    const page = await this.mcp.getPage();
+    if (!page) throw new Error("No active page.");
+    return await getAllSVGsFromFrames(page, options);
+  }
+
+  async getIframeSVGs(options = {}) {
+    if (this.mcp && typeof this.mcp.getIframeSVGs === "function") {
+      return await this.mcp.getIframeSVGs(options);
+    }
+    const page = await this.mcp.getPage();
+    if (!page) throw new Error("No active page.");
+    return await getSVGDataFromIframe(page, {
+      onlyIframes: options.onlyIframes !== false,
+      ...options,
+    });
+  }
+
+  async extractSVGs(options = {}) {
+    return await this.getIframeSVGs(options);
+  }
+
+  async getIframeContainerData(containerSelectorOrClass, options = {}) {
+    if (this.mcp && typeof this.mcp.getIframeContainerData === "function") {
+      return await this.mcp.getIframeContainerData(
+        containerSelectorOrClass,
+        options,
+      );
+    }
+    const page = await this.mcp.getPage();
+    if (!page) throw new Error("No active page.");
+    return await getIframeContainerData(page, containerSelectorOrClass, options);
   }
 }
