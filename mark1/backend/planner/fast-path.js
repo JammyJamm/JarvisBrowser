@@ -42,9 +42,18 @@ function parseSingle(raw) {
     return { tool: "reload", args: {} };
   }
 
+  // --------------------------------------------------------
+  // IFRAME / CONTAINER DATA EXTRACTION (e.g. "get data from .tzQn0o")
+  // --------------------------------------------------------
   if (
     (m = command.match(
-      /^(?:get|extract|fetch|read)\s+(?:all\s+)?data\s+(?:from|in|inside|within)\s+(?:the\s+)?(?:parent\s+)?(?:class|container|selector|element)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?\s+(?:from|in|inside|within)\s+(?:the\s+)?(?:iframe|frame)(?:\s+(.+))?$/i,
+      /^(?:get|extract|fetch|read|scrape|inspect)\s+(?:all\s+)?data\s+(?:from|in|inside|within|of)\s+(?:the\s+)?(?:parent\s+)?(?:class|container|selector|element)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?(?:\s+(?:from|in|inside|within)\s+(?:the\s+)?(?:iframe|frame)(?:\s+(.+))?)?$/i,
+    )) ||
+    (m = command.match(
+      /^(?:get|extract|fetch|read|scrape|inspect)\s+(?:all\s+)?data\s+(?:from|in|inside|within)\s+(?:the\s+)?(?:iframe|frame)\s+(?:with\s+)?(?:parent\s+)?(?:class|container|selector|element)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?(?:\s+(.+))?$/i,
+    )) ||
+    (m = command.match(
+      /^(?:get|extract|fetch|read|scrape|inspect)\s+(?:parent\s+)?(?:class|container|selector)\s+['"]?([a-zA-Z0-9_.-]+)['"]?\s+data(?:\s+(?:from|in|inside|within)\s+(?:the\s+)?(?:iframe|frame)(?:\s+(.+))?)?$/i,
     ))
   ) {
     const targetClass = clean(m[1]);
@@ -59,9 +68,15 @@ function parseSingle(raw) {
     };
   }
 
+  // --------------------------------------------------------
+  // IFRAME / CONTAINER SVG EXTRACTION & SVG TO JSON (e.g. "get svg from .tzQn0o")
+  // --------------------------------------------------------
   if (
     (m = command.match(
-      /^(?:get|extract|fetch|read)\s+(?:all\s+)?svg(?:s|\s+data)?\s+(?:from|in|inside|within)\s+(?:the\s+)?(?:parent\s+)?(?:class|container|selector|element)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?\s+(?:from|in|inside|within)\s+(?:the\s+)?(?:iframe|frame)(?:\s+(.+))?$/i,
+      /^(?:get|extract|fetch|read|convert)\s+(?:all\s+)?svg(?:s|\s+data)?(?:\s+to\s+json)?\s+(?:from|in|inside|within|of)\s+(?:the\s+)?(?:parent\s+)?(?:class|container|selector|element)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?(?:\s+(?:from|in|inside|within)\s+(?:the\s+)?(?:iframe|frame)(?:\s+(.+))?)?$/i,
+    )) ||
+    (m = command.match(
+      /^(?:get|extract|fetch|read|convert)\s+(?:all\s+)?svg(?:s|\s+data)?(?:\s+to\s+json)?\s+(?:from|in|inside|within)\s+(?:the\s+)?(?:iframe|frame)\s+(?:with\s+)?(?:parent\s+)?(?:class|container|selector|element)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?(?:\s+(.+))?$/i,
     ))
   ) {
     const targetClass = clean(m[1]);
@@ -73,6 +88,45 @@ function parseSingle(raw) {
         onlyIframes: true,
         ...(frameUrl ? { frameUrl } : {}),
       },
+    };
+  }
+
+  // --------------------------------------------------------
+  // WATCH / INTERVAL COMMANDS (e.g. "watch data from .tzQn0o")
+  // --------------------------------------------------------
+  if (
+    (m = command.match(
+      /^(?:watch|stream|track|monitor|start\s+interval(?:\s+for)?|interval)\s+(?:data|svg(?:s)?|container)?\s*(?:from|in|inside|within|of)?\s*(?:the\s+)?(?:parent\s+)?(?:class|container|selector|element)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?(?:\s+(?:every|interval)\s*(\d+(?:ms|s)?))?$/i,
+    ))
+  ) {
+    const targetClass = clean(m[1]);
+    const intervalRaw = m[2] ? clean(m[2]) : undefined;
+    let intervalMs = 1500;
+    if (intervalRaw) {
+      if (intervalRaw.endsWith("s") && !intervalRaw.endsWith("ms")) {
+        intervalMs = parseFloat(intervalRaw) * 1000;
+      } else {
+        intervalMs = parseInt(intervalRaw, 10);
+      }
+    }
+    return {
+      tool: "watch_iframe_data",
+      args: {
+        target: targetClass,
+        interval: intervalMs,
+        onlyIframes: true,
+      },
+    };
+  }
+
+  if (
+    /^(?:stop\s+interval|stop\s+watch(?:ing)?|stop\s+stream(?:ing)?|stop\s+monitor(?:ing)?|cancel\s+interval)$/i.test(
+      text,
+    )
+  ) {
+    return {
+      tool: "stop_interval",
+      args: {},
     };
   }
 
@@ -168,7 +222,7 @@ export function isBrowserActionText(command) {
 
   return lines.every((line) => {
     const text = line.toLowerCase();
-    return /^(click|press|tap|type|enter|fill|write|go\s+to|goto|navigate\s+to|open|back|go\s+back|forward|go\s+forward|refresh|reload|get|extract|fetch|read)\b/i.test(
+    return /^(click|press|tap|type|enter|fill|write|go\s+to|goto|navigate\s+to|open|back|go\s+back|forward|go\s+forward|refresh|reload|get|extract|fetch|read|watch|stream|track|monitor|convert|start\s+interval|stop\s+interval)\b/i.test(
       text,
     );
   });

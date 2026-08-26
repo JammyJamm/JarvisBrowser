@@ -31,6 +31,8 @@ export const ACTION_TYPES = {
   GET_SVG: "get_svg",
   GET_IFRAME_SVG: "get_iframe_svg",
   GET_IFRAME_DATA: "get_iframe_data",
+  WATCH_IFRAME_DATA: "watch_iframe_data",
+  STOP_INTERVAL: "stop_interval",
 };
 
 /**
@@ -188,20 +190,26 @@ export const ACTION_MAP = [
       /get iframe svg/i,
       /extract iframe svg/i,
       /svg data from iframe/i,
+      /get (?:all )?svg(?:s|\s+data)?(?:\s+to\s+json)?\s+from\s+(?:parent )?(?:class|container|selector)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?/i,
+      /convert svg(?:\s+to\s+json)?\s+from\s+(?:parent )?(?:class|container|selector)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?/i,
     ],
-    build: () => ({
+    build: (input, match) => ({
       type: ACTION_TYPES.GET_IFRAME_SVG,
       tool: "get_iframe_svg",
-      args: { onlyIframes: true },
+      args: {
+        parentClass: match && match[1] ? match[1] : undefined,
+        onlyIframes: true,
+      },
     }),
   },
 
   {
     name: "get_iframe_data",
     patterns: [
-      /get data from (?:parent )?(?:class|container)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?\s+(?:from|in|inside|within)\s+(?:the\s+)?iframe/i,
-      /extract data from (?:parent )?(?:class|container)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?\s+(?:from|in|inside|within)\s+(?:the\s+)?iframe/i,
-      /get (?:parent )?class\s+([a-zA-Z0-9_.-]+)\s+data\s+from\s+iframe/i,
+      /get (?:all )?data from (?:parent )?(?:class|container|selector)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?/i,
+      /extract data from (?:parent )?(?:class|container|selector)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?/i,
+      /fetch data from (?:parent )?(?:class|container|selector)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?/i,
+      /get (?:parent )?class\s+([a-zA-Z0-9_.-]+)\s+data/i,
     ],
     build: (input, match) => ({
       type: ACTION_TYPES.GET_IFRAME_DATA,
@@ -210,6 +218,41 @@ export const ACTION_MAP = [
         target: match ? match[1] : input,
         onlyIframes: true,
       },
+    }),
+  },
+
+  {
+    name: "watch_iframe_data",
+    patterns: [
+      /watch (?:data|svg(?:s)?|container)?\s*(?:from|in)?\s*(?:parent )?(?:class|container|selector)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?/i,
+      /stream (?:data|svg(?:s)?|container)?\s*(?:from|in)?\s*(?:parent )?(?:class|container|selector)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?/i,
+      /start interval\s*(?:for\s*)?['"]?([a-zA-Z0-9_.-]+)?['"]?/i,
+      /monitor (?:data|svg(?:s)?|container)?\s*(?:from|in)?\s*(?:parent )?(?:class|container|selector)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?/i,
+    ],
+    build: (input, match) => ({
+      type: ACTION_TYPES.WATCH_IFRAME_DATA,
+      tool: "watch_iframe_data",
+      args: {
+        target: match && match[1] ? match[1] : ".tzQn0o",
+        interval: 1500,
+        onlyIframes: true,
+      },
+    }),
+  },
+
+  {
+    name: "stop_interval",
+    patterns: [
+      /stop interval/i,
+      /stop watch(?:ing)?/i,
+      /stop stream(?:ing)?/i,
+      /stop monitor(?:ing)?/i,
+      /cancel interval/i,
+    ],
+    build: () => ({
+      type: ACTION_TYPES.STOP_INTERVAL,
+      tool: "stop_interval",
+      args: {},
     }),
   },
 

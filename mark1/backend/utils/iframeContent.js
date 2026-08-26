@@ -1029,6 +1029,53 @@ export async function getFrameSVGs(frame, options = {}) {
           }
         }
 
+        // Groups & Transforms (crucial for rotating wheels / dynamic graphics)
+        const groups = [];
+        const dynamicTransforms = [];
+        const groupNodes = el.querySelectorAll("g");
+        for (let g = 0; g < groupNodes.length; g++) {
+          const gEl = groupNodes[g];
+          const tr = gEl.getAttribute("transform") || gEl.style?.transform || "";
+          if (tr) dynamicTransforms.push(tr);
+          if (tr || gEl.id || gEl.getAttribute("class") || gEl.getAttribute("aria-label")) {
+            groups.push({
+              index: g,
+              id: gEl.id || undefined,
+              className: gEl.getAttribute("class") || undefined,
+              transform: tr || undefined,
+              ariaLabel: gEl.getAttribute("aria-label") || undefined,
+              childElementCount: gEl.childElementCount,
+            });
+          }
+        }
+
+        // SVG-level transform
+        const rootTransform = el.getAttribute("transform") || el.style?.transform || "";
+        if (rootTransform) dynamicTransforms.push(rootTransform);
+
+        // Extract dynamic numbers (scores, multipliers, roulette numbers, timer values)
+        const allTextJoined = [directText, ...texts.map((t) => t.text)].join(" ");
+        const extractedNumbers = (allTextJoined.match(/-?\d+(?:\.\d+)?(?:x|%|\$|€|£)?/g) || [])
+          .map((n) => n.trim())
+          .filter((v, idx, arr) => arr.indexOf(v) === idx);
+
+        // Parse rotation angle from transforms if available
+        let rotationAngle = undefined;
+        for (const tr of dynamicTransforms) {
+          const rotMatch = tr.match(/rotate\(\s*(-?\d+(?:\.\d+)?)/i);
+          if (rotMatch) {
+            rotationAngle = parseFloat(rotMatch[1]);
+            break;
+          }
+          const matrixMatch = tr.match(/matrix\(\s*(-?\d+(?:\.\d+)?)[,\s]+(-?\d+(?:\.\d+)?)/i);
+          if (matrixMatch) {
+            const a = parseFloat(matrixMatch[1]);
+            const b = parseFloat(matrixMatch[2]);
+            rotationAngle = Math.round(Math.atan2(b, a) * (180 / Math.PI) * 100) / 100;
+            break;
+          }
+        }
+
         // Filter check
         if (filter) {
           const matchTarget = [
@@ -1057,8 +1104,10 @@ export async function getFrameSVGs(frame, options = {}) {
           viewBox: el.getAttribute("viewBox") || undefined,
           width: el.getAttribute("width") || Math.round(rect.width) || undefined,
           height: el.getAttribute("height") || Math.round(rect.height) || undefined,
+          transform: rootTransform || undefined,
           isVisible,
           childElementCount: el.childElementCount,
+          timestamp: new Date().toISOString(),
         };
 
         if (includeBBox) {
@@ -1092,6 +1141,19 @@ export async function getFrameSVGs(frame, options = {}) {
           item.shapeCount = shapes.length;
           item.shapes = shapes;
         }
+
+        if (groups.length) {
+          item.groupCount = groups.length;
+          item.groups = groups;
+        }
+
+        // Dynamic SVG values summary
+        item.dynamicValues = {
+          numbers: extractedNumbers,
+          rotationAngle,
+          transforms: dynamicTransforms.length ? dynamicTransforms : undefined,
+          summary: directText || (texts.length ? texts.map((t) => t.text).join(", ") : undefined),
+        };
 
         if (includeHTML) {
           item.outerHTML = el.outerHTML;
@@ -1369,21 +1431,21 @@ export async function getFrameContainerData(
 
       function findContainers(query) {
         const found = [];
+        const qStr = String(query).trim();
+        if (!qStr) return [];
+
         // 1. Direct selector
         try {
-          const direct = document.querySelectorAll(query);
+          const direct = document.querySelectorAll(qStr);
           if (direct.length) found.push(...direct);
         } catch {}
 
         // 2. Class name / ID variants
-        if (
-          !query.startsWith(".") &&
-          !query.startsWith("#") &&
-          !query.startsWith("[")
-        ) {
+        const cleanName = qStr.replace(/^[.#]/, "");
+        if (cleanName) {
           try {
             const byClass = document.querySelectorAll(
-              `.${query}, [class~="${query}"], [class*="${query}"]`,
+              `.${cleanName}, [class~="${cleanName}"], [class*="${cleanName}"]`,
             );
             for (const el of byClass) {
               if (!found.includes(el)) found.push(el);
@@ -1391,7 +1453,7 @@ export async function getFrameContainerData(
           } catch {}
           try {
             const byId = document.querySelectorAll(
-              `#${query}, [id*="${query}"]`,
+              `#${cleanName}, [id*="${cleanName}"]`,
             );
             for (const el of byId) {
               if (!found.includes(el)) found.push(el);
@@ -1400,11 +1462,13 @@ export async function getFrameContainerData(
         }
 
         // 3. Substring class match fallback
-        if (!found.length) {
+        if (!found.length && cleanName) {
           const all = document.querySelectorAll("*");
-          const qLow = query.toLowerCase().replace(/^\./, "");
+          const qLow = cleanName.toLowerCase();
           for (const el of all) {
-            const cls = String(el.className || "").toLowerCase();
+            const cls = String(
+              el.className?.baseVal || el.className || "",
+            ).toLowerCase();
             if (cls.includes(qLow) && !found.includes(el)) {
               found.push(el);
             }
@@ -1447,13 +1511,15 @@ export async function getFrameContainerData(
           .map((n) => (n.textContent || "").trim())
           .filter(Boolean);
 
-        // SVGs inside container
+        // SVGs inside container - Converted directly to JSON
         const svgs = [];
         if (opts.includeSVGs !== false) {
           const svgEls = el.querySelectorAll("svg");
           for (let s = 0; s < svgEls.length; s++) {
             const sEl = svgEls[s];
             const sRect = sEl.getBoundingClientRect();
+
+            // Paths
             const paths = Array.from(sEl.querySelectorAll("path")).map(
               (p, pIdx) => ({
                 index: pIdx,
@@ -1463,13 +1529,15 @@ export async function getFrameContainerData(
                 stroke:
                   p.getAttribute("stroke") || p.style?.stroke || undefined,
                 strokeWidth:
-                  p.getAttribute("stroke-width") || undefined,
+                  p.getAttribute("stroke-width") || p.style?.strokeWidth || undefined,
                 id: p.id || undefined,
                 className: p.getAttribute("class") || undefined,
+                transform: p.getAttribute("transform") || undefined,
                 ariaLabel: p.getAttribute("aria-label") || undefined,
               }),
             );
 
+            // Shapes
             const shapes = Array.from(
               sEl.querySelectorAll(
                 "circle, rect, ellipse, polygon, polyline, line",
@@ -1480,6 +1548,7 @@ export async function getFrameContainerData(
               className: sh.getAttribute("class") || undefined,
               fill: sh.getAttribute("fill") || undefined,
               stroke: sh.getAttribute("stroke") || undefined,
+              transform: sh.getAttribute("transform") || undefined,
               cx: sh.getAttribute("cx") || undefined,
               cy: sh.getAttribute("cy") || undefined,
               r: sh.getAttribute("r") || undefined,
@@ -1490,8 +1559,9 @@ export async function getFrameContainerData(
               points: sh.getAttribute("points") || undefined,
             }));
 
+            // Texts & Values
             const svgTexts = Array.from(
-              sEl.querySelectorAll("text, tspan, title"),
+              sEl.querySelectorAll("text, tspan, title, desc"),
             )
               .map((t) => ({
                 tagName: t.tagName.toLowerCase(),
@@ -1499,9 +1569,57 @@ export async function getFrameContainerData(
                 x: t.getAttribute("x") || undefined,
                 y: t.getAttribute("y") || undefined,
                 fill: t.getAttribute("fill") || undefined,
+                fontSize: t.getAttribute("font-size") || undefined,
+                transform: t.getAttribute("transform") || undefined,
               }))
               .filter((t) => t.text);
 
+            // Groups & Transforms
+            const groups = [];
+            const dynamicTransforms = [];
+            const groupNodes = sEl.querySelectorAll("g");
+            for (let g = 0; g < groupNodes.length; g++) {
+              const gEl = groupNodes[g];
+              const tr = gEl.getAttribute("transform") || gEl.style?.transform || "";
+              if (tr) dynamicTransforms.push(tr);
+              if (tr || gEl.id || gEl.getAttribute("class") || gEl.getAttribute("aria-label")) {
+                groups.push({
+                  index: g,
+                  id: gEl.id || undefined,
+                  className: gEl.getAttribute("class") || undefined,
+                  transform: tr || undefined,
+                  ariaLabel: gEl.getAttribute("aria-label") || undefined,
+                  childElementCount: gEl.childElementCount,
+                });
+              }
+            }
+
+            const rootTransform = sEl.getAttribute("transform") || sEl.style?.transform || "";
+            if (rootTransform) dynamicTransforms.push(rootTransform);
+
+            const directSvgText = (sEl.textContent || "").replace(/\s+/g, " ").trim();
+            const allTextJoined = [directSvgText, ...svgTexts.map((t) => t.text)].join(" ");
+            const extractedNumbers = (allTextJoined.match(/-?\d+(?:\.\d+)?(?:x|%|\$|€|£)?/g) || [])
+              .map((n) => n.trim())
+              .filter((v, idx, arr) => arr.indexOf(v) === idx);
+
+            let rotationAngle = undefined;
+            for (const tr of dynamicTransforms) {
+              const rotMatch = tr.match(/rotate\(\s*(-?\d+(?:\.\d+)?)/i);
+              if (rotMatch) {
+                rotationAngle = parseFloat(rotMatch[1]);
+                break;
+              }
+              const matrixMatch = tr.match(/matrix\(\s*(-?\d+(?:\.\d+)?)[,\s]+(-?\d+(?:\.\d+)?)/i);
+              if (matrixMatch) {
+                const a = parseFloat(matrixMatch[1]);
+                const b = parseFloat(matrixMatch[2]);
+                rotationAngle = Math.round(Math.atan2(b, a) * (180 / Math.PI) * 100) / 100;
+                break;
+              }
+            }
+
+            // SVG converted to JSON object
             svgs.push({
               index: s,
               id: sEl.id || undefined,
@@ -1515,6 +1633,7 @@ export async function getFrameContainerData(
                 sEl.getAttribute("height") ||
                 Math.round(sRect.height) ||
                 undefined,
+              transform: rootTransform || undefined,
               boundingBox: {
                 x: Math.round(sRect.x),
                 y: Math.round(sRect.y),
@@ -1523,12 +1642,22 @@ export async function getFrameContainerData(
               },
               text:
                 svgTexts.map((t) => t.text).join(" ") ||
-                (sEl.textContent || "").trim() ||
+                directSvgText ||
                 undefined,
+              texts: svgTexts.length ? svgTexts : undefined,
               pathCount: paths.length,
               paths,
               shapeCount: shapes.length,
               shapes,
+              groupCount: groups.length ? groups.length : undefined,
+              groups: groups.length ? groups : undefined,
+              dynamicValues: {
+                numbers: extractedNumbers,
+                rotationAngle,
+                transforms: dynamicTransforms.length ? dynamicTransforms : undefined,
+                summary: directSvgText || (svgTexts.length ? svgTexts.map((t) => t.text).join(", ") : undefined),
+              },
+              timestamp: new Date().toISOString(),
               outerHTML: sEl.outerHTML,
             });
           }
@@ -1586,6 +1715,7 @@ export async function getFrameContainerData(
           links: links.length ? links : undefined,
           inputs: inputs.length ? inputs : undefined,
           childElementCount: el.childElementCount,
+          timestamp: new Date().toISOString(),
         };
 
         if (opts.includeBBox !== false) {
@@ -1613,6 +1743,42 @@ export async function getFrameContainerData(
     warn("getFrameContainerData error:", err.message);
     return [];
   }
+}
+
+//==========================================================
+// CONVERT SVG TO JSON HELPER
+//==========================================================
+
+export function convertSVGToJSON(svgDataOrItem, options = {}) {
+  if (!svgDataOrItem) return null;
+
+  if (Array.isArray(svgDataOrItem)) {
+    return svgDataOrItem.map((item) => convertSVGToJSON(item, options));
+  }
+
+  const base = {
+    id: svgDataOrItem.id || undefined,
+    className: svgDataOrItem.className || undefined,
+    viewBox: svgDataOrItem.viewBox || undefined,
+    width: svgDataOrItem.width || undefined,
+    height: svgDataOrItem.height || undefined,
+    transform: svgDataOrItem.transform || undefined,
+    text: svgDataOrItem.text || undefined,
+    boundingBox: svgDataOrItem.boundingBox || undefined,
+    pathCount: svgDataOrItem.pathCount || (svgDataOrItem.paths ? svgDataOrItem.paths.length : 0),
+    paths: svgDataOrItem.paths || [],
+    shapeCount: svgDataOrItem.shapeCount || (svgDataOrItem.shapes ? svgDataOrItem.shapes.length : 0),
+    shapes: svgDataOrItem.shapes || [],
+    groups: svgDataOrItem.groups || [],
+    dynamicValues: svgDataOrItem.dynamicValues || {},
+    timestamp: svgDataOrItem.timestamp || new Date().toISOString(),
+  };
+
+  if (options.includeHTML !== false && svgDataOrItem.outerHTML) {
+    base.outerHTML = svgDataOrItem.outerHTML;
+  }
+
+  return base;
 }
 
 //==========================================================
@@ -1701,11 +1867,58 @@ export async function getIframeContainerData(
   return {
     success: true,
     target,
+    timestamp: new Date().toISOString(),
     totalFrames: allFrames.length,
     matchedFrames: framesData.length,
     totalContainers,
     totalSVGs,
     frames: framesData,
+  };
+}
+
+//==========================================================
+// WATCH CONTAINER DATA ON INTERVAL
+//==========================================================
+
+export function watchIframeContainerData(
+  page,
+  containerSelectorOrClass,
+  onUpdate,
+  options = {},
+) {
+  let intervalMs = options.interval || 1500;
+  let running = true;
+  let timer = null;
+  let lastData = null;
+
+  async function poll() {
+    if (!running) return;
+    try {
+      const data = await getIframeContainerData(page, containerSelectorOrClass, options);
+      lastData = data;
+      if (typeof onUpdate === "function") {
+        onUpdate(data);
+      }
+    } catch (err) {
+      warn("watch poll failed:", err.message);
+    }
+    if (running) {
+      timer = setTimeout(poll, intervalMs);
+    }
+  }
+
+  poll();
+
+  return {
+    stop: () => {
+      running = false;
+      if (timer) clearTimeout(timer);
+    },
+    updateInterval: (newMs) => {
+      intervalMs = Math.max(200, Number(newMs) || 1500);
+    },
+    getLatest: () => lastData,
+    isRunning: () => running,
   };
 }
 
@@ -1733,5 +1946,7 @@ export default {
   clickInsideFrame,
   clickInsideEvolutionFrame,
   clickInsideAnyFrame,
+  convertSVGToJSON,
+  watchIframeContainerData,
   debugFrames,
 };

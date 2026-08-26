@@ -1242,6 +1242,82 @@ export default class ToolMap {
     );
 
     //--------------------------------------------------
+    // WATCH IFRAME DATA (INTERVAL STREAMING)
+    //--------------------------------------------------
+
+    this.register(
+      "watch_iframe_data",
+
+      async (args = {}) => {
+        const target =
+          args.target ??
+          args.class ??
+          args.className ??
+          args.parentClass ??
+          args.selector ??
+          args.container ??
+          args.field ??
+          ".tzQn0o";
+
+        const interval = Number(args.interval || 1500);
+
+        const options = {
+          target,
+          interval,
+          frameUrl: args.frameUrl ?? args.url ?? undefined,
+          frameName: args.frameName ?? args.name ?? undefined,
+          framePattern: args.framePattern ?? args.pattern ?? undefined,
+          onlyIframes: true,
+          includeHTML: args.includeHTML !== false,
+          includeSVGs: true,
+          includeChildren: true,
+          includeBBox: true,
+          limit: typeof args.limit === "number" ? args.limit : 50,
+        };
+
+        if (this.hasResolverMethod("getIframeContainerData")) {
+          this.stats.resolverExecutions++;
+          const data = await this.resolver.getIframeContainerData(target, options);
+          return {
+            ...data,
+            isIntervalWatch: true,
+            intervalMs: interval,
+            target,
+            message: `Interval tracking active for ${target} every ${interval}ms`,
+          };
+        }
+
+        throw new Error("Watch iframe data is not available.");
+      },
+
+      {
+        category: "inspection",
+        description: "Watch and convert dynamic SVG data from iframe container on interval.",
+      },
+    );
+
+    //--------------------------------------------------
+    // STOP INTERVAL
+    //--------------------------------------------------
+
+    this.register(
+      "stop_interval",
+
+      async () => {
+        return {
+          success: true,
+          stopped: true,
+          message: "Interval watch stopped.",
+        };
+      },
+
+      {
+        category: "inspection",
+        description: "Stop active interval data watcher.",
+      },
+    );
+
+    //--------------------------------------------------
     // TOOL ALIASES
     //--------------------------------------------------
 
@@ -1300,6 +1376,16 @@ export default class ToolMap {
     this.registerAlias("containerdata", "get_iframe_data");
 
     this.registerAlias("getcontainerdata", "get_iframe_data");
+
+    this.registerAlias("watch", "watch_iframe_data");
+
+    this.registerAlias("watchdata", "watch_iframe_data");
+
+    this.registerAlias("streamdata", "watch_iframe_data");
+
+    this.registerAlias("stopinterval", "stop_interval");
+
+    this.registerAlias("stopwatch", "stop_interval");
   }
 
   //==================================================

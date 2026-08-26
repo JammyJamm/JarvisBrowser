@@ -289,6 +289,116 @@ ipcMain.handle("browser-container-data", async (_, selectorOrClass) => {
         const query = ${JSON.stringify(String(selectorOrClass || "").trim())};
         if (!query) return [];
 
+        function extractSVGNode(sEl, sIdx) {
+          const sRect = sEl.getBoundingClientRect();
+          const paths = Array.from(sEl.querySelectorAll("path")).map((p, pIdx) => ({
+            index: pIdx,
+            d: p.getAttribute("d") || "",
+            fill: p.getAttribute("fill") || p.style?.fill || undefined,
+            stroke: p.getAttribute("stroke") || p.style?.stroke || undefined,
+            strokeWidth: p.getAttribute("stroke-width") || p.style?.strokeWidth || undefined,
+            id: p.id || undefined,
+            className: p.getAttribute("class") || undefined,
+            transform: p.getAttribute("transform") || undefined,
+            ariaLabel: p.getAttribute("aria-label") || undefined,
+          }));
+
+          const shapes = Array.from(sEl.querySelectorAll("circle, rect, ellipse, polygon, polyline, line")).map((sh) => ({
+            tagName: sh.tagName.toLowerCase(),
+            id: sh.id || undefined,
+            className: sh.getAttribute("class") || undefined,
+            fill: sh.getAttribute("fill") || undefined,
+            stroke: sh.getAttribute("stroke") || undefined,
+            transform: sh.getAttribute("transform") || undefined,
+            cx: sh.getAttribute("cx") || undefined,
+            cy: sh.getAttribute("cy") || undefined,
+            r: sh.getAttribute("r") || undefined,
+            x: sh.getAttribute("x") || undefined,
+            y: sh.getAttribute("y") || undefined,
+            width: sh.getAttribute("width") || undefined,
+            height: sh.getAttribute("height") || undefined,
+            points: sh.getAttribute("points") || undefined,
+          }));
+
+          const texts = Array.from(sEl.querySelectorAll("text, tspan, title, desc")).map((t) => ({
+            tagName: t.tagName.toLowerCase(),
+            text: (t.textContent || "").trim(),
+            x: t.getAttribute("x") || undefined,
+            y: t.getAttribute("y") || undefined,
+            fill: t.getAttribute("fill") || undefined,
+            fontSize: t.getAttribute("font-size") || undefined,
+            transform: t.getAttribute("transform") || undefined,
+          })).filter((t) => t.text);
+
+          const groups = [];
+          const dynamicTransforms = [];
+          const groupNodes = sEl.querySelectorAll("g");
+          for (let g = 0; g < groupNodes.length; g++) {
+            const gEl = groupNodes[g];
+            const tr = gEl.getAttribute("transform") || gEl.style?.transform || "";
+            if (tr) dynamicTransforms.push(tr);
+            if (tr || gEl.id || gEl.getAttribute("class")) {
+              groups.push({
+                index: g,
+                id: gEl.id || undefined,
+                className: gEl.getAttribute("class") || undefined,
+                transform: tr || undefined,
+                ariaLabel: gEl.getAttribute("aria-label") || undefined,
+              });
+            }
+          }
+
+          const rootTransform = sEl.getAttribute("transform") || sEl.style?.transform || "";
+          if (rootTransform) dynamicTransforms.push(rootTransform);
+
+          const directText = (sEl.textContent || "").replace(/\\s+/g, " ").trim();
+          const allTextJoined = [directText, ...texts.map((t) => t.text)].join(" ");
+          const numbers = (allTextJoined.match(/-?\\d+(?:\\.\\d+)?(?:x|%|\\$|€|£)?/g) || [])
+            .map((n) => n.trim())
+            .filter((v, idx, arr) => arr.indexOf(v) === idx);
+
+          let rotationAngle = undefined;
+          for (const tr of dynamicTransforms) {
+            const rotMatch = tr.match(/rotate\\(\\s*(-?\\d+(?:\\.\\d+)?)/i);
+            if (rotMatch) {
+              rotationAngle = parseFloat(rotMatch[1]);
+              break;
+            }
+          }
+
+          return {
+            index: sIdx,
+            id: sEl.id || undefined,
+            className: sEl.getAttribute("class") || undefined,
+            viewBox: sEl.getAttribute("viewBox") || undefined,
+            width: sEl.getAttribute("width") || Math.round(sRect.width) || undefined,
+            height: sEl.getAttribute("height") || Math.round(sRect.height) || undefined,
+            transform: rootTransform || undefined,
+            boundingBox: {
+              x: Math.round(sRect.x),
+              y: Math.round(sRect.y),
+              width: Math.round(sRect.width),
+              height: Math.round(sRect.height),
+            },
+            text: texts.map((t) => t.text).join(" ") || directText || undefined,
+            texts: texts.length ? texts : undefined,
+            pathCount: paths.length,
+            paths,
+            shapeCount: shapes.length,
+            shapes,
+            groupCount: groups.length ? groups.length : undefined,
+            groups: groups.length ? groups : undefined,
+            dynamicValues: {
+              numbers,
+              rotationAngle,
+              transforms: dynamicTransforms.length ? dynamicTransforms : undefined,
+              summary: directText || (texts.length ? texts.map((t) => t.text).join(", ") : undefined),
+            },
+            timestamp: new Date().toISOString(),
+            outerHTML: sEl.outerHTML,
+          };
+        }
+
         function extractContainerFromDoc(doc, frameInfo = {}) {
           if (!doc) return [];
           const found = [];
@@ -297,10 +407,17 @@ ipcMain.handle("browser-container-data", async (_, selectorOrClass) => {
             if (direct.length) found.push(...direct);
           } catch {}
 
-          if (!query.startsWith(".") && !query.startsWith("#") && !query.startsWith("[")) {
+          const cleanQuery = query.replace(/^[.#]/, "");
+          if (cleanQuery) {
             try {
-              const byClass = doc.querySelectorAll(\`.\${query}, [class~="\${query}"], [class*="\${query}"]\`);
+              const byClass = doc.querySelectorAll(\`.\${cleanQuery}, [class~="\${cleanQuery}"], [class*="\${cleanQuery}"]\`);
               for (const el of byClass) {
+                if (!found.includes(el)) found.push(el);
+              }
+            } catch {}
+            try {
+              const byId = doc.querySelectorAll(\`#\${cleanQuery}, [id*="\${cleanQuery}"]\`);
+              for (const el of byId) {
                 if (!found.includes(el)) found.push(el);
               }
             } catch {}
@@ -308,12 +425,19 @@ ipcMain.handle("browser-container-data", async (_, selectorOrClass) => {
 
           return found.map((el, i) => {
             const rect = el.getBoundingClientRect();
-            const svgs = Array.from(el.querySelectorAll("svg")).map((sEl, sIdx) => ({
-              index: sIdx,
-              id: sEl.id || undefined,
-              className: sEl.getAttribute("class") || undefined,
-              viewBox: sEl.getAttribute("viewBox") || undefined,
-              outerHTML: sEl.outerHTML,
+            const svgs = Array.from(el.querySelectorAll("svg")).map(extractSVGNode);
+
+            const buttons = Array.from(el.querySelectorAll("button, [role='button']")).map((b) => ({
+              text: (b.innerText || b.textContent || "").trim(),
+              id: b.id || undefined,
+              className: b.getAttribute("class") || undefined,
+            }));
+
+            const inputs = Array.from(el.querySelectorAll("input, select, textarea")).map((inp) => ({
+              tagName: inp.tagName.toLowerCase(),
+              type: inp.type || undefined,
+              name: inp.name || undefined,
+              value: inp.value || undefined,
             }));
 
             return {
@@ -324,6 +448,15 @@ ipcMain.handle("browser-container-data", async (_, selectorOrClass) => {
               text: (el.innerText || el.textContent || "").trim(),
               svgCount: svgs.length,
               svgs,
+              buttons: buttons.length ? buttons : undefined,
+              inputs: inputs.length ? inputs : undefined,
+              boundingBox: {
+                x: Math.round(rect.x),
+                y: Math.round(rect.y),
+                width: Math.round(rect.width),
+                height: Math.round(rect.height),
+              },
+              timestamp: new Date().toISOString(),
               innerHTML: el.innerHTML,
               outerHTML: el.outerHTML,
               ...frameInfo

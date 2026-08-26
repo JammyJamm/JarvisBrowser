@@ -238,7 +238,13 @@ export default class CommandRouter {
 
       /^(get|extract|fetch|read|scrape|inspect)\b/,
 
+      /^(watch|stream|track|monitor|convert|start\s+interval|stop\s+interval|cancel\s+interval)\b/,
+
       /\bsvg\b/i,
+
+      /\btzQn0o\b/i,
+
+      /\bdGBOyn\b/i,
     ];
 
     const matchedAction = actionPatterns.find((pattern) => pattern.test(text));

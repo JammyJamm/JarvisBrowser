@@ -2174,17 +2174,7 @@ app.post("/iframe/data", async (req, res) => {
       body.container ||
       body.target ||
       body.parentClass ||
-      "";
-
-    if (!target) {
-      return res.status(400).json(
-        failure(
-          new Error(
-            "Target class or selector is required in request body.",
-          ),
-        ),
-      );
-    }
+      ".tzQn0o";
 
     const options = {
       target,
@@ -2206,6 +2196,72 @@ app.post("/iframe/data", async (req, res) => {
   } catch (err) {
     return res.status(500).json(failure(err));
   }
+});
+
+//==========================================================
+// LIVE IFRAME STREAM (Server-Sent Events)
+//==========================================================
+
+app.get("/iframe/stream", async (req, res) => {
+  const target = String(
+    req.query.target ||
+      req.query.class ||
+      req.query.selector ||
+      req.query.container ||
+      ".tzQn0o",
+  ).trim();
+
+  const intervalMs = Math.max(
+    200,
+    parseInt(req.query.interval || req.query.every || "1500", 10),
+  );
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+
+  let active = true;
+  let tick = 0;
+
+  async function sendTick() {
+    if (!active) return;
+    tick++;
+    try {
+      const page = await ensureBrowserReady();
+      const result = await getIframeContainerData(page, target, {
+        onlyIframes: true,
+        includeSVGs: true,
+        includeChildren: true,
+      });
+
+      const payload = {
+        tick,
+        timestamp: new Date().toISOString(),
+        intervalMs,
+        target,
+        ...result,
+      };
+
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    } catch (err) {
+      res.write(
+        `data: ${JSON.stringify({ tick, success: false, target, error: err.message, timestamp: new Date().toISOString() })}\n\n`,
+      );
+    }
+  }
+
+  // Send initial data immediately
+  await sendTick();
+
+  const timer = setInterval(sendTick, intervalMs);
+
+  req.on("close", () => {
+    active = false;
+    clearInterval(timer);
+    res.end();
+  });
 });
 
 app.get("/iframes", async (req, res) => {
