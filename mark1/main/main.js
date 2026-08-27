@@ -511,23 +511,104 @@ ipcMain.handle("browser-dismiss-popup", async () => {
     const script = `
       (() => {
         let count = 0;
-        const keywords = ["ok", "start", "continue", "resume", "play", "yes", "confirm", "i'm here", "i am here", "keep playing"];
-        
+
+        function isInsideModal(el) {
+          let current = el;
+          while (current && current !== document.body && current !== document.documentElement) {
+            const role = current.getAttribute?.("role") || "";
+            const cls = (current.className || "").toString().toLowerCase();
+            const id = (current.id || "").toLowerCase();
+
+            if (
+              role === "dialog" ||
+              role === "alertdialog" ||
+              /modal|popup|dialog|overlay|sweet-alert|swal2|inactivity|idle|timeout|alert-box/i.test(cls + " " + id)
+            ) {
+              return current;
+            }
+            current = current.parentElement;
+          }
+          return null;
+        }
+
+        function hasInactivityContext(container) {
+          if (!container) return false;
+          const text = (container.innerText || container.textContent || "").toLowerCase();
+          return /are you still there|are you still playing|inactivity|inactive|session timeout|session expired|idle timeout|game paused|paused due to|press ok to continue|click to resume|continue playing|keep playing|still watching|idle detected|stay connected/i.test(
+            text,
+          );
+        }
+
         function scanDoc(doc) {
           if (!doc) return 0;
           let c = 0;
-          const buttons = Array.from(doc.querySelectorAll('button, [role="button"], .btn, input[type="button"], input[type="submit"]'));
+          const buttons = Array.from(
+            doc.querySelectorAll(
+              'button, [role="button"], .btn, input[type="button"], input[type="submit"], a.button',
+            ),
+          );
           for (const btn of buttons) {
-            const style = window.getComputedStyle(btn);
-            if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") continue;
-            const txt = (btn.innerText || btn.textContent || btn.value || "").trim().toLowerCase();
-            const ariaLabel = (btn.getAttribute("aria-label") || "").toLowerCase();
-            const cls = (btn.className || "").toLowerCase();
-            const id = (btn.id || "").toLowerCase();
-            if (keywords.some(k => txt === k || txt.startsWith(k + " ") || txt.includes(k)) || /inactivity|resume|dialog-ok|continue-btn/i.test(cls + " " + id + " " + ariaLabel)) {
-              btn.click();
-              c++;
-            }
+            try {
+              const style = window.getComputedStyle(btn);
+              if (
+                style.display === "none" ||
+                style.visibility === "hidden" ||
+                style.opacity === "0" ||
+                style.pointerEvents === "none"
+              ) {
+                continue;
+              }
+              const rect = btn.getBoundingClientRect();
+              if (rect.width === 0 || rect.height === 0) continue;
+
+              const rawText = (btn.innerText || btn.textContent || btn.value || "").trim();
+              const txt = rawText.toLowerCase();
+              const ariaLabel = (btn.getAttribute("aria-label") || "").toLowerCase();
+              const cls = (btn.className || "").toString().toLowerCase();
+              const id = (btn.id || "").toLowerCase();
+              const fullAttr = cls + " " + id + " " + ariaLabel;
+
+              // Blacklist catalog / lobby words
+              if (
+                /play for free|free play|demo play|real play|login|sign in|signup|register|deposit|withdraw/i.test(
+                  txt + " " + ariaLabel,
+                )
+              ) {
+                continue;
+              }
+
+              const isExplicitInactivity =
+                /^(?:i'm here|i am here|yes,?\s*i'm here|keep playing|continue playing|resume game|resume session|stay connected|stay logged in|i'm still here|still here|unpause)$/i.test(
+                  txt,
+                ) ||
+                /inactivity-btn|idle-resume|resume-inactivity|dialog-inactivity|inactivity_ok/i.test(
+                  fullAttr,
+                );
+
+              const modal = isInsideModal(btn);
+              const isModalInactivity =
+                modal &&
+                hasInactivityContext(modal) &&
+                /^(?:ok|okay|start|continue|resume|yes|confirm|stay|reconnect|got it)$/i.test(txt);
+
+              const isDialogActionInModal =
+                modal &&
+                /dialog-ok|dialog-start|dialog-continue|dialog-resume|modal-ok|modal-continue/i.test(
+                  fullAttr,
+                );
+
+              // In-game play-button overlay (e.g. data-role="play-button", .A2zb9M, .VQJTA7, .iTKQgM, .E0dFqh)
+              const isPlayButtonOverlay =
+                btn.getAttribute?.("data-role") === "play-button" ||
+                /A2zb9M|iTKQgM|VQJTA7|E0dFqh/i.test(cls) ||
+                btn.closest?.('[data-role="play-button"]');
+
+              if (isExplicitInactivity || isModalInactivity || isDialogActionInModal || isPlayButtonOverlay) {
+                btn.click();
+                c++;
+                if (c >= 3) break;
+              }
+            } catch (e) {}
           }
           const iframes = Array.from(doc.querySelectorAll("iframe"));
           for (const iframe of iframes) {

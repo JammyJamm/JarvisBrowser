@@ -94,7 +94,14 @@
            ======================================================== -->
 
       <div id="aiForm">
-        <form id="ai-form" autocomplete="off" onsubmit="event.preventDefault(); return false;">
+        <form
+          id="ai-form"
+          autocomplete="off"
+          onsubmit="
+            event.preventDefault();
+            return false;
+          "
+        >
           <div class="statusBlock">
             <img src="./icon/logo.svg" alt="Jarvis" />
 
@@ -133,59 +140,53 @@
         </div>
 
         <div id="logs" class="panel-view active"></div>
+      </div>
+    </div>
+    <div id="firebaseBoard" class="panel-view" style="display: none">
+      <div class="fb-board-header">
+        <div class="fb-board-title">
+          <span class="fb-live-dot"></span>
+          <strong>Firestore: Bio_sic</strong>
+          <span id="fbActiveDateBadge" class="fb-badge date-badge">Today</span>
+        </div>
+        <div class="fb-board-controls">
+          <select
+            id="fbIndexSelect"
+            class="fb-select"
+            title="Select 90-Count Chunk Index"
+          >
+            <option value="all">All Indexes (0..n)</option>
+            <option value="0" selected>Index 0 (Max 90)</option>
+          </select>
+          <button id="fbRefreshBtn" type="button" class="fb-btn">
+            🔄 Sync Firebase
+          </button>
+          <button id="fbAutoSyncBtn" type="button" class="fb-btn active">
+            ⚡ Auto-Sync (5s)
+          </button>
+          <button id="fbDismissPopupBtn" type="button" class="fb-btn">
+            🛡 Dismiss Popup
+          </button>
+        </div>
+      </div>
 
-        <div id="firebaseBoard" class="panel-view" style="display: none">
-          <div class="fb-board-header">
-            <div class="fb-board-title">
-              <span class="fb-live-dot"></span>
-              <strong>Firestore: Bio_sic</strong>
-              <span id="fbActiveDateBadge" class="fb-badge date-badge"
-                >Today</span
-              >
-            </div>
-            <div class="fb-board-controls">
-              <select
-                id="fbIndexSelect"
-                class="fb-select"
-                title="Select 90-Count Chunk Index"
-              >
-                <option value="all">All Indexes (0..n)</option>
-                <option value="0" selected>Index 0 (Max 90)</option>
-              </select>
-              <button id="fbRefreshBtn" type="button" class="fb-btn">
-                🔄 Sync Firebase
-              </button>
-              <button id="fbAutoSyncBtn" type="button" class="fb-btn active">
-                ⚡ Auto-Sync (5s)
-              </button>
-              <button id="fbDismissPopupBtn" type="button" class="fb-btn">
-                🛡 Dismiss Popup
-              </button>
-            </div>
-          </div>
+      <div class="fb-stats-strip">
+        <span class="fb-stat" id="fbStatTotal">📊 Total Items: 0</span>
+        <span class="fb-stat" id="fbStatIndex">📁 Active Index: 0 (0/90)</span>
+        <span class="fb-stat highlight" id="fbStatGuard"
+          >🛡 Inactivity Guard: ACTIVE</span
+        >
+        <span class="fb-stat" id="fbStatLastSync">⏱ Last Sync: --</span>
+      </div>
 
-          <div class="fb-stats-strip">
-            <span class="fb-stat" id="fbStatTotal">📊 Total Items: 0</span>
-            <span class="fb-stat" id="fbStatIndex"
-              >📁 Active Index: 0 (0/90)</span
-            >
-            <span class="fb-stat highlight" id="fbStatGuard"
-              >🛡 Inactivity Guard: ACTIVE</span
-            >
-            <span class="fb-stat" id="fbStatLastSync">⏱ Last Sync: --</span>
-          </div>
-
-          <!-- Horizontal scrollable container for vertical 4-values columns -->
-          <div id="fbColumnsContainer" class="fb-columns-container">
-            <div class="fb-empty-state">
-              No Firestore round data loaded yet. Click "Sync Firebase" or start
-              watching data.
-            </div>
-          </div>
+      <!-- Horizontal scrollable container for vertical 4-values columns -->
+      <div id="fbColumnsContainer" class="fb-columns-container">
+        <div class="fb-empty-state">
+          No Firestore round data loaded yet. Click "Sync Firebase" or start
+          watching data.
         </div>
       </div>
     </div>
-
     <!-- ==========================================================
          JARVIS CORE
          ========================================================== -->
@@ -1045,12 +1046,14 @@
                   await retryHandler(val);
                 } catch (err) {
                   console.error("AI submit error:", err);
-                  if (typeof log === "function") log(`❌ AI Error: ${err.message}`);
+                  if (typeof log === "function")
+                    log(`❌ AI Error: ${err.message}`);
                 }
               } else if (retries >= 15) {
                 clearInterval(timer);
                 console.error("AI submit handler not found");
-                if (typeof log === "function") log("❌ AI submit handler not ready. Please try again.");
+                if (typeof log === "function")
+                  log("❌ AI submit handler not ready. Please try again.");
                 if (cmdInput && !cmdInput.value) cmdInput.value = val;
               }
             }, 100);

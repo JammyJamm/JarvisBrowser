@@ -1942,6 +1942,7 @@ export function watchIframeContainerData(
 }
 
 //==========================================================
+//==========================================================
 // DISMISS INACTIVITY POPUP (OK / START / CONTINUE / RESUME)
 //==========================================================
 
@@ -1950,80 +1951,119 @@ export async function dismissInactivityPopup(page) {
   let dismissedCount = 0;
   const clickedButtons = [];
 
-  const targetKeywords = [
-    "ok",
-    "start",
-    "continue",
-    "resume",
-    "play",
-    "yes",
-    "confirm",
-    "i'm here",
-    "i am here",
-    "keep playing",
-    "stay",
-    "reconnect",
-  ];
-
   try {
     const frames = await getAllFrames(page);
 
     for (const frame of frames) {
       try {
-        // 1. Playwright locators for quick button clicks
-        for (const word of ["ok", "start", "continue", "resume", "play"]) {
-          try {
-            const locators = frame.locator(
-              `button:has-text("${word}"), [role="button"]:has-text("${word}"), .btn:has-text("${word}")`,
-            );
-            const count = await locators.count();
-            for (let i = 0; i < count; i++) {
-              const btn = locators.nth(i);
-              if (await btn.isVisible()) {
-                const btnText = (await btn.innerText().catch(() => "")) || word;
-                await btn.click({ timeout: 1000 }).catch(() => {});
-                dismissedCount++;
-                clickedButtons.push({ frameUrl: frame.url(), text: btnText.trim() });
-              }
-            }
-          } catch {}
-        }
-
-        // 2. DOM evaluate inspection inside the frame
-        const result = await frame.evaluate((keywords) => {
+        const result = await frame.evaluate(() => {
           const clicked = [];
+
+          // 1. Detect if an element is inside an active modal / dialog / overlay / popup container
+          function isInsideModal(el) {
+            let current = el;
+            while (current && current !== document.body && current !== document.documentElement) {
+              const role = current.getAttribute?.("role") || "";
+              const cls = (current.className || "").toString().toLowerCase();
+              const id = (current.id || "").toLowerCase();
+
+              if (
+                role === "dialog" ||
+                role === "alertdialog" ||
+                /modal|popup|dialog|overlay|sweet-alert|swal2|inactivity|idle|timeout|alert-box/i.test(cls + " " + id)
+              ) {
+                return current;
+              }
+              current = current.parentElement;
+            }
+            return null;
+          }
+
+          // 2. Check if a container has textual evidence of inactivity / session timeout / pause
+          function hasInactivityContext(container) {
+            if (!container) return false;
+            const text = (container.innerText || container.textContent || "").toLowerCase();
+            return /are you still there|are you still playing|inactivity|inactive|session timeout|session expired|idle timeout|game paused|paused due to|press ok to continue|click to resume|continue playing|keep playing|still watching|idle detected|stay connected/i.test(
+              text,
+            );
+          }
+
           const allButtons = Array.from(
-            document.querySelectorAll('button, [role="button"], .btn, input[type="button"], input[type="submit"], a.button'),
+            document.querySelectorAll(
+              'button, [role="button"], .btn, input[type="button"], input[type="submit"], a.button',
+            ),
           );
 
           for (const btn of allButtons) {
             try {
+              // Ignore hidden / non-interactable buttons
               const style = window.getComputedStyle(btn);
-              if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") {
+              if (
+                style.display === "none" ||
+                style.visibility === "hidden" ||
+                style.opacity === "0" ||
+                style.pointerEvents === "none"
+              ) {
+                continue;
+              }
+              const rect = btn.getBoundingClientRect();
+              if (rect.width === 0 || rect.height === 0) continue;
+
+              const rawText = (btn.innerText || btn.textContent || btn.value || "").trim();
+              const text = rawText.toLowerCase();
+              const ariaLabel = (btn.getAttribute("aria-label") || "").toLowerCase();
+              const cls = (btn.className || "").toString().toLowerCase();
+              const id = (btn.id || "").toLowerCase();
+              const fullAttr = cls + " " + id + " " + ariaLabel;
+
+              // CRITICAL: Blacklist generic lobby / game catalog action words (NEVER click game cards or catalog links)
+              if (
+                /play for free|free play|demo play|real play|login|sign in|signup|register|deposit|withdraw/i.test(
+                  text + " " + ariaLabel,
+                )
+              ) {
                 continue;
               }
 
-              const text = (btn.innerText || btn.textContent || btn.value || "").trim().toLowerCase();
-              const ariaLabel = (btn.getAttribute("aria-label") || "").toLowerCase();
-              const className = (btn.className || "").toLowerCase();
-              const id = (btn.id || "").toLowerCase();
+              // Explicit Inactivity Button phrases (safe to click)
+              const isExplicitInactivity =
+                /^(?:i'm here|i am here|yes,?\s*i'm here|keep playing|continue playing|resume game|resume session|stay connected|stay logged in|i'm still here|still here|unpause)$/i.test(
+                  text,
+                ) ||
+                /inactivity-btn|idle-resume|resume-inactivity|dialog-inactivity|inactivity_ok/i.test(
+                  fullAttr,
+                );
 
-              const matchesText = keywords.some(
-                (k) => text === k || text.startsWith(k + " ") || text.endsWith(" " + k) || text.includes(k),
-              );
-              const matchesAttr = /inactivity|resume|dialog-ok|continue-btn|start-btn|modal-btn/i.test(
-                className + " " + id + " " + ariaLabel,
-              );
+              // Modal-Scoped Inactivity Button:
+              // Must be inside a modal/dialog/overlay AND the modal must contain inactivity context text
+              const modalContainer = isInsideModal(btn);
+              const isModalInactivity =
+                modalContainer &&
+                hasInactivityContext(modalContainer) &&
+                /^(?:ok|okay|start|continue|resume|yes|confirm|stay|reconnect|got it)$/i.test(text);
 
-              if (matchesText || matchesAttr) {
-                // If it's a popup/modal or matches action words
+              // Also check button classes/id that explicitly specify dialog confirmation
+              const isDialogActionInModal =
+                modalContainer &&
+                /dialog-ok|dialog-start|dialog-continue|dialog-resume|modal-ok|modal-continue/i.test(
+                  fullAttr,
+                );
+
+              // In-game play-button overlay (e.g. data-role="play-button", .A2zb9M, .VQJTA7, .iTKQgM, .E0dFqh)
+              const isPlayButtonOverlay =
+                btn.getAttribute?.("data-role") === "play-button" ||
+                /A2zb9M|iTKQgM|VQJTA7|E0dFqh/i.test(cls) ||
+                btn.closest?.('[data-role="play-button"]');
+
+              if (isExplicitInactivity || isModalInactivity || isDialogActionInModal || isPlayButtonOverlay) {
                 btn.click();
-                clicked.push(text || ariaLabel || id || "popup-btn");
+                clicked.push(rawText || ariaLabel || id || (isPlayButtonOverlay ? "play-button (overlay)" : "inactivity-btn"));
+                if (clicked.length >= 3) break; // At most 3 buttons per frame
               }
             } catch {}
           }
           return clicked;
-        }, targetKeywords);
+        });
 
         if (result && result.length) {
           dismissedCount += result.length;
@@ -2036,7 +2076,10 @@ export async function dismissInactivityPopup(page) {
   }
 
   if (dismissedCount > 0) {
-    log(`[Inactivity Guard] Dismissed ${dismissedCount} popup button(s):`, clickedButtons.map((b) => b.text).join(", "));
+    log(
+      `[Inactivity Guard] Dismissed ${dismissedCount} popup button(s):`,
+      clickedButtons.map((b) => b.text).join(", "),
+    );
   }
 
   return {

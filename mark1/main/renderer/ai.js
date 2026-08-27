@@ -27,6 +27,88 @@ function formatTimeKey(date = new Date()) {
 }
 
 // ==========================================================
+// SPLIT BIG NUMBERS (> 19) & CLEAN 4-VALUES
+// ==========================================================
+function splitNumberIfAbove19(n) {
+  if (typeof n !== "number" || isNaN(n)) return [];
+  if (n <= 19 && n >= 0) return [n];
+
+  const s = String(Math.floor(Math.abs(n)));
+  let bestSplit = null;
+
+  for (let i = 1; i < s.length; i++) {
+    const sA = s.slice(0, i);
+    const sB = s.slice(i);
+    const vA = parseInt(sA, 10);
+    const vB = parseInt(sB, 10);
+
+    if (vA <= 19 && vA > 0 && vB <= 19 && vB > 0) {
+      if (sA.length === 2 || !bestSplit) {
+        bestSplit = [vA, vB];
+      }
+    }
+  }
+
+  if (bestSplit) {
+    return bestSplit;
+  }
+
+  if (s.length === 2) {
+    const vA = parseInt(s[0], 10);
+    let vB = parseInt(s[1], 10);
+    if (vB === 0) vB = 1;
+    return [Math.min(vA, 19), vB];
+  }
+
+  const vA = Math.min(
+    parseInt(s.slice(0, 2), 10) <= 19
+      ? parseInt(s.slice(0, 2), 10)
+      : parseInt(s.slice(0, 1), 10),
+    19,
+  );
+  const remStr = s.slice(s.indexOf(String(vA)) + String(vA).length);
+  let vB = remStr ? parseInt(remStr.slice(0, 2), 10) : 1;
+  if (vB > 19) vB = parseInt(remStr.slice(0, 1), 10) || 1;
+  if (vB === 0) vB = 1;
+
+  return [vA, vB];
+}
+
+function cleanFourValues(chunk) {
+  let [v0, v1, v2, v3] = Array.isArray(chunk) ? chunk : [0, 5, 5, 5];
+
+  // 1. Check v0 <= 19; if above 19, split it
+  if (typeof v0 === "number" && v0 > 19) {
+    const [splitA, splitB] = splitNumberIfAbove19(v0);
+    v0 = splitA;
+    if (splitB !== undefined && (v1 === undefined || v1 === 0)) {
+      v1 = splitB;
+    }
+  }
+
+  // 2. Ensure v0 is <= 19
+  v0 = typeof v0 === "number" && !isNaN(v0) ? Math.min(Math.max(0, v0), 19) : 0;
+
+  // 3. Ensure v1, v2, v3 are not 0 and <= 19 (1..19)
+  const sanitizePos = (val, fallback = 5) => {
+    if (typeof val === "number" && !isNaN(val) && val > 0) {
+      if (val > 19) {
+        const parts = splitNumberIfAbove19(val);
+        return parts[0] || Math.min(val, 19);
+      }
+      return Math.min(val, 19);
+    }
+    return fallback;
+  };
+
+  v1 = sanitizePos(v1, v0 > 0 && v0 <= 19 ? Math.min(v0, 5) : 5);
+  v2 = sanitizePos(v2, 5);
+  v3 = sanitizePos(v3, 5);
+
+  return [v0, v1, v2, v3];
+}
+
+// ==========================================================
 // PARSE 4-VALUES AS [{ "04:20pm": [15, 5, 5, 5] }, ...]
 // ==========================================================
 function parseTimeToValues(data, baseDate = new Date()) {
@@ -37,7 +119,10 @@ function parseTimeToValues(data, baseDate = new Date()) {
   } else if (data?.text) {
     rawText = data.text;
   } else if (data?.timeValues && Array.isArray(data.timeValues)) {
-    return data.timeValues;
+    return data.timeValues.map((item) => {
+      const k = Object.keys(item)[0];
+      return { [k]: cleanFourValues(item[k]) };
+    });
   } else if (
     Array.isArray(data) &&
     data.length &&
@@ -49,7 +134,10 @@ function parseTimeToValues(data, baseDate = new Date()) {
       /^\d{2}:\d{2}(?:am|pm)$/i.test(firstKey) &&
       Array.isArray(data[0][firstKey])
     ) {
-      return data;
+      return data.map((item) => {
+        const k = Object.keys(item)[0];
+        return { [k]: cleanFourValues(item[k]) };
+      });
     }
   } else if (data?.frames) {
     for (const frame of data.frames) {
@@ -72,17 +160,28 @@ function parseTimeToValues(data, baseDate = new Date()) {
   }
 
   // Extract all numbers from text
-  const numbers = (rawText.match(/\d+/g) || []).map(Number);
+  const rawNumbers = (rawText.match(/\d+/g) || []).map(Number);
+  const numbers = [];
+  for (const n of rawNumbers) {
+    if (typeof n === "number" && !isNaN(n)) {
+      if (n > 19) {
+        numbers.push(...splitNumberIfAbove19(n));
+      } else {
+        numbers.push(n);
+      }
+    }
+  }
+
   const items = [];
   const baseTime = (baseDate instanceof Date ? baseDate : new Date()).getTime();
 
   for (let i = 0; i < numbers.length; i += 4) {
     const chunk = numbers.slice(i, i + 4);
     if (chunk.length > 0) {
-      while (chunk.length < 4) chunk.push(0);
+      const cleaned = cleanFourValues(chunk);
       const setDate = new Date(baseTime + (i / 4) * 60000);
       const timeKey = formatTimeKey(setDate);
-      items.push({ [timeKey]: chunk });
+      items.push({ [timeKey]: cleaned });
     }
   }
 
@@ -90,7 +189,7 @@ function parseTimeToValues(data, baseDate = new Date()) {
 }
 
 // ==========================================================
-// AUTO-DISMISS INACTIVITY / PAUSE POPUPS
+// AUTO-DISMISS INACTIVITY / PAUSE POPUPS & CLICK IN-GAME PLAY BUTTON
 // ==========================================================
 async function autoDismissInactivityPopups() {
   let dismissed = false;
@@ -124,10 +223,32 @@ async function autoDismissInactivityPopups() {
     } catch (e) {}
   }
 
+  // 3. Try Local DOM in-game play-button overlay (e.g. data-role="play-button", .A2zb9M, .iTKQgM, .VQJTA7, .E0dFqh)
+  try {
+    const localPlayBtns = Array.from(
+      document.querySelectorAll(
+        'button[data-role="play-button"], button.A2zb9M, button.iTKQgM, button.VQJTA7, button.E0dFqh, [data-role="play-button"]',
+      ),
+    );
+    for (const btn of localPlayBtns) {
+      const style = window.getComputedStyle(btn);
+      if (
+        style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        style.opacity !== "0" &&
+        style.pointerEvents !== "none"
+      ) {
+        btn.click();
+        dismissed = true;
+        count++;
+      }
+    }
+  } catch (e) {}
+
   if (dismissed) {
     const guardEl = document.getElementById("fbStatGuard");
     if (guardEl) {
-      guardEl.innerText = `🛡 Inactivity Guard: Auto-Clicked (${count} popup)`;
+      guardEl.innerText = `🛡 Inactivity Guard: Auto-Clicked (${count} popup/play)`;
       setTimeout(() => {
         guardEl.innerText = "🛡 Inactivity Guard: ACTIVE";
       }, 3000);
@@ -712,10 +833,11 @@ function renderLiveIntervalCard(
 
     const setsCount = timeItems.length;
 
-    // Save to Firebase DB automatically on interval (90 count per index, no fourValues)
+    // Save to Firebase DB automatically on interval (only the single latest new 4-value round)
     let dbStatusText = "🔥 DB Saving...";
     if (shouldSaveDB && setsCount > 0) {
-      const dbRes = await saveToFirebaseDB(timeItems);
+      const latestSingleRound = [timeItems[timeItems.length - 1]];
+      const dbRes = await saveToFirebaseDB(latestSingleRound);
       if (dbRes.success) {
         dbStatusText = `🔥 Bio_sic/${dbRes.dateId} Saved (${dbRes.totalCount || setsCount} total, Idx ${dbRes.activeIndex || 0})`;
       } else {
