@@ -14,4 +14,5 @@ contextBridge.exposeInMainWorld("browserAPI", {
     ipcRenderer.invoke("browser-container-data", selectorOrClass),
   getHTML: () => ipcRenderer.invoke("browser-html"),
   getURL: () => ipcRenderer.invoke("browser-url"),
+  dismissPopup: () => ipcRenderer.invoke("browser-dismiss-popup"),
 });

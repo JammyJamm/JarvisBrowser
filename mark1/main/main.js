@@ -502,6 +502,55 @@ ipcMain.handle("browser-execute", async (_, script) => {
 });
 
 /* ---------------------------------------------------- */
+/* NEW: Dismiss Inactivity Popups in BrowserView        */
+/* ---------------------------------------------------- */
+
+ipcMain.handle("browser-dismiss-popup", async () => {
+  if (!browserView) return { dismissed: false, count: 0 };
+  try {
+    const script = `
+      (() => {
+        let count = 0;
+        const keywords = ["ok", "start", "continue", "resume", "play", "yes", "confirm", "i'm here", "i am here", "keep playing"];
+        
+        function scanDoc(doc) {
+          if (!doc) return 0;
+          let c = 0;
+          const buttons = Array.from(doc.querySelectorAll('button, [role="button"], .btn, input[type="button"], input[type="submit"]'));
+          for (const btn of buttons) {
+            const style = window.getComputedStyle(btn);
+            if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") continue;
+            const txt = (btn.innerText || btn.textContent || btn.value || "").trim().toLowerCase();
+            const ariaLabel = (btn.getAttribute("aria-label") || "").toLowerCase();
+            const cls = (btn.className || "").toLowerCase();
+            const id = (btn.id || "").toLowerCase();
+            if (keywords.some(k => txt === k || txt.startsWith(k + " ") || txt.includes(k)) || /inactivity|resume|dialog-ok|continue-btn/i.test(cls + " " + id + " " + ariaLabel)) {
+              btn.click();
+              c++;
+            }
+          }
+          const iframes = Array.from(doc.querySelectorAll("iframe"));
+          for (const iframe of iframes) {
+            try {
+              const iDoc = iframe.contentDocument || iframe.contentWindow?.document;
+              if (iDoc) c += scanDoc(iDoc);
+            } catch (e) {}
+          }
+          return c;
+        }
+
+        return scanDoc(document);
+      })();
+    `;
+    const count = await browserView.webContents.executeJavaScript(script);
+    return { dismissed: count > 0, count };
+  } catch (err) {
+    console.error("browser-dismiss-popup error:", err);
+    return { dismissed: false, count: 0, error: err.message };
+  }
+});
+
+/* ---------------------------------------------------- */
 /* App                                                  */
 /* ---------------------------------------------------- */
 

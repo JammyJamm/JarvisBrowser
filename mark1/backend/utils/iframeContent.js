@@ -1700,6 +1700,18 @@ export async function getFrameContainerData(
           }));
         }
 
+        // 4-values JSON formatting
+        const combinedText = [text, ...svgs.map((s) => s.text || "")].join(" ");
+        const allRawNums = (combinedText.match(/\d+/g) || []).map(Number);
+        const fourValuesList = [];
+        for (let nIdx = 0; nIdx < allRawNums.length; nIdx += 4) {
+          const chunk = allRawNums.slice(nIdx, nIdx + 4);
+          if (chunk.length > 0) {
+            fourValuesList.push({ values: chunk });
+          }
+        }
+        const fourValues = [{ 0: fourValuesList }];
+
         const dataItem = {
           index: i,
           tagName: el.tagName.toLowerCase(),
@@ -1707,6 +1719,7 @@ export async function getFrameContainerData(
           className: el.getAttribute("class") || undefined,
           text,
           textBlocks: textBlocks.length > 1 ? textBlocks : undefined,
+          fourValues,
           attributes,
           dataset: Object.keys(dataset).length ? dataset : undefined,
           svgCount: svgs.length,
@@ -1864,9 +1877,15 @@ export async function getIframeContainerData(
     }
   }
 
+  const primaryContainer = framesData[0]?.containers[0];
+  const primaryFourValues = primaryContainer?.fourValues || [{ 0: [] }];
+  const primaryText = primaryContainer?.text || "";
+
   return {
     success: true,
     target,
+    text: primaryText,
+    fourValues: primaryFourValues,
     timestamp: new Date().toISOString(),
     totalFrames: allFrames.length,
     matchedFrames: framesData.length,
@@ -1923,6 +1942,111 @@ export function watchIframeContainerData(
 }
 
 //==========================================================
+// DISMISS INACTIVITY POPUP (OK / START / CONTINUE / RESUME)
+//==========================================================
+
+export async function dismissInactivityPopup(page) {
+  if (!page || page.isClosed?.()) return { dismissed: false, count: 0 };
+  let dismissedCount = 0;
+  const clickedButtons = [];
+
+  const targetKeywords = [
+    "ok",
+    "start",
+    "continue",
+    "resume",
+    "play",
+    "yes",
+    "confirm",
+    "i'm here",
+    "i am here",
+    "keep playing",
+    "stay",
+    "reconnect",
+  ];
+
+  try {
+    const frames = await getAllFrames(page);
+
+    for (const frame of frames) {
+      try {
+        // 1. Playwright locators for quick button clicks
+        for (const word of ["ok", "start", "continue", "resume", "play"]) {
+          try {
+            const locators = frame.locator(
+              `button:has-text("${word}"), [role="button"]:has-text("${word}"), .btn:has-text("${word}")`,
+            );
+            const count = await locators.count();
+            for (let i = 0; i < count; i++) {
+              const btn = locators.nth(i);
+              if (await btn.isVisible()) {
+                const btnText = (await btn.innerText().catch(() => "")) || word;
+                await btn.click({ timeout: 1000 }).catch(() => {});
+                dismissedCount++;
+                clickedButtons.push({ frameUrl: frame.url(), text: btnText.trim() });
+              }
+            }
+          } catch {}
+        }
+
+        // 2. DOM evaluate inspection inside the frame
+        const result = await frame.evaluate((keywords) => {
+          const clicked = [];
+          const allButtons = Array.from(
+            document.querySelectorAll('button, [role="button"], .btn, input[type="button"], input[type="submit"], a.button'),
+          );
+
+          for (const btn of allButtons) {
+            try {
+              const style = window.getComputedStyle(btn);
+              if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") {
+                continue;
+              }
+
+              const text = (btn.innerText || btn.textContent || btn.value || "").trim().toLowerCase();
+              const ariaLabel = (btn.getAttribute("aria-label") || "").toLowerCase();
+              const className = (btn.className || "").toLowerCase();
+              const id = (btn.id || "").toLowerCase();
+
+              const matchesText = keywords.some(
+                (k) => text === k || text.startsWith(k + " ") || text.endsWith(" " + k) || text.includes(k),
+              );
+              const matchesAttr = /inactivity|resume|dialog-ok|continue-btn|start-btn|modal-btn/i.test(
+                className + " " + id + " " + ariaLabel,
+              );
+
+              if (matchesText || matchesAttr) {
+                // If it's a popup/modal or matches action words
+                btn.click();
+                clicked.push(text || ariaLabel || id || "popup-btn");
+              }
+            } catch {}
+          }
+          return clicked;
+        }, targetKeywords);
+
+        if (result && result.length) {
+          dismissedCount += result.length;
+          clickedButtons.push(...result.map((t) => ({ frameUrl: frame.url(), text: t })));
+        }
+      } catch {}
+    }
+  } catch (err) {
+    warn("dismissInactivityPopup error:", err.message);
+  }
+
+  if (dismissedCount > 0) {
+    log(`[Inactivity Guard] Dismissed ${dismissedCount} popup button(s):`, clickedButtons.map((b) => b.text).join(", "));
+  }
+
+  return {
+    dismissed: dismissedCount > 0,
+    count: dismissedCount,
+    buttons: clickedButtons,
+  };
+}
+
+//==========================================================
 // DEFAULT EXPORT
 //==========================================================
 
@@ -1948,5 +2072,6 @@ export default {
   clickInsideAnyFrame,
   convertSVGToJSON,
   watchIframeContainerData,
+  dismissInactivityPopup,
   debugFrames,
 };

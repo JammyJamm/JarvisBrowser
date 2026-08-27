@@ -92,23 +92,34 @@ function parseSingle(raw) {
   }
 
   // --------------------------------------------------------
-  // WATCH / INTERVAL COMMANDS (e.g. "watch data from .tzQn0o")
+  // WATCH / INTERVAL COMMANDS (e.g. "watch data from .tzQn0o every 5s")
   // --------------------------------------------------------
   if (
     (m = command.match(
-      /^(?:watch|stream|track|monitor|start\s+interval(?:\s+for)?|interval)\s+(?:data|svg(?:s)?|container)?\s*(?:from|in|inside|within|of)?\s*(?:the\s+)?(?:parent\s+)?(?:class|container|selector|element)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?(?:\s+(?:every|interval)\s*(\d+(?:ms|s)?))?$/i,
+      /^(?:watch|stream|track|monitor|start\s+interval(?:\s+for)?|interval)\s+(?:data|svg(?:s)?|container)?\s*(?:from|in|inside|within|of)?\s*(?:the\s+)?(?:parent\s+)?(?:class|container|selector|element)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?(?:\s+(?:every|interval)?\s*(\d+(?:ms|s)?))?$/i,
+    )) ||
+    (m = command.match(
+      /^(?:extend|set|change|update)\s+interval\s*(?:to|for)?\s*(\d+(?:ms|s)?)(?:\s*(?:for|on|from)?\s*['"]?([a-zA-Z0-9_.-]+)?['"]?)?$/i,
     ))
   ) {
-    const targetClass = clean(m[1]);
-    const intervalRaw = m[2] ? clean(m[2]) : undefined;
-    let intervalMs = 1500;
-    if (intervalRaw) {
-      if (intervalRaw.endsWith("s") && !intervalRaw.endsWith("ms")) {
-        intervalMs = parseFloat(intervalRaw) * 1000;
-      } else {
-        intervalMs = parseInt(intervalRaw, 10);
+    let targetClass = ".tzQn0o";
+    let intervalMs = 5000;
+    
+    // Check matched groups
+    for (let i = 1; i < m.length; i++) {
+      const val = m[i] ? clean(m[i]) : "";
+      if (!val) continue;
+      if (/^\d+(?:ms|s)?$/i.test(val)) {
+        if (val.endsWith("s") && !val.endsWith("ms")) {
+          intervalMs = parseFloat(val) * 1000;
+        } else {
+          intervalMs = parseInt(val, 10);
+        }
+      } else if (/^[a-zA-Z0-9_.-]+$/.test(val)) {
+        targetClass = val;
       }
     }
+
     return {
       tool: "watch_iframe_data",
       args: {

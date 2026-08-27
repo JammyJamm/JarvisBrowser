@@ -68,7 +68,15 @@ import {
   getIframeContainerData,
   findFramesWithSVGs,
   getAllFrames,
+  dismissInactivityPopup,
 } from "./utils/iframeContent.js";
+import {
+  saveRound,
+  getRoundsFromDB,
+  formatTimeToValuesJSON,
+  formatToFourValuesJSON,
+  getTodayDateId,
+} from "../database/gameservice.js";
 
 //==========================================================
 // EXPRESS
@@ -2230,17 +2238,26 @@ app.get("/iframe/stream", async (req, res) => {
     tick++;
     try {
       const page = await ensureBrowserReady();
+
+      // Automatically dismiss inactivity / pause popup dialogs
+      const popupResult = await dismissInactivityPopup(page);
+
       const result = await getIframeContainerData(page, target, {
         onlyIframes: true,
         includeSVGs: true,
         includeChildren: true,
       });
 
+      const timeItems = formatTimeToValuesJSON(result.text || result);
+
       const payload = {
         tick,
         timestamp: new Date().toISOString(),
         intervalMs,
         target,
+        inactivityDismissed: popupResult.dismissed,
+        dismissedCount: popupResult.count,
+        timeValues: timeItems,
         ...result,
       };
 
@@ -2262,6 +2279,51 @@ app.get("/iframe/stream", async (req, res) => {
     clearInterval(timer);
     res.end();
   });
+});
+
+//==========================================================
+// SAVE ROUND DATA TO FIREBASE (Bio_sic collection, 90 per index)
+//==========================================================
+
+app.post("/api/save-round", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const dateStr = body.dateStr || body.dateId || getTodayDateId();
+    const rawData = body.data || body.fullData || body.text || body;
+
+    const saveResult = await saveRound(dateStr, rawData);
+    return res.json(saveResult);
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+//==========================================================
+// GET ROUND DATA FROM FIREBASE (Bio_sic collection)
+//==========================================================
+
+app.get("/api/get-rounds", async (req, res) => {
+  try {
+    const dateStr = req.query.date || req.query.dateStr || req.query.dateId || getTodayDateId();
+    const result = await getRoundsFromDB(dateStr);
+    return res.json(result);
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+//==========================================================
+// DISMISS INACTIVITY POPUP (OK / START / CONTINUE BUTTONS)
+//==========================================================
+
+app.post("/api/dismiss-popup", async (req, res) => {
+  try {
+    const page = await ensureBrowserReady();
+    const result = await dismissInactivityPopup(page);
+    return res.json({ success: true, ...result });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 app.get("/iframes", async (req, res) => {

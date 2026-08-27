@@ -94,7 +94,7 @@
            ======================================================== -->
 
       <div id="aiForm">
-        <form id="ai-form" autocomplete="off">
+        <form id="ai-form" autocomplete="off" onsubmit="event.preventDefault(); return false;">
           <div class="statusBlock">
             <img src="./icon/logo.svg" alt="Jarvis" />
 
@@ -103,16 +103,86 @@
             </p>
           </div>
 
-          <textarea
-            id="cmd"
-            placeholder="Type command..."
-            rows="4"
-            autocomplete="off"
-            spellcheck="false"
-          ></textarea>
+          <div class="cmd-box">
+            <textarea
+              id="cmd"
+              placeholder="Type command (e.g. 'get data from .tzQn0o' or 'watch data from .tzQn0o every 5s'). Press Enter or click Send..."
+              rows="3"
+              autocomplete="off"
+              spellcheck="false"
+            ></textarea>
+            <button
+              id="submitCmdBtn"
+              type="button"
+              class="cmd-send-btn"
+              title="Send Command"
+            >
+              <img src="./icon/send.svg" alt="Send" />
+            </button>
+          </div>
         </form>
 
-        <div id="logs"></div>
+        <div id="panelTabs" class="panel-tabs">
+          <button id="tabLogsBtn" type="button" class="tab-btn active">
+            💬 Jarvis Logs
+          </button>
+          <button id="tabFirebaseBtn" type="button" class="tab-btn">
+            🔥 Firebase 4-Values Board
+            <span id="badgeTotalCount" class="tab-badge">0</span>
+          </button>
+        </div>
+
+        <div id="logs" class="panel-view active"></div>
+
+        <div id="firebaseBoard" class="panel-view" style="display: none">
+          <div class="fb-board-header">
+            <div class="fb-board-title">
+              <span class="fb-live-dot"></span>
+              <strong>Firestore: Bio_sic</strong>
+              <span id="fbActiveDateBadge" class="fb-badge date-badge"
+                >Today</span
+              >
+            </div>
+            <div class="fb-board-controls">
+              <select
+                id="fbIndexSelect"
+                class="fb-select"
+                title="Select 90-Count Chunk Index"
+              >
+                <option value="all">All Indexes (0..n)</option>
+                <option value="0" selected>Index 0 (Max 90)</option>
+              </select>
+              <button id="fbRefreshBtn" type="button" class="fb-btn">
+                🔄 Sync Firebase
+              </button>
+              <button id="fbAutoSyncBtn" type="button" class="fb-btn active">
+                ⚡ Auto-Sync (5s)
+              </button>
+              <button id="fbDismissPopupBtn" type="button" class="fb-btn">
+                🛡 Dismiss Popup
+              </button>
+            </div>
+          </div>
+
+          <div class="fb-stats-strip">
+            <span class="fb-stat" id="fbStatTotal">📊 Total Items: 0</span>
+            <span class="fb-stat" id="fbStatIndex"
+              >📁 Active Index: 0 (0/90)</span
+            >
+            <span class="fb-stat highlight" id="fbStatGuard"
+              >🛡 Inactivity Guard: ACTIVE</span
+            >
+            <span class="fb-stat" id="fbStatLastSync">⏱ Last Sync: --</span>
+          </div>
+
+          <!-- Horizontal scrollable container for vertical 4-values columns -->
+          <div id="fbColumnsContainer" class="fb-columns-container">
+            <div class="fb-empty-state">
+              No Firestore round data loaded yet. Click "Sync Firebase" or start
+              watching data.
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -928,39 +998,84 @@
       // ==========================================================
 
       function setupAIFormGuard() {
-        const form = $("ai-form");
+        const form = document.getElementById("ai-form");
+        const cmdInput = document.getElementById("cmd");
+        const submitBtn = document.getElementById("submitCmdBtn");
 
         if (!form) {
+          console.error("ai-form not found");
           return;
         }
 
-        form.addEventListener(
-          "submit",
-          async (event) => {
-            //----------------------------------------------------
-            // IMPORTANT:
-            // Do not preventDefault if ai.js already owns
-            // the submit handler.
-            //
-            // This listener only performs readiness check.
-            //----------------------------------------------------
+        async function submitAICommand(event) {
+          if (event) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
 
-            if (!window.aiState.ready) {
-              event.preventDefault();
+          const val = cmdInput ? cmdInput.value.trim() : "";
+          if (!val) return;
 
-              log("⏳ Jarvis is still starting...");
+          if (cmdInput) cmdInput.value = "";
 
-              const ready = await ensureJarvisReady();
+          const getHandler = () =>
+            typeof window.handleAISubmit === "function"
+              ? window.handleAISubmit
+              : typeof window.executeUserCommand === "function"
+                ? window.executeUserCommand
+                : null;
 
-              if (!ready) {
-                log("❌ Jarvis is not ready");
-              }
+          const handler = getHandler();
+          if (handler) {
+            try {
+              await handler(val);
+            } catch (err) {
+              console.error("AI submit error:", err);
+              if (typeof log === "function") log(`❌ AI Error: ${err.message}`);
             }
-          },
-          true,
-        );
+          } else {
+            console.log("Waiting for AI handler to initialize...");
+            let retries = 0;
+            const timer = setInterval(async () => {
+              retries++;
+              const retryHandler = getHandler();
+              if (retryHandler) {
+                clearInterval(timer);
+                try {
+                  await retryHandler(val);
+                } catch (err) {
+                  console.error("AI submit error:", err);
+                  if (typeof log === "function") log(`❌ AI Error: ${err.message}`);
+                }
+              } else if (retries >= 15) {
+                clearInterval(timer);
+                console.error("AI submit handler not found");
+                if (typeof log === "function") log("❌ AI submit handler not ready. Please try again.");
+                if (cmdInput && !cmdInput.value) cmdInput.value = val;
+              }
+            }, 100);
+          }
+        }
+
+        form.addEventListener("submit", submitAICommand, true);
+
+        if (submitBtn) {
+          submitBtn.addEventListener("click", submitAICommand);
+        }
+
+        if (cmdInput) {
+          cmdInput.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              e.stopPropagation();
+              submitAICommand(e);
+            }
+          });
+        }
       }
 
+      // Initialize form guard as early as possible
+      setupAIFormGuard();
       // ==========================================================
       // INITIAL PAGE LOAD
       // ==========================================================

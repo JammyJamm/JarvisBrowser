@@ -224,20 +224,39 @@ export const ACTION_MAP = [
   {
     name: "watch_iframe_data",
     patterns: [
-      /watch (?:data|svg(?:s)?|container)?\s*(?:from|in)?\s*(?:parent )?(?:class|container|selector)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?/i,
-      /stream (?:data|svg(?:s)?|container)?\s*(?:from|in)?\s*(?:parent )?(?:class|container|selector)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?/i,
-      /start interval\s*(?:for\s*)?['"]?([a-zA-Z0-9_.-]+)?['"]?/i,
-      /monitor (?:data|svg(?:s)?|container)?\s*(?:from|in)?\s*(?:parent )?(?:class|container|selector)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?/i,
+      /watch (?:data|svg(?:s)?|container)?\s*(?:from|in)?\s*(?:parent )?(?:class|container|selector)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?(?:\s+(?:every|interval)?\s*(\d+(?:ms|s)?))?/i,
+      /stream (?:data|svg(?:s)?|container)?\s*(?:from|in)?\s*(?:parent )?(?:class|container|selector)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?(?:\s+(?:every|interval)?\s*(\d+(?:ms|s)?))?/i,
+      /(?:start|set|extend)\s+interval\s*(?:to|for)?\s*(\d+(?:ms|s)?)?(?:\s*(?:for|on|from)?\s*['"]?([a-zA-Z0-9_.-]+)?['"]?)?/i,
+      /monitor (?:data|svg(?:s)?|container)?\s*(?:from|in)?\s*(?:parent )?(?:class|container|selector)?\s*['"]?([a-zA-Z0-9_.-]+)['"]?(?:\s+(?:every|interval)?\s*(\d+(?:ms|s)?))?/i,
     ],
-    build: (input, match) => ({
-      type: ACTION_TYPES.WATCH_IFRAME_DATA,
-      tool: "watch_iframe_data",
-      args: {
-        target: match && match[1] ? match[1] : ".tzQn0o",
-        interval: 1500,
-        onlyIframes: true,
-      },
-    }),
+    build: (input, match) => {
+      let target = ".tzQn0o";
+      let interval = 5000;
+      if (match) {
+        for (let i = 1; i < match.length; i++) {
+          const val = match[i];
+          if (!val) continue;
+          if (/^\d+(?:ms|s)?$/i.test(val)) {
+            if (val.endsWith("s") && !val.endsWith("ms")) {
+              interval = parseFloat(val) * 1000;
+            } else {
+              interval = parseInt(val, 10);
+            }
+          } else if (/^[a-zA-Z0-9_.-]+$/.test(val)) {
+            target = val;
+          }
+        }
+      }
+      return {
+        type: ACTION_TYPES.WATCH_IFRAME_DATA,
+        tool: "watch_iframe_data",
+        args: {
+          target,
+          interval,
+          onlyIframes: true,
+        },
+      };
+    },
   },
 
   {

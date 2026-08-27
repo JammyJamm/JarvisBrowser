@@ -1318,8 +1318,41 @@ export default class ToolMap {
     );
 
     //--------------------------------------------------
+    // DISMISS INACTIVITY POPUP (OK / START / CONTINUE)
+    //--------------------------------------------------
+
+    this.register(
+      "dismiss_inactivity_popup",
+
+      async () => {
+        if (this.hasResolverMethod("dismissInactivityPopup")) {
+          return await this.resolver.dismissInactivityPopup();
+        }
+        if (this.hasResolverMethod("getPage")) {
+          const page = await this.resolver.getPage();
+          const { dismissInactivityPopup } = await import("./utils/iframeContent.js");
+          return await dismissInactivityPopup(page);
+        }
+        return { success: true, dismissed: false, count: 0 };
+      },
+
+      {
+        category: "interaction",
+        description: "Dismiss any inactivity, pause, or resume modal dialog by clicking OK, Start, Continue, or Resume.",
+      },
+    );
+
+    //--------------------------------------------------
     // TOOL ALIASES
     //--------------------------------------------------
+
+    this.registerAlias("dismiss_popup", "dismiss_inactivity_popup");
+
+    this.registerAlias("click_ok", "dismiss_inactivity_popup");
+
+    this.registerAlias("resume_game", "dismiss_inactivity_popup");
+
+    this.registerAlias("handle_inactivity", "dismiss_inactivity_popup");
 
     this.registerAlias("tap", "click");
 
