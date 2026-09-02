@@ -775,6 +775,10 @@ function renderLiveIntervalCard(
   copyBtn.type = "button";
   copyBtn.innerText = "📋 Copy JSON";
 
+  const saveBlockBtn = document.createElement("button");
+  saveBlockBtn.type = "button";
+  saveBlockBtn.innerText = "💾 Save JSON Block";
+
   const stopBtn = document.createElement("button");
   stopBtn.type = "button";
   stopBtn.innerText = "⏹ Stop";
@@ -789,6 +793,7 @@ function renderLiveIntervalCard(
   toolbar.appendChild(btn10s);
   toolbar.appendChild(btn15s);
   toolbar.appendChild(copyBtn);
+  toolbar.appendChild(saveBlockBtn);
   toolbar.appendChild(stopBtn);
 
   // Stats bar
@@ -833,11 +838,10 @@ function renderLiveIntervalCard(
 
     const setsCount = timeItems.length;
 
-    // Save to Firebase DB automatically on interval (only the single latest new 4-value round)
+    // Save to Firebase DB automatically on interval (save entire parsed timeItems array)
     let dbStatusText = "🔥 DB Saving...";
     if (shouldSaveDB && setsCount > 0) {
-      const latestSingleRound = [timeItems[timeItems.length - 1]];
-      const dbRes = await saveToFirebaseDB(latestSingleRound);
+      const dbRes = await saveToFirebaseDB(timeItems);
       if (dbRes.success) {
         dbStatusText = `🔥 Bio_sic/${dbRes.dateId} Saved (${dbRes.totalCount || setsCount} total, Idx ${dbRes.activeIndex || 0})`;
       } else {
@@ -1020,6 +1024,57 @@ function renderLiveIntervalCard(
         copyBtn.innerText = "📋 Copy JSON";
       }, 1500);
     }
+  });
+
+  // Save the currently displayed JSON code block (the <code> inside pre)
+  saveBlockBtn.addEventListener("click", async () => {
+    const rawText = code ? (code.innerText || code.textContent || "") : "";
+    if (!rawText) {
+      saveBlockBtn.innerText = "⚠️ No JSON";
+      setTimeout(() => (saveBlockBtn.innerText = "💾 Save JSON Block"), 1400);
+      return;
+    }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(rawText);
+    } catch (err) {
+      // If it's not strict JSON, attempt to extract JSON code block between backticks
+      const match = rawText.match(/```json\s*([\s\S]*?)\s*```/i);
+      if (match && match[1]) {
+        try {
+          parsed = JSON.parse(match[1]);
+        } catch (e) {
+          parsed = null;
+        }
+      }
+    }
+
+    if (!parsed) {
+      saveBlockBtn.innerText = "❌ Invalid JSON";
+      setTimeout(() => (saveBlockBtn.innerText = "💾 Save JSON Block"), 1400);
+      return;
+    }
+
+    // Send parsed JSON to backend save endpoint
+    saveBlockBtn.innerText = "⏳ Saving...";
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/save-round`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data: parsed }),
+      });
+      const result = await res.json();
+      if (result && result.success) {
+        saveBlockBtn.innerText = "✅ Saved!";
+      } else {
+        saveBlockBtn.innerText = "❌ Error";
+      }
+    } catch (err) {
+      saveBlockBtn.innerText = "❌ Error";
+    }
+
+    setTimeout(() => (saveBlockBtn.innerText = "💾 Save JSON Block"), 1500);
   });
 
   function setQuickInterval(ms, btn) {

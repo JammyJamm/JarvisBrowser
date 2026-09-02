@@ -1423,6 +1423,8 @@ export async function getFrameContainerData(
       includeChildren: options.includeChildren !== false,
       includeBBox: options.includeBBox !== false,
       limit: typeof options.limit === "number" ? options.limit : 50,
+      // If true, the page (browser) console will receive SVG summaries for each container
+      logSVGs: options.logSVGs === true,
     };
 
     return await frame.evaluate((opts) => {
@@ -1663,6 +1665,25 @@ export async function getFrameContainerData(
           }
         }
 
+        // If requested, log SVG summaries to the page (browser) console so they appear in browser logs.
+        if (opts.logSVGs && svgs.length) {
+          try {
+            const svgsSummary = svgs.map((s) => ({
+              index: s.index,
+              id: s.id,
+              className: s.className,
+              viewBox: s.viewBox,
+              text: s.text,
+              pathCount: s.pathCount,
+              shapeCount: s.shapeCount,
+              dynamicValues: s.dynamicValues,
+            }));
+            console.info("[getFrameContainerData][page] SVGs for container index=", i, svgsSummary);
+          } catch (e) {
+            try { console.warn("[getFrameContainerData][page] failed to log svgs", e && e.message ? e.message : e); } catch (e2) {}
+          }
+        }
+
         // Child interactive elements
         let buttons = [];
         let links = [];
@@ -1855,6 +1876,35 @@ export async function getIframeContainerData(
   for (const frame of targetFrames) {
     const frameDesc = await describeFrame(frame);
     const containers = await getFrameContainerData(frame, target, options);
+
+    // Optional logging for extracted SVGs — set options.logSVGs = true to enable
+    if (options && options.logSVGs) {
+      try {
+        // Log a compact summary to avoid overwhelming the console.
+        const summary = containers.map((c) => ({
+          index: c.index,
+          id: c.id,
+          className: c.className,
+          svgCount: c.svgCount,
+          // include full svg objects but limit to paths/shapes/text for readability
+          svgs: (c.svgs || []).map((s) => ({
+            index: s.index,
+            id: s.id,
+            className: s.className,
+            viewBox: s.viewBox,
+            text: s.text,
+            pathCount: s.pathCount,
+            shapeCount: s.shapeCount,
+            dynamicValues: s.dynamicValues,
+          })),
+        }));
+
+        console.log(`[getIframeContainerData] frameIndex=${allFrames.indexOf(frame)} url=${frameDesc.url} containers=${containers.length}`);
+        console.log(JSON.stringify(summary, null, 2));
+      } catch (logErr) {
+        console.log("[getIframeContainerData] failed to log SVGs:", logErr && logErr.message ? logErr.message : logErr);
+      }
+    }
 
     if (containers && containers.length) {
       totalContainers += containers.length;

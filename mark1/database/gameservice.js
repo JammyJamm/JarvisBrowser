@@ -253,15 +253,16 @@ export const saveRound = async (dateStr, rawInput, options = {}) => {
       throw new Error("Invalid payload to save.");
     }
 
+    // Normalize incoming payload into the 4-values time-keyed array
     const newItems = formatTimeToValuesJSON(rawInput);
     if (!newItems || !newItems.length) {
       throw new Error("No 4-value time items extracted from input.");
     }
 
     const docRef = doc(db, "Bio_sic", dateId);
-    let existingAllItems = [];
 
-    // Fetch existing document to merge items
+    // Fetch existing document to preserve previous items
+    let existingAllItems = [];
     try {
       const snap = await getDoc(docRef);
       if (snap.exists()) {
@@ -276,23 +277,31 @@ export const saveRound = async (dateStr, rawInput, options = {}) => {
       console.warn("[Firebase] Could not fetch existing doc, creating new:", readErr.message);
     }
 
-    // Merge: Append new items without duplicating the exact last item
+    // Merge logic:
+    // - Preserve existing items order
+    // - For each new item: if timeKey exists in existing items, replace the existing value with the new one (update)
+    //   otherwise append the new item to the end (preserve historical order + add new)
     const mergedItems = [...existingAllItems];
+
+    const findIndexByKey = (arr, key) => arr.findIndex((it) => Object.keys(it)[0] === key);
+
     for (const item of newItems) {
-      const itemKey = Object.keys(item)[0];
-      const itemVal = JSON.stringify(item[itemKey]);
-
-      const isDuplicateLast =
-        mergedItems.length > 0 &&
-        Object.keys(mergedItems[mergedItems.length - 1])[0] === itemKey &&
-        JSON.stringify(mergedItems[mergedItems.length - 1][itemKey]) === itemVal;
-
-      if (!isDuplicateLast) {
+      const key = Object.keys(item)[0];
+      const idx = findIndexByKey(mergedItems, key);
+      if (idx === -1) {
+        // not present -> append
         mergedItems.push(item);
+      } else {
+        // present -> check if value differs; if so replace
+        const existingVal = mergedItems[idx][key];
+        const newVal = item[key];
+        if (JSON.stringify(existingVal) !== JSON.stringify(newVal)) {
+          mergedItems[idx] = item;
+        }
       }
     }
 
-    // Partition all items into chunks of 90
+    // Partition merged items into chunks of 90
     const CHUNK_SIZE = 90;
     const indexedPayload = {
       updatedAt: serverTimestamp(),
@@ -305,9 +314,11 @@ export const saveRound = async (dateStr, rawInput, options = {}) => {
       indexedPayload[String(c)] = chunkItems;
     }
 
-    await setDoc(docRef, indexedPayload, { merge: true });
+    // Write back with merge: false (overwrite) to ensure only the 4-values data remains
+    await setDoc(docRef, indexedPayload);
+
     console.log(
-      `[Firebase] Saved to Bio_sic/${dateId}: total ${mergedItems.length} items across ${chunksCount} index(es) (90 per index)`
+      `[Firebase] Saved Bio_sic/${dateId}: total ${mergedItems.length} items across ${chunksCount} index(es)`
     );
 
     return {
