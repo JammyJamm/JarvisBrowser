@@ -5,6 +5,7 @@ import {
   setDoc,
   getDoc,
   serverTimestamp,
+  deleteField,
 } from "firebase/firestore";
 
 /**
@@ -205,21 +206,27 @@ export function formatTimeToValuesJSON(rawInput, baseDate = new Date()) {
     }
   }
 
-  // 3. Chunk numbers into 4 values each with incrementing timestamps
+  // 3. Chunk numbers into 4 values each with timestamps ending at baseDate
   const items = [];
   const baseTime = (baseDate instanceof Date ? baseDate : new Date()).getTime();
+
+  // Compute total chunks so timestamps end at baseTime (now)
+  const totalChunks = Math.max(1, Math.ceil(processedNumbers.length / 4));
 
   for (let i = 0; i < processedNumbers.length; i += 4) {
     const chunk = processedNumbers.slice(i, i + 4);
     if (chunk.length > 0) {
       const cleaned = cleanFourValues(chunk);
-      const setDate = new Date(baseTime + (i / 4) * 60000);
+      const chunkIndex = i / 4;
+      const minutesOffset = totalChunks - 1 - chunkIndex;
+      const setDate = new Date(baseTime - minutesOffset * 60000);
       const timeKey = formatTimeKey(setDate);
       items.push({ [timeKey]: cleaned });
     }
   }
 
-  return items;
+  // Return newest-first: latest (baseTime) at index 0
+  return items.reverse();
 }
 
 // Backwards compatibility alias
@@ -263,13 +270,14 @@ export const saveRound = async (dateStr, rawInput, options = {}) => {
 
     // Fetch existing document to preserve previous items
     let existingAllItems = [];
+    let existingDocData = {};
     try {
       const snap = await getDoc(docRef);
       if (snap.exists()) {
-        const docData = snap.data() || {};
+        existingDocData = snap.data() || {};
         let idx = 0;
-        while (Array.isArray(docData[String(idx)])) {
-          existingAllItems.push(...docData[String(idx)]);
+        while (Array.isArray(existingDocData[String(idx)])) {
+          existingAllItems.push(...existingDocData[String(idx)]);
           idx++;
         }
       }
@@ -281,44 +289,91 @@ export const saveRound = async (dateStr, rawInput, options = {}) => {
     // - Preserve existing items order
     // - For each new item: if timeKey exists in existing items, replace the existing value with the new one (update)
     //   otherwise append the new item to the end (preserve historical order + add new)
-    const mergedItems = [...existingAllItems];
+    // Build merged items with newest-first order:
+    // 1. Start with newItems (they are newest-first) to ensure latest values appear first
+    // 2. Append existing items that are not present in newItems (preserve historical items)
+    const mergedItems = [];
+    const seenKeys = new Set();
 
-    const findIndexByKey = (arr, key) => arr.findIndex((it) => Object.keys(it)[0] === key);
-
+    // add new items first (overwrite any existing)
     for (const item of newItems) {
       const key = Object.keys(item)[0];
-      const idx = findIndexByKey(mergedItems, key);
-      if (idx === -1) {
-        // not present -> append
+      mergedItems.push(item);
+      seenKeys.add(key);
+    }
+
+    // append older existing items that are not in newItems
+    for (const item of existingAllItems) {
+      const key = Object.keys(item)[0];
+      if (!seenKeys.has(key)) {
         mergedItems.push(item);
-      } else {
-        // present -> check if value differs; if so replace
-        const existingVal = mergedItems[idx][key];
-        const newVal = item[key];
-        if (JSON.stringify(existingVal) !== JSON.stringify(newVal)) {
-          mergedItems[idx] = item;
-        }
+        seenKeys.add(key);
       }
+    }
+
+    // Normalize and sort merged items by time key (newest-first)
+    function parseTimeKeyToMs(key) {
+      if (!key || typeof key !== 'string') return 0;
+      const m = key.match(/^(\d{2}):(\d{2})(am|pm)$/i);
+      if (!m) return 0;
+      let hh = parseInt(m[1], 10);
+      const mm = parseInt(m[2], 10);
+      const ap = m[3].toLowerCase();
+      if (ap === 'pm' && hh !== 12) hh += 12;
+      if (ap === 'am' && hh === 12) hh = 0;
+      const d = new Date();
+      d.setHours(hh, mm, 0, 0);
+      return d.getTime();
+    }
+
+    // If mergedItems contain valid time keys, sort descending (newest-first)
+    try {
+      mergedItems.sort((a, b) => {
+        const aKey = Object.keys(a)[0];
+        const bKey = Object.keys(b)[0];
+        return parseTimeKeyToMs(bKey) - parseTimeKeyToMs(aKey);
+      });
+    } catch (e) {
+      // ignore sort errors
     }
 
     // Partition merged items into chunks of 90
     const CHUNK_SIZE = 90;
-    const indexedPayload = {
+    const chunksCount = Math.max(1, Math.ceil(mergedItems.length / CHUNK_SIZE));
+
+    // Build update object that only writes changed chunks
+    const updates = {
       updatedAt: serverTimestamp(),
       totalCount: mergedItems.length,
     };
 
-    const chunksCount = Math.max(1, Math.ceil(mergedItems.length / CHUNK_SIZE));
+    // existingDocData is already populated above
     for (let c = 0; c < chunksCount; c++) {
       const chunkItems = mergedItems.slice(c * CHUNK_SIZE, (c + 1) * CHUNK_SIZE);
-      indexedPayload[String(c)] = chunkItems;
+      const existingChunk = (existingDocData && Array.isArray(existingDocData[String(c)]) ? existingDocData[String(c)] : []);
+      if (JSON.stringify(existingChunk) !== JSON.stringify(chunkItems)) {
+        updates[String(c)] = chunkItems;
+      }
     }
 
-    // Write back with merge: false (overwrite) to ensure only the 4-values data remains
-    await setDoc(docRef, indexedPayload);
+    // If existing doc had more chunks than new chunks, clear the extra fields
+    if (existingDocData) {
+      let idx = 0;
+      while (Array.isArray(existingDocData[String(idx)])) idx++;
+      const existingChunksCount = idx;
+      for (let c = chunksCount; c < existingChunksCount; c++) {
+        // delete extra chunk fields
+        updates[String(c)] = deleteField();
+      }
+    }
+
+    // Perform a merge update so only specified fields are modified
+    await setDoc(docRef, updates, { merge: true });
+
+    const changedChunkCount = Object.keys(updates).filter((k) => k !== 'updatedAt' && k !== 'totalCount').length;
 
     console.log(
-      `[Firebase] Saved Bio_sic/${dateId}: total ${mergedItems.length} items across ${chunksCount} index(es)`
+      `[Firebase] Updated Bio_sic/${dateId}: total ${mergedItems.length} items, updated ${changedChunkCount} chunk(s)`
     );
 
     return {
@@ -328,7 +383,7 @@ export const saveRound = async (dateStr, rawInput, options = {}) => {
       totalCount: mergedItems.length,
       chunksCount,
       activeIndex: String(chunksCount - 1),
-      currentChunkCount: indexedPayload[String(chunksCount - 1)]?.length || 0,
+      currentChunkCount: mergedItems.slice(0, CHUNK_SIZE).length,
       latestItems: newItems,
     };
   } catch (err) {
