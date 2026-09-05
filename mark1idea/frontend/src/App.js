@@ -21,13 +21,8 @@ import MenuItem from "@mui/material/MenuItem";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import Select from "@mui/material/Select";
 import Stack from "@mui/material/Stack";
-import Table from "@mui/material/Table";
-import TableBody from "@mui/material/TableBody";
-import TableCell from "@mui/material/TableCell";
-import TableContainer from "@mui/material/TableContainer";
-import TableHead from "@mui/material/TableHead";
-import TableRow from "@mui/material/TableRow";
 import Typography from "@mui/material/Typography";
+import "./App.css";
 
 const COLLECTION_NAME = "Bio_sic";
 
@@ -57,14 +52,23 @@ function getRoundValues(round) {
 function valueColor(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return "default";
-  if (number >= 10) return "error";
-  if (number >= 2) return "warning";
+  if (number > 10) return "error";
+  if (number === 10) return "warning";
   return "success";
 }
 
 function formatValue(value) {
   const number = Number(value);
-  return Number.isFinite(number) ? number.toFixed(2) : String(value ?? "-");
+  if (!Number.isFinite(number)) return String(value ?? "-");
+  return Number.isInteger(number) ? String(number) : number.toFixed(2);
+}
+
+function valueState(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "unknown";
+  if (number > 10) return "high";
+  if (number < 10) return "low";
+  return "target";
 }
 
 function formatUpdatedAt(value) {
@@ -131,9 +135,31 @@ export default function App() {
     [documentData],
   );
 
-  const columnCount = useMemo(
-    () => Math.max(4, ...rows.map(([, round]) => getRoundValues(round).length)),
+  const chartRows = useMemo(
+    () =>
+      rows
+        .map(([time, round]) => {
+          const value = getRoundValues(round)[0];
+          const number = Number(value);
+          return {
+            time,
+            value,
+            number,
+            state: valueState(value),
+          };
+        })
+        .filter(({ number }) => Number.isFinite(number))
+        .reverse(),
     [rows],
+  );
+
+  const chartSummary = useMemo(
+    () =>
+      chartRows.reduce(
+        (summary, { state }) => ({ ...summary, [state]: summary[state] + 1 }),
+        { high: 0, low: 0, target: 0, unknown: 0 },
+      ),
+    [chartRows],
   );
 
   const updatedAt = formatUpdatedAt(documentData.updatedAt);
@@ -244,53 +270,53 @@ export default function App() {
                 No round data exists for this date.
               </Alert>
             ) : (
-              <TableContainer sx={{ maxHeight: "65vh" }}>
-                <Table stickyHeader>
-                  <TableHead>
-                    <TableRow>
-                      <TableCell sx={{ fontWeight: 800 }}>#</TableCell>
-                      <TableCell sx={{ fontWeight: 800 }}>Time</TableCell>
-                      {Array.from({ length: columnCount }, (_, index) => (
-                        <TableCell align="center" sx={{ fontWeight: 800 }} key={index}>
-                          Value {index + 1}
-                        </TableCell>
-                      ))}
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {rows.map(([time, round], index) => {
-                      const values = getRoundValues(round);
-                      return (
-                        <TableRow hover key={time}>
-                          <TableCell sx={{ color: "text.secondary" }}>
-                            {rows.length - index}
-                          </TableCell>
-                          <TableCell sx={{ whiteSpace: "nowrap", fontWeight: 600 }}>
-                            {time}
-                          </TableCell>
-                          {Array.from({ length: columnCount }, (_, valueIndex) => {
-                            const value = values[valueIndex];
-                            return (
-                              <TableCell align="center" key={valueIndex}>
-                                {value === undefined ? (
-                                  "-"
-                                ) : (
-                                  <Chip
-                                    label={formatValue(value)}
-                                    color={valueColor(value)}
-                                    size="small"
-                                    sx={{ minWidth: 72, fontWeight: 700 }}
-                                  />
-                                )}
-                              </TableCell>
-                            );
-                          })}
-                        </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
-              </TableContainer>
+              <>
+                <Box className="chart-panel sic-board">
+                  <Stack
+                    direction={{ xs: "column", md: "row" }}
+                    justifyContent="space-between"
+                    alignItems={{ xs: "flex-start", md: "center" }}
+                    spacing={2}
+                    sx={{ mb: 3 }}
+                  >
+                    <Box>
+                      <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                        SIC-BIO live board
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Each vertical column is one round · first value drives the timeline below
+                      </Typography>
+                    </Box>
+                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                      <Chip className="chart-legend-chip high" label={`Above 10 · ${chartSummary.high}`} size="small" />
+                      <Chip className="chart-legend-chip target" label={`At 10 · ${chartSummary.target}`} size="small" />
+                      <Chip className="chart-legend-chip low" label={`Below 10 · ${chartSummary.low}`} size="small" />
+                    </Stack>
+                  </Stack>
+
+                  {chartRows.length === 0 ? (
+                    <Typography color="text.secondary">No numeric first values are available to plot.</Typography>
+                  ) : (
+                    <Box className="chart-scroll-area">
+                      <Box className="sic-board-grid sic-lobby-table">
+                        {chartRows.map(({ time, value }) => {
+                          return (
+                            <Box className="sic-round-column" key={time} title={`${time}: ${formatValue(value)}`}>
+                              <Box className="sic-round-values">
+                                <Box className={`sic-value-cell primary ${valueState(value)}`}>
+                                  {formatValue(value)}
+                                </Box>
+                              </Box>
+                              <Typography className="sic-time-label">{time}</Typography>
+                            </Box>
+                          );
+                        })}
+                      </Box>
+                    </Box>
+                  )}
+                </Box>
+
+              </>
             )}
           </CardContent>
         </Card>
