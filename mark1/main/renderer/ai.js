@@ -187,7 +187,11 @@
         const cleaned = cleanFourValues(chunk);
         const chunkIndex = i / 4; // 0-based
         // Assign times so the last chunk corresponds to baseTime, earlier chunks are baseTime - (remaining minutes)
-        const minutesOffset = totalChunks - 1 + chunkIndex;
+        // Assign minutes so the last chunk corresponds to baseTime (now)
+        // earlier chunks are baseTime - (remaining minutes). Use subtraction
+        // so chunkIndex 0 (first chunk in processed order) maps to the oldest
+        // timestamp and the final chunk maps to baseTime.
+        const minutesOffset = totalChunks - 1 - chunkIndex;
         const setDate = new Date(baseTime - minutesOffset * 60000);
         const timeKey = formatTimeKey(setDate);
         items.push({ [timeKey]: cleaned });

@@ -1997,6 +1997,49 @@ export function watchIframeContainerData(
 //==========================================================
 
 export async function dismissInactivityPopup(page) {
+  // Quick explicit attempt: click the known in-game play button selector
+  // This runs before the more generic DOM-scanning logic to ensure the
+  // 'game paused due to inactivity' overlay is dismissed as early as possible.
+  try {
+    const playSelector = 'button.A2zb9M.E0dFqh.VQJTA7.iTKQgM[data-role="play-button"]';
+
+    // Try clicking on the main page first (if present)
+    try {
+      const mainLocator = page.locator ? page.locator(playSelector) : null;
+      if (mainLocator) {
+        const c = await mainLocator.count().catch(() => 0);
+        if (c > 0) {
+          await mainLocator.first().click({ force: true, timeout: 2000 }).catch(() => {});
+          log('dismissInactivityPopup: clicked play-button on main page');
+        }
+      }
+    } catch (e) {
+      try { warn('dismissInactivityPopup: main page play-button click failed:', e && e.message ? e.message : e); } catch (e2) {}
+    }
+
+    // Try clicking inside each frame
+    try {
+      const frames = page.frames ? page.frames() : [];
+      for (const f of frames) {
+        try {
+          const fl = f.locator ? f.locator(playSelector) : null;
+          if (!fl) continue;
+          const fc = await fl.count().catch(() => 0);
+          if (fc > 0) {
+            await fl.first().click({ force: true, timeout: 2000 }).catch(() => {});
+            log('dismissInactivityPopup: clicked play-button inside frame', f.url());
+          }
+        } catch (e) {
+          try { warn('dismissInactivityPopup: frame play-button click failed for frame', f && f.url ? f.url() : '<unknown>', e && e.message ? e.message : e); } catch (e2) {}
+        }
+      }
+    } catch (e) {
+      try { warn('dismissInactivityPopup: frame iteration failed:', e && e.message ? e.message : e); } catch (e2) {}
+    }
+  } catch (err) {
+    try { warn('dismissInactivityPopup error (pre-scan click):', err && err.message ? err.message : err); } catch (e) {}
+  }
+
   if (!page || page.isClosed?.()) return { dismissed: false, count: 0 };
   let dismissedCount = 0;
   const clickedButtons = [];
@@ -2106,13 +2149,42 @@ export async function dismissInactivityPopup(page) {
                 btn.closest?.('[data-role="play-button"]');
 
               if (isExplicitInactivity || isModalInactivity || isDialogActionInModal || isPlayButtonOverlay) {
-                btn.click();
+                try {
+                  // Dispatch pointer events before click to bypass overlays that block synthetic clicks
+                  try { btn.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window })); } catch (e) {}
+                  try { btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window })); } catch (e) {}
+                  try { btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window })); } catch (e) {}
+                  try { btn.focus && btn.focus(); } catch (e) {}
+                  try { btn.click(); } catch (e) {}
+                } catch (e) {}
+
                 clicked.push(rawText || ariaLabel || id || (isPlayButtonOverlay ? "play-button (overlay)" : "inactivity-btn"));
                 if (clicked.length >= 3) break; // At most 3 buttons per frame
               }
             } catch {}
           }
-          return clicked;
+
+          // Fallback: click or remove explicit inactivity message wrappers if present
+          try {
+            const wrappers = Array.from(document.querySelectorAll('[data-role="inactivity-message-wrapper"], .w0dwli'));
+            for (const w of wrappers) {
+              try {
+                const clickable = w.querySelector('[data-role="inactivity-message-clickable"], button, [data-role="play-button"]');
+                if (clickable) {
+                  try { clickable.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window })); } catch (e) {}
+                  try { clickable.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window })); } catch (e) {}
+                  try { clickable.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window })); } catch (e) {}
+                  try { clickable.click(); } catch (e) {}
+                  clicked.push('wrapper-click');
+                } else {
+                  // remove wrapper as last resort to allow interactions beneath
+                  try { w.remove(); clicked.push('wrapper-removed'); } catch (e) {}
+                }
+              } catch (e) {}
+            }
+          } catch (e) {}
+
+          return Array.from(new Set(clicked));
         });
 
         if (result && result.length) {

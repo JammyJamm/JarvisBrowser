@@ -311,31 +311,11 @@ export const saveRound = async (dateStr, rawInput, options = {}) => {
       }
     }
 
-    // Normalize and sort merged items by time key (newest-first)
-    function parseTimeKeyToMs(key) {
-      if (!key || typeof key !== 'string') return 0;
-      const m = key.match(/^(\d{2}):(\d{2})(am|pm)$/i);
-      if (!m) return 0;
-      let hh = parseInt(m[1], 10);
-      const mm = parseInt(m[2], 10);
-      const ap = m[3].toLowerCase();
-      if (ap === 'pm' && hh !== 12) hh += 12;
-      if (ap === 'am' && hh === 12) hh = 0;
-      const d = new Date();
-      d.setHours(hh, mm, 0, 0);
-      return d.getTime();
-    }
-
-    // If mergedItems contain valid time keys, sort descending (newest-first)
-    try {
-      mergedItems.sort((a, b) => {
-        const aKey = Object.keys(a)[0];
-        const bKey = Object.keys(b)[0];
-        return parseTimeKeyToMs(bKey) - parseTimeKeyToMs(aKey);
-      });
-    } catch (e) {
-      // ignore sort errors
-    }
+    // Preserve incoming order: DO NOT re-sort merged items by time key.
+    // Sorting by hh:mmpm without full date context causes ambiguous ordering
+    // and may shift items when times wrap across midnight or hours. The
+    // frontend provides timestamps aligned to baseDate, so respect the
+    // incoming ordering and avoid any reordering here.
 
     // Partition merged items into chunks of 90
     const CHUNK_SIZE = 90;
