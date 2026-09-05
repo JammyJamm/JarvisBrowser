@@ -1,26 +1,6 @@
 import db from "./firebaseConfig.js";
 import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
 
-export async function clickPlayButton(frame) {
-  if (!frame) return false;
-
-  const playButtons = frame.locator(
-    'button[data-role="play-button"], [data-role="play-button"]',
-  );
-  const buttonCount = await playButtons.count();
-
-  for (let index = 0; index < buttonCount; index += 1) {
-    const button = playButtons.nth(index);
-    if (await button.isVisible()) {
-      await button.click({ force: true });
-      console.log("▶️ Play button clicked");
-      return true;
-    }
-  }
-
-  return false;
-}
-
 function formatTimeKey(date) {
   let hours = date.getHours();
   const minutes = String(date.getMinutes()).padStart(2, "0");
@@ -191,4 +171,4 @@ export const getRounds = async (dateStr) => {
   return snapshot.exists() ? snapshot.data() : {};
 };
 
-export default { getTodayDateId, saveRound, getRounds, clickPlayButton };
+export default { getTodayDateId, saveRound, getRounds };
