@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { chromium } from "playwright";
-import { getTodayDateId, saveRound } from "./gameservice.js";
+import { getRoundValues, getTodayDateId, saveRound } from "./gameservice.js";
 
 const app = express();
 app.use(cors({ origin: "http://localhost:3006" }));
@@ -12,7 +12,14 @@ let roundHistory = [];
 let lastHistorySvgRounds = [];
 
 function sameRound(left, right) {
-  return JSON.stringify(left) === JSON.stringify(right);
+  try {
+    return (
+      JSON.stringify(getRoundValues(left)) ===
+      JSON.stringify(getRoundValues(right))
+    );
+  } catch {
+    return false;
+  }
 }
 
 function getNewRounds(rounds, previousRounds) {
@@ -124,6 +131,75 @@ async function getGameFrameWithSvg() {
   return null;
 }
 
+async function closeRoundHistoryPopup() {
+  if (!page || page.isClosed()) return false;
+
+  for (const frame of page.frames()) {
+    try {
+      const closeButton = frame.getByRole("button", {
+        name: "CLOSE",
+        exact: true,
+      });
+
+      if ((await closeButton.count()) === 0) continue;
+      const button = closeButton.first();
+      if (!(await button.isVisible({ timeout: 500 }))) continue;
+
+      await button.scrollIntoViewIfNeeded({ timeout: 1000 });
+      try {
+        await button.click({ timeout: 2000 });
+      } catch {
+        // Popup animations can keep the button unstable; force the user-facing
+        // button click, then use the DOM event only as a final fallback.
+        try {
+          await button.click({ timeout: 1000, force: true });
+        } catch {
+          await button.evaluate((element) => element.click());
+        }
+      }
+      console.log("🖱️ Closed round-history popup");
+      return true;
+    } catch (error) {
+      console.warn(
+        `⚠️ Unable to close round-history popup in frame: ${error.message}`,
+      );
+    }
+  }
+
+  return false;
+}
+
+async function clickRoundHistoryPlayButton() {
+  if (!page || page.isClosed()) return false;
+
+  for (const frame of page.frames()) {
+    try {
+      const playButton = frame.locator("button[data-role='play-button']").first();
+      if ((await playButton.count()) === 0) continue;
+      if (!(await playButton.isVisible({ timeout: 500 }))) continue;
+
+      await playButton.scrollIntoViewIfNeeded({ timeout: 1000 });
+      try {
+        await playButton.click({ timeout: 2000 });
+      } catch {
+        try {
+          await playButton.click({ timeout: 1000, force: true });
+        } catch {
+          await playButton.evaluate((element) => element.click());
+        }
+      }
+      console.log("🖱️ Clicked round-history play button");
+      return true;
+    } catch (error) {
+      console.warn(
+        `⚠️ Unable to click round-history play button in frame: ${error.message}`,
+      );
+    }
+  }
+
+  return false;
+}
+
 async function requestRoundHistory() {
   if (scrapeInProgress) {
     console.warn("⚠️ Previous /round-history request is still running");
@@ -134,6 +210,8 @@ async function requestRoundHistory() {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 25000);
   try {
+    await closeRoundHistoryPopup();
+    await clickRoundHistoryPlayButton();
     console.log("📡 Calling /round-history");
     const response = await fetch(`http://127.0.0.1:${PORT}/round-history`, {
       signal: controller.signal,
@@ -278,15 +356,14 @@ app.get("/round-history", async (req, res) => {
     const isInitialHistoryLoad = lastHistorySvgRounds.length === 0;
     const newRounds = getNewRounds(historyRounds, lastHistorySvgRounds);
     const isDuplicate = !isInitialHistoryLoad && newRounds.length === 0;
-    lastHistorySvgRounds = historyRounds;
 
     const dateId = getTodayDateId();
+    const roundsToSave = newRounds.length > 0 ? [newRounds[0]] : [];
     let saveResult = null;
-    const roundsToSave = newRounds.slice(0, 2);
     if (newRounds.length > 0) {
       appendSvgRoundsToHistory(
         new Date().toLocaleDateString("en-GB"),
-        roundsToSave,
+        newRounds,
       );
       saveResult = await saveRound(dateId, roundsToSave, {
         baseDate: new Date(Date.now() - 60000),
@@ -296,6 +373,7 @@ app.get("/round-history", async (req, res) => {
         JSON.stringify(saveResult),
       );
     }
+    lastHistorySvgRounds = historyRounds;
     console.log(
       "📚 /round-history new SVG rounds:",
       JSON.stringify(newRounds),

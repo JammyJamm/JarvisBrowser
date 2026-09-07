@@ -21,9 +21,7 @@ export function normalizeRound(round) {
   if (Array.isArray(round)) {
     return round.map((value, index) => {
       const normalizedValue =
-        value && typeof value === "object"
-          ? Object.values(value)[0]
-          : value;
+        value && typeof value === "object" ? Object.values(value)[0] : value;
       return { [index]: normalizedValue };
     });
   }
@@ -79,19 +77,6 @@ export const saveRound = async (dateStr, rounds, options = {}) => {
   const docRef = doc(db, "Bio_sic", dateStr);
   const existingSnapshot = await getDoc(docRef);
   const existingData = existingSnapshot.exists() ? existingSnapshot.data() : {};
-  const previousRounds = new Set(
-    Object.values(existingData)
-      .filter((value) => Array.isArray(value))
-      .map((value) => {
-        try {
-          return normalizeRound(value);
-        } catch {
-          return null;
-        }
-      })
-      .filter((value) => value && getRoundValues(value).length === 4)
-      .map(roundKey),
-  );
   const uniqueRounds = [];
 
   for (const round of rounds) {
@@ -104,20 +89,14 @@ export const saveRound = async (dateStr, rounds, options = {}) => {
       continue;
     }
 
-    const key = roundKey(normalizedRound);
-    const duplicate = previousRounds.has(key);
     console.log(
-      `[Firebase] Round ${JSON.stringify(getRoundValues(normalizedRound))} duplicate: ${duplicate}`,
+      `[Firebase] Queuing round ${JSON.stringify(getRoundValues(normalizedRound))}`,
     );
-
-    if (!duplicate) {
-      uniqueRounds.push(normalizedRound);
-      previousRounds.add(key);
-    }
+    uniqueRounds.push(normalizedRound);
   }
 
   if (uniqueRounds.length === 0) {
-    console.log("[Firebase] Duplicate SVG rounds skipped.");
+    console.log("[Firebase] No valid SVG rounds to save.");
     return {
       success: true,
       dateId: dateStr,
