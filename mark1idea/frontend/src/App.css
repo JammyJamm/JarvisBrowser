@@ -141,7 +141,9 @@
   width: min(34px, 75%);
   min-height: 3px;
   border-radius: 8px 8px 2px 2px;
-  transition: transform 160ms ease, filter 160ms ease;
+  transition:
+    transform 160ms ease,
+    filter 160ms ease;
 }
 
 .value-bar:hover {
@@ -216,6 +218,7 @@
   gap: 3px;
   min-width: max-content;
   padding: 8px 4px 0;
+  flex-direction: column;
 }
 
 .sic-lobby-table {
@@ -224,8 +227,15 @@
   border: 1px solid #333b4c;
   border-radius: 5px;
   background:
-    radial-gradient(circle, rgba(148, 163, 184, 0.22) 1px, transparent 1px) 0 0 / 13px 13px,
+    radial-gradient(circle, rgba(148, 163, 184, 0.22) 1px, transparent 1px) 0
+      0 / 13px 13px,
     #171b25;
+  display: flex;
+  align-items: flex-end;
+}
+
+.sic-lobby-table > .sic-board-grid + .sic-board-grid {
+  margin-top: 8px;
 }
 
 .sic-round-column {
@@ -269,7 +279,7 @@
 
 .sic-round-values {
   display: flex;
-  min-height: 134px;
+  /* min-height: 134px; */
   flex-direction: column;
   align-items: center;
   justify-content: flex-end;

@@ -49,14 +49,6 @@ function getRoundValues(round) {
   return [];
 }
 
-function valueColor(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return "default";
-  if (number > 10) return "error";
-  if (number === 10) return "warning";
-  return "success";
-}
-
 function formatValue(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return String(value ?? "-");
@@ -152,6 +144,19 @@ export default function App() {
         .reverse(),
     [rows],
   );
+
+  const chartLines = useMemo(() => {
+    const lines = [];
+    chartRows.forEach((item) => {
+      const currentLine = lines[lines.length - 1];
+      if (!currentLine || currentLine[0].state !== item.state) {
+        lines.push([item]);
+      } else {
+        currentLine.push(item);
+      }
+    });
+    return lines;
+  }, [chartRows]);
 
   const chartSummary = useMemo(
     () =>
@@ -284,7 +289,7 @@ export default function App() {
                         SIC-BIO live board
                       </Typography>
                       <Typography variant="body2" color="text.secondary">
-                        Each vertical column is one round · first value drives the timeline below
+                        Chronological first values · a new row starts only when the value changes side
                       </Typography>
                     </Box>
                     <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
@@ -298,19 +303,20 @@ export default function App() {
                     <Typography color="text.secondary">No numeric first values are available to plot.</Typography>
                   ) : (
                     <Box className="chart-scroll-area">
-                      <Box className="sic-board-grid sic-lobby-table">
-                        {chartRows.map(({ time, value }) => {
-                          return (
-                            <Box className="sic-round-column" key={time} title={`${time}: ${formatValue(value)}`}>
-                              <Box className="sic-round-values">
-                                <Box className={`sic-value-cell primary ${valueState(value)}`}>
-                                  {formatValue(value)}
+                      <Box className="sic-lobby-table">
+                        {chartLines.map((line, lineIndex) => (
+                          <Box className="sic-board-grid" key={`line-${lineIndex}`}>
+                            {line.map(({ time, value, state }) => (
+                              <Box className="sic-round-column" key={time} title={`${time}: ${formatValue(value)}`}>
+                                <Box className="sic-round-values">
+                                  <Box className={`sic-value-cell primary ${state}`}>
+                                    {formatValue(value)}
+                                  </Box>
                                 </Box>
                               </Box>
-                              <Typography className="sic-time-label">{time}</Typography>
-                            </Box>
-                          );
-                        })}
+                            ))}
+                          </Box>
+                        ))}
                       </Box>
                     </Box>
                   )}
