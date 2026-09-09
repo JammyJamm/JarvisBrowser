@@ -1,0 +1,1339 @@
+/* ==========================================================
+   Jarvis / Chrome Agent Browser Styling
+   Modern White / Light Theme — Sleek Chromium & Glass Aesthetics
+   ========================================================== */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --bg-primary: #f8fafc;
+  --bg-secondary: #ffffff;
+  --bg-panel: #f1f5f9;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f8fafc;
+  --border-subtle: #e2e8f0;
+  --border-active: #2563eb;
+  --accent-cyan: #0284c7;
+  --accent-blue: #2563eb;
+  --accent-green: #059669;
+  --accent-amber: #d97706;
+  --accent-red: #dc2626;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #64748b;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", Consolas, monospace;
+}
+
+html, body {
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+  font-family: var(--font-sans);
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  display: flex;
+  flex-direction: column;
+}
+
+/* ==========================================================
+   1. CHROME / JARVIS TAB STRIP
+   ========================================================== */
+
+#chromeTabStrip {
+  height: 40px;
+  background: #e8eaed;
+  display: flex;
+  align-items: flex-end;
+  padding: 0 10px;
+  gap: 6px;
+  border-bottom: 1px solid #d0d7de;
+  user-select: none;
+}
+
+.chrome-brand-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: #e0edff;
+  border: 1px solid #bfdbfe;
+  border-radius: 14px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #1d4ed8;
+  margin-bottom: 5px;
+  letter-spacing: 0.3px;
+}
+
+.chrome-brand-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #2563eb;
+  box-shadow: 0 0 6px #60a5fa;
+  animation: pulseLive 2s infinite;
+}
+
+.chrome-tabs-container {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  flex: 1;
+  overflow-x: auto;
+}
+
+.chrome-tabs-container::-webkit-scrollbar {
+  display: none;
+}
+
+.chrome-tab {
+  height: 34px;
+  max-width: 240px;
+  min-width: 140px;
+  padding: 0 12px;
+  background: #dadce0;
+  border-radius: 8px 8px 0 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #475569;
+  border: 1px solid #c4c7cc;
+  border-bottom: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.chrome-tab:hover {
+  background: #e3e5e8;
+  color: #0f172a;
+}
+
+.chrome-tab.active {
+  background: #ffffff;
+  color: #0f172a;
+  border-color: #d0d7de;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.chrome-tab-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: #2563eb;
+}
+
+.chrome-tab-title {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chrome-tab-close {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  color: #64748b;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.chrome-tab-close:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+.chrome-new-tab-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: transparent;
+  border: none;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  cursor: pointer;
+  margin-bottom: 4px;
+  transition: all 0.15s;
+}
+
+.chrome-new-tab-btn:hover {
+  background: #d0d7de;
+  color: #0f172a;
+}
+
+/* ==========================================================
+   2. OMNIBOX & NAVIGATION TOOLBAR
+   ========================================================== */
+
+#nav {
+  height: 44px;
+  background: #ffffff;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.nav-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: #475569;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.nav-btn:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.nav-btn .icon {
+  width: 16px;
+  height: 16px;
+  opacity: 0.75;
+  transition: opacity 0.15s;
+}
+
+.nav-btn:hover .icon {
+  opacity: 1;
+}
+
+.urlBlock {
+  flex: 1;
+  height: 32px;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 20px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  gap: 8px;
+  transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+}
+
+.urlBlock:focus-within {
+  background: #ffffff;
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+
+.url-security-icon {
+  width: 14px;
+  height: 14px;
+  color: #059669;
+  opacity: 0.9;
+}
+
+#url {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #0f172a;
+  font-size: 12.5px;
+  font-family: var(--font-sans);
+  padding: 0;
+}
+
+#url::placeholder {
+  color: #94a3b8;
+}
+
+.agent-toggle-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #eff6ff, #f0fdf4);
+  border: 1px solid #bfdbfe;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.agent-toggle-pill:hover {
+  background: linear-gradient(135deg, #dbeafe, #dcfce7);
+  border-color: #3b82f6;
+  box-shadow: 0 1px 6px rgba(37, 99, 235, 0.15);
+}
+
+/* ==========================================================
+   3. MAIN LAYOUT (SPLIT BROWSER & AGENT PANEL)
+   ========================================================== */
+
+#layout {
+  display: flex;
+  flex: 1;
+  height: calc(100vh - 84px);
+  position: relative;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+#browser {
+  flex: 1;
+  height: 100%;
+  position: relative;
+  background: #ffffff;
+}
+
+/* Jarvis Agent Side Panel */
+#aiForm {
+  width: 440px;
+  min-width: 380px;
+  max-width: 520px;
+  height: 100%;
+  background: #ffffff;
+  border-left: 1px solid #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  z-index: 10;
+  box-shadow: -4px 0 20px rgba(0, 0, 0, 0.05);
+  transition: width 0.2s ease;
+}
+
+#aiForm.collapsed {
+  display: none;
+}
+
+/* ==========================================================
+   4. AGENT PANEL HEADER
+   ========================================================== */
+
+.agent-header {
+  padding: 12px 14px;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agent-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.agent-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-brand-logo {
+  width: 20px;
+  height: 20px;
+}
+
+.agent-brand-text {
+  font-size: 14px;
+  font-weight: 700;
+  background: linear-gradient(135deg, #1e40af, #0284c7);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  letter-spacing: 0.3px;
+}
+
+.agent-controls-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ctrl-btn {
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 5px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #475569;
+  cursor: pointer;
+  transition: all 0.15s;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.ctrl-btn:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+  border-color: #94a3b8;
+}
+
+.agent-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11.5px;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-weight: 600;
+  background: #ecfdf5;
+  color: #059669;
+  border: 1px solid #a7f3d0;
+}
+
+.status-badge.planning {
+  background: #eff6ff;
+  color: #2563eb;
+  border-color: #bfdbfe;
+}
+
+.status-badge.running {
+  background: #f0f9ff;
+  color: #0284c7;
+  border-color: #bae6fd;
+}
+
+.status-badge.question {
+  background: #fffbeb;
+  color: #b45309;
+  border-color: #fde68a;
+  animation: pulseAmber 1.5s infinite;
+}
+
+.status-badge.completed {
+  background: #ecfdf5;
+  color: #059669;
+  border-color: #a7f3d0;
+}
+
+.status-badge.error {
+  background: #fef2f2;
+  color: #dc2626;
+  border-color: #fecaca;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* ==========================================================
+   5. PANEL NAVIGATION TABS
+   ========================================================== */
+
+.panel-tabs {
+  display: flex;
+  background: #f1f5f9;
+  border-bottom: 1px solid #e2e8f0;
+  padding: 4px 8px;
+  gap: 4px;
+}
+
+.tab-btn {
+  flex: 1;
+  padding: 6px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: all 0.15s ease;
+}
+
+.tab-btn:hover {
+  background: rgba(0, 0, 0, 0.04);
+  color: #0f172a;
+}
+
+.tab-btn.active {
+  background: #ffffff;
+  color: #2563eb;
+  border-color: #cbd5e1;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+/* ==========================================================
+   6. PANEL VIEWS CONTAINER
+   ========================================================== */
+
+.panel-views-container {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+}
+
+.panel-views-container::-webkit-scrollbar {
+  width: 6px;
+}
+
+.panel-views-container::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+
+.panel-views-container::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+.panel-view {
+  display: none;
+  padding: 12px;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.panel-view.active {
+  display: flex;
+}
+
+/* ==========================================================
+   7. PLANNER & STEP-BY-STEP CHECKLIST VIEW
+   ========================================================== */
+
+.goal-card {
+  padding: 10px 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.goal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  color: #64748b;
+  text-transform: uppercase;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.goal-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
+  line-height: 1.4;
+}
+
+.progress-bar-container {
+  height: 6px;
+  background: #e2e8f0;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #2563eb, #0284c7);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+/* STEP CHECKLIST */
+.steps-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.step-card {
+  padding: 10px 12px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+  transition: all 0.2s ease;
+}
+
+.step-card:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+}
+
+.step-card.running {
+  border-color: #0284c7;
+  background: #f0f9ff;
+  box-shadow: 0 0 12px rgba(2, 132, 199, 0.15);
+  animation: pulseRunningBorder 2s infinite;
+}
+
+.step-card.completed {
+  border-color: #86efac;
+  background: #f0fdf4;
+}
+
+.step-card.waiting_for_user {
+  border-color: #f59e0b;
+  background: #fffbeb;
+  box-shadow: 0 0 14px rgba(245, 158, 11, 0.18);
+}
+
+.step-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.step-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.step-badge {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #475569;
+}
+
+.step-card.running .step-badge {
+  background: #0284c7;
+  color: #ffffff;
+  border-color: #0284c7;
+}
+
+.step-card.completed .step-badge {
+  background: #059669;
+  color: #ffffff;
+  border-color: #059669;
+}
+
+.step-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.step-status-tag {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.step-card.running .step-status-tag {
+  background: #e0f2fe;
+  color: #0284c7;
+}
+
+.step-card.completed .step-status-tag {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.step-card.waiting_for_user .step-status-tag {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.step-description {
+  font-size: 11.5px;
+  color: #475569;
+  line-height: 1.4;
+}
+
+.step-tool-badge {
+  align-self: flex-start;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  background: #f1f5f9;
+  color: #2563eb;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid #e2e8f0;
+}
+
+/* ==========================================================
+   8. HUMAN-IN-THE-LOOP INTERACTIVE CLARIFICATION CARD
+   ========================================================== */
+
+.clarification-card {
+  padding: 14px;
+  background: linear-gradient(135deg, #fffbeb, #fef3c7);
+  border: 1px solid #f59e0b;
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 4px 16px rgba(245, 158, 11, 0.15);
+  animation: glowCard 2.5s infinite;
+}
+
+.clarification-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #b45309;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.clarification-message {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1e293b;
+  line-height: 1.4;
+}
+
+.options-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.option-chip-btn {
+  padding: 8px 10px;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #1e293b;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.option-chip-btn:hover {
+  background: #2563eb;
+  border-color: #1d4ed8;
+  color: #ffffff;
+  transform: translateY(-1px);
+}
+
+.clarification-custom-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.clarification-input {
+  flex: 1;
+  height: 32px;
+  padding: 0 10px;
+  font-size: 12px;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  color: #0f172a;
+  outline: none;
+}
+
+.clarification-input:focus {
+  border-color: #d97706;
+  box-shadow: 0 0 0 2px rgba(217, 119, 6, 0.15);
+}
+
+.clarification-submit-btn {
+  padding: 0 12px;
+  height: 32px;
+  background: #d97706;
+  border: none;
+  border-radius: 6px;
+  color: #ffffff;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.clarification-submit-btn:hover {
+  background: #b45309;
+}
+
+/* ==========================================================
+   9. DEEP REASONING (THINKING PROCESS STREAM) VIEW
+   ========================================================== */
+
+.reasoning-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.reasoning-card {
+  padding: 10px 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.reasoning-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  color: #64748b;
+}
+
+.reasoning-type-pill {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+.reasoning-type-pill.thought {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.reasoning-type-pill.action {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+
+.reasoning-type-pill.decision {
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.reasoning-type-pill.clarification {
+  background: #fffbeb;
+  color: #b45309;
+}
+
+.reasoning-body {
+  color: #334155;
+}
+
+/* ==========================================================
+   10. TERMINAL LOGS VIEW
+   ========================================================== */
+
+#logs {
+  height: 100%;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: #334155;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #f8fafc;
+  padding: 10px;
+  border-radius: 6px;
+  border: 1px solid #e2e8f0;
+}
+
+.log-entry {
+  padding: 2px 0;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.log-entry.info { color: #64748b; }
+.log-entry.success { color: #059669; }
+.log-entry.warn { color: #d97706; }
+.log-entry.error { color: #dc2626; }
+
+/* ==========================================================
+   11. BOTTOM PROMPT & SUGGESTIONS BAR
+   ========================================================== */
+
+.agent-prompt-wrapper {
+  padding: 10px 12px;
+  background: #f8fafc;
+  border-top: 1px solid #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.preset-chips-row {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.preset-chips-row::-webkit-scrollbar {
+  display: none;
+}
+
+.preset-chip {
+  flex-shrink: 0;
+  padding: 4px 9px;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 12px;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: #2563eb;
+  cursor: pointer;
+  transition: all 0.15s;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.preset-chip:hover {
+  background: #2563eb;
+  color: #ffffff;
+  border-color: #2563eb;
+}
+
+.cmd-box {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 6px 10px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.cmd-box:focus-within {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+
+#cmd {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #0f172a;
+  font-size: 12.5px;
+  font-family: var(--font-sans);
+  resize: none;
+  min-height: 48px;
+  max-height: 120px;
+  line-height: 1.4;
+  padding: 0;
+}
+
+#cmd::placeholder {
+  color: #94a3b8;
+}
+
+.cmd-send-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #2563eb, #0284c7);
+  border: none;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.cmd-send-btn:hover {
+  background: linear-gradient(135deg, #1d4ed8, #0369a1);
+  transform: scale(1.05);
+}
+
+.cmd-send-btn img {
+  width: 16px;
+  height: 16px;
+  filter: brightness(0) invert(1);
+}
+
+/* ==========================================================
+   12. ANIMATIONS
+   ========================================================== */
+
+@keyframes pulseLive {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.85); }
+}
+
+@keyframes pulseAmber {
+  0%, 100% { opacity: 1; box-shadow: 0 0 4px rgba(217, 119, 6, 0.3); }
+  50% { opacity: 0.7; box-shadow: 0 0 10px rgba(217, 119, 6, 0.6); }
+}
+
+@keyframes pulseRunningBorder {
+  0%, 100% { border-color: #0284c7; }
+  50% { border-color: #2563eb; }
+}
+
+@keyframes glowCard {
+  0%, 100% { box-shadow: 0 4px 16px rgba(217, 119, 6, 0.15); }
+  50% { box-shadow: 0 4px 22px rgba(217, 119, 6, 0.28); }
+}
+
+/* ==========================================================
+   13. CREDENTIAL VAULT & PLANNER CHECK STYLING
+   ========================================================== */
+
+/* Vault Container */
+.vault-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px;
+}
+
+.vault-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.vault-storage-tag {
+  font-size: 10.5px;
+  font-family: var(--font-mono);
+  color: #0284c7;
+  background: #e0f2fe;
+  padding: 2px 6px;
+  border-radius: 4px;
+  display: inline-block;
+  margin-top: 2px;
+}
+
+.vault-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.vault-add-form {
+  background: #ffffff;
+  border: 1px solid #93c5fd;
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.08);
+}
+
+.vault-form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.vault-form-row label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #475569;
+}
+
+.vault-form-row input,
+.vault-form-row select {
+  padding: 6px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 12px;
+  outline: none;
+  background: #f8fafc;
+  font-family: inherit;
+}
+
+.vault-form-row input:focus,
+.vault-form-row select:focus {
+  border-color: #2563eb;
+  background: #ffffff;
+}
+
+.password-input-wrap {
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+
+.password-input-wrap input {
+  flex: 1;
+  padding-right: 32px;
+}
+
+.icon-toggle-btn {
+  position: absolute;
+  right: 6px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 4px;
+  color: #64748b;
+}
+
+.vault-form-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.vault-credentials-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.vault-item-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  transition: all 0.2s;
+}
+
+.vault-item-card:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+}
+
+.vault-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.vault-item-site {
+  font-weight: 700;
+  font-size: 13px;
+  color: #0f172a;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.vault-item-user {
+  font-size: 12px;
+  color: #475569;
+  font-family: var(--font-mono);
+}
+
+.vault-item-badge {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.vault-item-badge.both { background: #dcfce7; color: #166534; }
+.vault-item-badge.local { background: #fef9c3; color: #854d0e; }
+.vault-item-badge.firebase { background: #ffedd5; color: #9a3412; }
+
+.vault-item-delete-btn {
+  background: none;
+  border: 1px solid #fecaca;
+  color: #ef4444;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.vault-item-delete-btn:hover {
+  background: #fee2e2;
+}
+
+.vault-empty-state {
+  text-align: center;
+  color: #94a3b8;
+  padding: 24px 10px;
+  font-size: 12px;
+}
+
+/* ==========================================================
+   14. PLANNER CHECK / HUMAN-IN-THE-LOOP FALLBACK CARD
+   ========================================================== */
+
+.planner-check-card {
+  background: #fffbeb;
+  border: 2px solid #f59e0b;
+  border-radius: 10px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 4px 16px rgba(245, 158, 11, 0.2);
+  animation: glowCard 3s infinite;
+  margin-bottom: 12px;
+}
+
+.planner-check-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 700;
+  font-size: 13px;
+  color: #b45309;
+}
+
+.planner-check-reason {
+  font-size: 12.5px;
+  color: #78350f;
+  line-height: 1.5;
+  background: #fef3c7;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border-left: 3px solid #d97706;
+}
+
+.planner-check-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.planner-check-btn {
+  padding: 7px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid transparent;
+  transition: all 0.15s;
+}
+
+.planner-check-btn.primary {
+  background: #d97706;
+  color: #ffffff;
+}
+
+.planner-check-btn.primary:hover {
+  background: #b45309;
+}
+
+.planner-check-btn.secondary {
+  background: #ffffff;
+  border-color: #d1d5db;
+  color: #374151;
+}
+
+.planner-check-btn.secondary:hover {
+  background: #f3f4f6;
+}
+
+.planner-instruction-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.planner-instruction-row input {
+  flex: 1;
+  padding: 6px 10px;
+  border: 1px solid #f59e0b;
+  border-radius: 6px;
+  font-size: 12px;
+  outline: none;
+}
+
+/* ==========================================================
+   15. CREDENTIAL PROMPT CARD (IN-LINE DURING LOGIN STEP)
+   ========================================================== */
+
+.cred-prompt-card {
+  background: #eff6ff;
+  border: 2px solid #3b82f6;
+  border-radius: 10px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 4px 16px rgba(59, 130, 246, 0.15);
+  margin-bottom: 12px;
+}
+
+.cred-prompt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 700;
+  font-size: 13px;
+  color: #1d4ed8;
+}
+
+.cred-prompt-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cred-prompt-input {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  font-size: 12px;
+  outline: none;
+  background: #ffffff;
+  box-sizing: border-box;
+}
+
+.cred-prompt-input:focus {
+  border-color: #2563eb;
+}
+
