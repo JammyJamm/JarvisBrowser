@@ -19,17 +19,34 @@
 
       <div id="tabsContainer" class="chrome-tabs-container">
         <div class="chrome-tab active" id="primaryTab" title="Active Tab">
-          <svg class="chrome-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg
+            class="chrome-tab-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
             <circle cx="12" cy="12" r="10"></circle>
             <line x1="2" y1="12" x2="22" y2="12"></line>
-            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+            <path
+              d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
+            ></path>
           </svg>
-          <span id="tabTitle" class="chrome-tab-title">Google - Search & Explore</span>
+          <span id="tabTitle" class="chrome-tab-title"
+            >Google - Search & Explore</span
+          >
           <span class="chrome-tab-close" title="Close Tab">×</span>
         </div>
       </div>
 
-      <button id="newTabBtn" type="button" class="chrome-new-tab-btn" title="New Tab">+</button>
+      <button
+        id="newTabBtn"
+        type="button"
+        class="chrome-new-tab-btn"
+        title="New Tab"
+      >
+        +
+      </button>
     </div>
 
     <!-- ==========================================================
@@ -37,23 +54,47 @@
          ========================================================== -->
     <div id="nav">
       <!-- BACK -->
-      <button id="backButton" type="button" class="nav-btn" title="Back" onclick="goBack()">
+      <button
+        id="backButton"
+        type="button"
+        class="nav-btn"
+        title="Back"
+        onclick="goBack()"
+      >
         <img class="icon" src="./icon/chevron-left.svg" alt="Back" />
       </button>
 
       <!-- FORWARD -->
-      <button id="forwardButton" type="button" class="nav-btn" title="Forward" onclick="goForward()">
+      <button
+        id="forwardButton"
+        type="button"
+        class="nav-btn"
+        title="Forward"
+        onclick="goForward()"
+      >
         <img class="icon" src="./icon/chevron-right.svg" alt="Forward" />
       </button>
 
       <!-- RELOAD -->
-      <button id="reloadButton" type="button" class="nav-btn" title="Reload" onclick="reloadPage()">
+      <button
+        id="reloadButton"
+        type="button"
+        class="nav-btn"
+        title="Reload"
+        onclick="reloadPage()"
+      >
         <img class="icon" src="./icon/refresh-cw.svg" alt="Reload" />
       </button>
 
       <!-- OMNIBOX URL BAR -->
       <div class="urlBlock">
-        <svg class="url-security-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <svg
+          class="url-security-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+        >
           <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
           <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
         </svg>
@@ -70,12 +111,23 @@
       </div>
 
       <!-- NAVIGATE ACTION -->
-      <button id="navigateButton" type="button" class="nav-btn" title="Navigate" onclick="navigate()">
+      <button
+        id="navigateButton"
+        type="button"
+        class="nav-btn"
+        title="Navigate"
+        onclick="navigate()"
+      >
         <img class="icon" src="./icon/send.svg" alt="Go" />
       </button>
 
       <!-- TOGGLE AGENT PANEL BUTTON -->
-      <button id="toggleAgentBtn" type="button" class="agent-toggle-pill" title="Toggle Jarvis Agent Panel">
+      <button
+        id="toggleAgentBtn"
+        type="button"
+        class="agent-toggle-pill"
+        title="Toggle Jarvis Agent Panel"
+      >
         <span>✨</span>
         <span>Jarvis AI</span>
       </button>
@@ -88,21 +140,58 @@
       <!-- BROWSER VIEWPORT CONTAINER (ELECTRON WEBCONTENTSVIEW DOCKS HERE) -->
       <div id="browser"></div>
 
+      <!-- DRAG HANDLE FOR RESIZING THE BROWSER / AGENT SPLIT -->
+      <div
+        id="splitter"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize browser and agent panel"
+      ></div>
+
       <!-- JARVIS AUTONOMOUS AGENT PANEL -->
       <div id="aiForm">
         <!-- AGENT PANEL HEADER -->
         <div class="agent-header">
           <div class="agent-title-row">
             <div class="agent-brand">
-              <span style="font-size: 18px;">🤖</span>
+              <span style="font-size: 18px">🤖</span>
               <span class="agent-brand-text">Jarvis Agent</span>
             </div>
 
             <div class="agent-controls-group">
-              <button id="btnPause" type="button" class="ctrl-btn" title="Pause Execution">⏸ Pause</button>
-              <button id="btnResume" type="button" class="ctrl-btn" style="display:none;" title="Resume Execution">▶ Resume</button>
-              <button id="btnStop" type="button" class="ctrl-btn" title="Stop Execution">⏹ Stop</button>
-              <button id="btnClear" type="button" class="ctrl-btn" title="Clear Plan">🧹 Clear</button>
+              <button
+                id="btnPause"
+                type="button"
+                class="ctrl-btn"
+                title="Pause Execution"
+              >
+                ⏸ Pause
+              </button>
+              <button
+                id="btnResume"
+                type="button"
+                class="ctrl-btn"
+                style="display: none"
+                title="Resume Execution"
+              >
+                ▶ Resume
+              </button>
+              <button
+                id="btnStop"
+                type="button"
+                class="ctrl-btn"
+                title="Stop Execution"
+              >
+                ⏹ Stop
+              </button>
+              <button
+                id="btnClear"
+                type="button"
+                class="ctrl-btn"
+                title="Clear Plan"
+              >
+                🧹 Clear
+              </button>
             </div>
           </div>
 
@@ -112,7 +201,11 @@
               <span id="statusText">Ready for mission</span>
             </span>
 
-            <span id="stepCounter" style="color: var(--text-muted); font-size: 11px;">0 / 0 Steps</span>
+            <span
+              id="stepCounter"
+              style="color: var(--text-muted); font-size: 11px"
+              >0 / 0 Steps</span
+            >
           </div>
         </div>
 
@@ -137,10 +230,18 @@
           <!-- VIEW 1: PLANNER & STEP CHECKLIST (DEFAULT) -->
           <div id="viewPlanner" class="panel-view active">
             <!-- CURRENT GOAL BANNER & PROGRESS -->
-            <div id="goalCard" class="goal-card" style="display: none;">
+            <div id="goalCard" class="goal-card" style="display: none">
               <div class="goal-header">
                 <span>🎯 Active Goal</span>
-                <span id="progressPercent" style="color: var(--accent-blue); font-family: var(--font-mono); font-weight: 700;">0%</span>
+                <span
+                  id="progressPercent"
+                  style="
+                    color: var(--accent-blue);
+                    font-family: var(--font-mono);
+                    font-weight: 700;
+                  "
+                  >0%</span
+                >
               </div>
               <div id="goalText" class="goal-text">No active goal</div>
               <div class="progress-bar-container">
@@ -149,15 +250,27 @@
             </div>
 
             <!-- HUMAN-IN-THE-LOOP INTERACTIVE CLARIFICATION / PLANNER CHECK / CREDENTIALS CARD -->
-            <div id="clarificationContainer" style="display: none;">
+            <div id="clarificationContainer" style="display: none">
               <!-- Dynamically populated when clarification question, planner check, or login prompt arises -->
             </div>
 
             <!-- STEP-BY-STEP CHECKLIST -->
             <div id="stepsChecklist" class="steps-checklist">
-              <div style="text-align: center; color: var(--text-muted); padding: 30px 10px; font-size: 12px; line-height: 1.6;">
+              <div
+                style="
+                  text-align: center;
+                  color: var(--text-muted);
+                  padding: 30px 10px;
+                  font-size: 12px;
+                  line-height: 1.6;
+                "
+              >
                 Autonomous Agent ready. Enter any task below:<br />
-                <span style="color: var(--accent-blue); font-weight: 600;">🛍️ Flipkart iPhone &nbsp;|&nbsp; 🏢 ZingHR Leave &nbsp;|&nbsp; 🎓 Udemy Courses &nbsp;|&nbsp; ✈️ Flights &nbsp;|&nbsp; 📅 Calendar</span>
+                <span style="color: var(--accent-blue); font-weight: 600"
+                  >🛍️ Flipkart iPhone &nbsp;|&nbsp; 🏢 ZingHR Leave
+                  &nbsp;|&nbsp; 🎓 Udemy Courses &nbsp;|&nbsp; ✈️ Flights
+                  &nbsp;|&nbsp; 📅 Calendar</span
+                >
               </div>
             </div>
           </div>
@@ -165,8 +278,16 @@
           <!-- VIEW 2: DEEP REASONING TRACE -->
           <div id="viewReasoning" class="panel-view">
             <div id="reasoningStream" class="reasoning-stream">
-              <div style="text-align: center; color: var(--text-muted); padding: 30px 10px; font-size: 12px;">
-                Agent reasoning thoughts will stream live here during planning and decision execution.
+              <div
+                style="
+                  text-align: center;
+                  color: var(--text-muted);
+                  padding: 30px 10px;
+                  font-size: 12px;
+                "
+              >
+                Agent reasoning thoughts will stream live here during planning
+                and decision execution.
               </div>
             </div>
           </div>
@@ -176,60 +297,136 @@
             <div class="vault-container">
               <div class="vault-header">
                 <div class="vault-header-title">
-                  <div style="font-weight: 700; font-size: 14px; color: var(--text-primary); display: flex; align-items: center; gap: 6px;">
+                  <div
+                    style="
+                      font-weight: 700;
+                      font-size: 14px;
+                      color: var(--text-primary);
+                      display: flex;
+                      align-items: center;
+                      gap: 6px;
+                    "
+                  >
                     <span>🔐 Credential Vault</span>
                   </div>
-                  <span class="vault-storage-tag" id="vaultStorageTag">Local (Encrypted AES-256) + Firebase DB</span>
+                  <span class="vault-storage-tag" id="vaultStorageTag"
+                    >Local (Encrypted AES-256) + Firebase DB</span
+                  >
                 </div>
                 <div class="vault-actions">
-                  <button id="btnSyncCredentials" type="button" class="ctrl-btn" title="Sync Local and Firebase Firestore">
+                  <button
+                    id="btnSyncCredentials"
+                    type="button"
+                    class="ctrl-btn"
+                    title="Sync Local and Firebase Firestore"
+                  >
                     🔄 Sync
                   </button>
-                  <button id="btnOpenAddCredModal" type="button" class="ctrl-btn" style="background: rgba(59, 130, 246, 0.2); color: #60a5fa; border-color: rgba(59, 130, 246, 0.4);" title="Add Credentials">
+                  <button
+                    id="btnOpenAddCredModal"
+                    type="button"
+                    class="ctrl-btn"
+                    style="
+                      background: rgba(59, 130, 246, 0.2);
+                      color: #60a5fa;
+                      border-color: rgba(59, 130, 246, 0.4);
+                    "
+                    title="Add Credentials"
+                  >
                     + Add Account
                   </button>
                 </div>
               </div>
 
               <!-- ADD / EDIT CREDENTIAL ACCORDION FORM -->
-              <div id="addCredFormContainer" class="vault-add-form" style="display: none;">
-                <div style="font-weight: 600; font-size: 13px; margin-bottom: 8px; color: var(--text-primary);">Save Account Credentials</div>
-                
+              <div
+                id="addCredFormContainer"
+                class="vault-add-form"
+                style="display: none"
+              >
+                <div
+                  style="
+                    font-weight: 600;
+                    font-size: 13px;
+                    margin-bottom: 8px;
+                    color: var(--text-primary);
+                  "
+                >
+                  Save Account Credentials
+                </div>
+
                 <div class="vault-form-row">
                   <label>Website / Domain:</label>
-                  <input id="credSiteInput" type="text" placeholder="e.g. flipkart.com, zinghr.com, udemy.com" />
+                  <input
+                    id="credSiteInput"
+                    type="text"
+                    placeholder="e.g. flipkart.com, zinghr.com, udemy.com"
+                  />
                 </div>
-                
+
                 <div class="vault-form-row">
                   <label>Username / Email / Emp ID:</label>
-                  <input id="credUserInput" type="text" placeholder="e.g. user@gmail.com, 9876543210, EMP1001" />
+                  <input
+                    id="credUserInput"
+                    type="text"
+                    placeholder="e.g. user@gmail.com, 9876543210, EMP1001"
+                  />
                 </div>
-                
+
                 <div class="vault-form-row">
                   <label>Password:</label>
                   <div class="password-input-wrap">
-                    <input id="credPassInput" type="password" placeholder="Account password" />
-                    <button type="button" id="btnTogglePass" class="icon-toggle-btn" title="Show/Hide">👁</button>
+                    <input
+                      id="credPassInput"
+                      type="password"
+                      placeholder="Account password"
+                    />
+                    <button
+                      type="button"
+                      id="btnTogglePass"
+                      class="icon-toggle-btn"
+                      title="Show/Hide"
+                    >
+                      👁
+                    </button>
                   </div>
                 </div>
 
                 <div class="vault-form-row" id="credCompanyCodeRow">
                   <label>Company Code (for ZingHR):</label>
-                  <input id="credCompanyInput" type="text" placeholder="e.g. INFOSYS, WIPRO, TECHCORP" />
+                  <input
+                    id="credCompanyInput"
+                    type="text"
+                    placeholder="e.g. INFOSYS, WIPRO, TECHCORP"
+                  />
                 </div>
 
                 <div class="vault-form-row">
                   <label>Storage Location:</label>
                   <select id="credStorageSelect">
-                    <option value="both" selected>Both (Local Encrypted + Firebase Cloud DB)</option>
-                    <option value="local">Local Encrypted Only (credentials.json.enc)</option>
-                    <option value="firebase">Firebase Cloud Only (Firestore)</option>
+                    <option value="both" selected>
+                      Both (Local Encrypted + Firebase Cloud DB)
+                    </option>
+                    <option value="local">
+                      Local Encrypted Only (credentials.json.enc)
+                    </option>
+                    <option value="firebase">
+                      Firebase Cloud Only (Firestore)
+                    </option>
                   </select>
                 </div>
 
                 <div class="vault-form-buttons">
-                  <button type="button" id="btnSaveCredential" class="clarification-submit-btn">Save to Vault</button>
-                  <button type="button" id="btnCancelAddCred" class="ctrl-btn">Cancel</button>
+                  <button
+                    type="button"
+                    id="btnSaveCredential"
+                    class="clarification-submit-btn"
+                  >
+                    Save to Vault
+                  </button>
+                  <button type="button" id="btnCancelAddCred" class="ctrl-btn">
+                    Cancel
+                  </button>
                 </div>
               </div>
 
@@ -241,7 +438,7 @@
           </div>
 
           <!-- VIEW 4: TERMINAL LOGS -->
-          <div id="viewLogs" class="panel-view" style="flex: 1; height: 100%;">
+          <div id="viewLogs" class="panel-view" style="flex: 1; height: 100%">
             <div id="logs"></div>
           </div>
         </div>
@@ -250,28 +447,69 @@
         <div class="agent-prompt-wrapper">
           <!-- QUICK ACTION PRESET CHIPS -->
           <div class="preset-chips-row">
-            <button type="button" class="preset-chip" onclick="applyPreset('Buy a iphone 17 from flipkart')">
+            <button
+              type="button"
+              class="preset-chip"
+              onclick="applyPreset('Buy a iphone 17 from flipkart')"
+            >
               🛍️ Buy iPhone (Flipkart)
             </button>
-            <button type="button" class="preset-chip" onclick="applyPreset('Apply leave in zinghr for next monday')">
+            <button
+              type="button"
+              class="preset-chip"
+              onclick="applyPreset('Apply leave in zinghr for next monday')"
+            >
               🏢 Apply Leave (ZingHR)
             </button>
-            <button type="button" class="preset-chip" onclick="applyPreset('Buy react course on udemy')">
+            <button
+              type="button"
+              class="preset-chip"
+              onclick="applyPreset('Buy react course on udemy')"
+            >
               🎓 Buy Course (Udemy)
             </button>
-            <button type="button" class="preset-chip" onclick="applyPreset('Book a flight from San Francisco to Tokyo for next month')">
+            <button
+              type="button"
+              class="preset-chip"
+              onclick="
+                applyPreset(
+                  'Book a flight from San Francisco to Tokyo for next month',
+                )
+              "
+            >
               ✈️ Book Flights
             </button>
-            <button type="button" class="preset-chip" onclick="applyPreset('Schedule team sync meeting tomorrow at 2 PM on Google Calendar')">
+            <button
+              type="button"
+              class="preset-chip"
+              onclick="
+                applyPreset(
+                  'Schedule team sync meeting tomorrow at 2 PM on Google Calendar',
+                )
+              "
+            >
               📅 Mark Calendar
             </button>
-            <button type="button" class="preset-chip" onclick="applyPreset('Search latest breakthroughs in quantum computing')">
+            <button
+              type="button"
+              class="preset-chip"
+              onclick="
+                applyPreset('Search latest breakthroughs in quantum computing')
+              "
+            >
               🔍 Web Research
             </button>
           </div>
 
           <!-- COMMAND INPUT FORM -->
-          <form id="ai-form" autocomplete="off" onsubmit="event.preventDefault(); return false;">
+          <form
+            id="ai-form"
+            autocomplete="off"
+            onsubmit="
+              event.preventDefault();
+              return false;
+            "
+          >
             <div class="cmd-box">
               <textarea
                 id="cmd"
@@ -280,7 +518,12 @@
                 autocomplete="off"
                 spellcheck="false"
               ></textarea>
-              <button id="submitCmdBtn" type="button" class="cmd-send-btn" title="Run Goal (Enter)">
+              <button
+                id="submitCmdBtn"
+                type="button"
+                class="cmd-send-btn"
+                title="Run Goal (Enter)"
+              >
                 <img src="./icon/send.svg" alt="Send" />
               </button>
             </div>
@@ -342,11 +585,13 @@
       // Navigation Actions
       async function navigate(customUrl) {
         const input = $("url");
-        const url = customUrl || (input ? input.value : "") || "https://www.google.com";
+        const url =
+          customUrl || (input ? input.value : "") || "https://www.google.com";
         const formatted = formatURL(url);
         if (input) input.value = formatted;
         const tabTitle = $("tabTitle");
-        if (tabTitle) tabTitle.innerText = formatted.replace(/^https?:\/\/(?:www\.)?/, "");
+        if (tabTitle)
+          tabTitle.innerText = formatted.replace(/^https?:\/\/(?:www\.)?/, "");
 
         if (window.browserAPI?.navigate) {
           log(`Navigating to ${formatted}...`);
@@ -378,7 +623,11 @@
           setInterval(async () => {
             try {
               const url = await window.browserAPI.getURL();
-              if (url && url !== window.aiState.currentUrl && !url.startsWith("devtools://")) {
+              if (
+                url &&
+                url !== window.aiState.currentUrl &&
+                !url.startsWith("devtools://")
+              ) {
                 window.aiState.currentUrl = url;
                 const input = $("url");
                 if (input && document.activeElement !== input) {
@@ -386,7 +635,9 @@
                 }
                 const tabTitle = $("tabTitle");
                 if (tabTitle) {
-                  const domain = url.replace(/^https?:\/\/(?:www\.)?/, "").split("/")[0];
+                  const domain = url
+                    .replace(/^https?:\/\/(?:www\.)?/, "")
+                    .split("/")[0];
                   tabTitle.innerText = domain || url;
                 }
               }
@@ -422,7 +673,10 @@
             });
             btn.classList.add("active");
             view?.classList.add("active");
-            if (view === $("viewVault") && typeof window.loadVaultAccounts === "function") {
+            if (
+              view === $("viewVault") &&
+              typeof window.loadVaultAccounts === "function"
+            ) {
               window.loadVaultAccounts();
             }
             if (view === $("viewLogs")) {
@@ -454,6 +708,55 @@
         }
       }
 
+      // Allow the browser and agent panel split to be resized by dragging the handle.
+      function setupPanelSplitter() {
+        const layout = $("layout");
+        const splitter = $("splitter");
+        const panel = $("aiForm");
+        if (!layout || !splitter || !panel) return;
+
+        const minPanelWidth = 380;
+        const maxPanelWidth = 520;
+        const minBrowserWidth = 260;
+
+        splitter.addEventListener("pointerdown", (event) => {
+          if (panel.classList.contains("collapsed")) return;
+
+          event.preventDefault();
+          splitter.setPointerCapture?.(event.pointerId);
+          layout.classList.add("is-resizing");
+          document.body.classList.add("is-resizing");
+
+          const onPointerMove = (moveEvent) => {
+            const layoutRect = layout.getBoundingClientRect();
+            const maxWidth = Math.min(
+              maxPanelWidth,
+              layoutRect.width - minBrowserWidth,
+            );
+            const panelWidth = Math.max(
+              minPanelWidth,
+              Math.min(maxWidth, layoutRect.right - moveEvent.clientX),
+            );
+
+            panel.style.width = `${panelWidth}px`;
+            resizeBrowser();
+          };
+
+          const stopResize = () => {
+            layout.classList.remove("is-resizing");
+            document.body.classList.remove("is-resizing");
+            splitter.releasePointerCapture?.(event.pointerId);
+            document.removeEventListener("pointermove", onPointerMove);
+            document.removeEventListener("pointerup", stopResize);
+            document.removeEventListener("pointercancel", stopResize);
+          };
+
+          document.addEventListener("pointermove", onPointerMove);
+          document.addEventListener("pointerup", stopResize);
+          document.addEventListener("pointercancel", stopResize);
+        });
+      }
+
       // Setup URL Input Enter Key
       function setupURLInput() {
         const input = $("url");
@@ -477,6 +780,7 @@
         setupURLSynchronization();
         setupPanelTabs();
         setupToggleAgent();
+        setupPanelSplitter();
       });
 
       window.addEventListener("resize", resizeBrowser);
