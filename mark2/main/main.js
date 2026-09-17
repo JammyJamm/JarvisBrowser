@@ -115,7 +115,7 @@ async function createWindow() {
   startHtmlLogger();
 
   win.maximize();
-
+  win.setMenu(null);
   win.webContents.openDevTools();
 
   browserView.webContents.on("did-navigate", (_, url) => {
