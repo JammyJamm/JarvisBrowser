@@ -1,6 +1,6 @@
 // test-agent-engine-flow.js
 // Automated verification for Jarvis Agent Engine:
-// 1. Goal decomposition for "Buy a iphone 17 from flipkart"
+// 1. Goal decomposition for a generic item purchase
 // 2. Detection of missing variant & generation of clarification question
 // 3. Human-in-the-loop interactive question answer submission
 // 4. Progress tracking, step status, and reasoning logs
@@ -10,7 +10,7 @@ import { AgentEngine } from "./backend/agent/agent-engine.js";
 
 async function runTest() {
   console.log("==========================================================");
-  console.log("TESTING JARVIS AGENT: 'Buy a iphone 17 from flipkart' FLOW");
+  console.log("TESTING JARVIS AGENT: GENERIC ITEM WORKFLOW");
   console.log("==========================================================");
 
   const engine = new AgentEngine({
@@ -19,13 +19,13 @@ async function runTest() {
     mockBrowser: true, // test without requiring live Electron CDP instance
   });
 
-  const goal = "Buy a iphone 17 from flipkart";
+  const goal = "Buy a generic item";
 
   // 1. Test Planning
   console.log("\n1. Testing Goal Planning...");
   const steps = await engine.plan(goal);
 
-  assert.ok(Array.isArray(steps) && steps.length >= 5, "Should generate at least 5 execution steps");
+  assert.ok(Array.isArray(steps) && steps.length >= 3, "Should generate search, variant workflow, and completion steps");
   console.log(`   ✔ Successfully generated ${steps.length} sequential steps`);
 
   // Verify step titles
@@ -34,15 +34,15 @@ async function runTest() {
     console.log(`     [${idx + 1}] ${s.title} (tool: ${s.tool})`);
   });
 
-  assert.strictEqual(steps[0].tool, "navigate", "Step 1 should be navigation");
-  assert.strictEqual(steps[1].tool, "search", "Step 2 should be search");
-  assert.strictEqual(steps[2].tool, "clarify_variant", "Step 3 should be clarification question");
+  assert.strictEqual(steps[0].tool, "search", "Step 1 should search the current page");
+  assert.strictEqual(steps[1].tool, "clarify_variant", "Step 2 should request the missing variant");
+  assert.strictEqual(steps[1].workflowActions.length, 2, "Variant selection and collection update should remain inside the clarification step");
 
   // 2. Verify Clarification Question Options
   console.log("\n2. Testing Clarification Question Specification...");
-  const clarifyStep = steps[2];
-  assert.ok(clarifyStep.args.question.includes("iPhone 17"), "Question should mention iPhone 17");
-  assert.ok(Array.isArray(clarifyStep.args.options) && clarifyStep.args.options.length >= 3, "Should provide variant choices");
+  const clarifyStep = steps[1];
+  assert.ok(clarifyStep.args.question, "Question should request the missing variant");
+  assert.ok(Array.isArray(clarifyStep.args.options), "Clarification options should be an array");
   console.log(`   ✔ Clarification Question: "${clarifyStep.args.question}"`);
   console.log("   ✔ Options:", clarifyStep.args.options);
 

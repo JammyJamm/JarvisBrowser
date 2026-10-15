@@ -1,4 +1,4 @@
-# PROJECT ARCHITECTURE & CODEBASE FORENSICS REPORT
+﻿# PROJECT ARCHITECTURE & CODEBASE FORENSICS REPORT
 **Project:** Friday / Jarvis Browser (v3.0.0)  
 **Corpus / Workspace:** JammyJamm/JarvisBrowser (D:\Personal\AI_IPL\mark2)  
 **Role:** Principal Browser-Engineering & AI-Agent Architect  
@@ -10,7 +10,7 @@
 
 This report delivers an exhaustive forensic inspection of the existing **Friday / Jarvis Browser** codebase. The current system is a hybrid desktop application combining an **Electron 42 (WebContentsView)** client, a local **Express 4/5 backend**, a **Playwright-over-CDP** browser automation controller, an **Ollama (qwen3:8b)** local LLM planner, a custom **DOM Scoring Engine**, an **IFrame/SVG extraction engine**, and a **Google Cloud Firestore (Firebase)** real-time data persistence pipeline.
 
-The goal of this architectural modernization is to upgrade Friday into an **ultra-fast, production-grade agentic browser** incorporating the best architectural patterns from Chromium multi-process design, Jarvis AI browsing, Playwright automation, Model Context Protocol (MCP), and vision-language computer-use agents—**without blindly rewriting working features**.
+The goal of this architectural modernization is to upgrade Friday into an **ultra-fast, production-grade agentic browser** incorporating the best architectural patterns from Chromium multi-process design, Jarvis AI browsing, Playwright automation, Model Context Protocol (MCP), and vision-language computer-use agentsâ€”**without blindly rewriting working features**.
 
 ---
 
@@ -18,66 +18,66 @@ The goal of this architectural modernization is to upgrade Friday into an **ultr
 
 ```
                                   [USER]
-                                    │
-                                    ▼
-                     ┌──────────────────────────────┐
-                     │ Electron Main (main/main.js) │
-                     │  - Remote Debugging: 9222    │
-                     │  - WebContentsView (Browser) │
-                     │  - BrowserWindow (UI View)   │
-                     └──────────────┬───────────────┘
-                                    │
-               ┌────────────────────┴────────────────────┐
-               │                                         │
+                                    â”‚
+                                    â–¼
+                     â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+                     â”‚ Electron Main (main/main.js) â”‚
+                     â”‚  - Remote Debugging: 9222    â”‚
+                     â”‚  - WebContentsView (Browser) â”‚
+                     â”‚  - BrowserWindow (UI View)   â”‚
+                     â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+                                    â”‚
+               â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”´â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+               â”‚                                         â”‚
         (Preload IPC)                              (Local HTTP)
-               │                                         │
-               ▼                                         ▼
-   ┌───────────────────────┐                 ┌───────────────────────┐
-   │ Frontend UI (Vanilla) │                 │ Express Backend (9000)│
-   │ - index.html          │                 │ backend/server.js     │
-   │ - ai.js               │                 └───────────┬───────────┘
-   │ - styles.css          │                             │
-   └───────────────────────┘                             ▼
-                                             ┌───────────────────────┐
-                                             │    Command Router     │
-                                             │ (backend/command-     │
-                                             │    router.js)         │
-                                             └─────┬───────────┬─────┘
-                                                   │           │
-                                           [Chat]  │           │  [Action]
-                                                   ▼           ▼
-                                       ┌──────────────┐  ┌──────────────────┐
-                                       │  AI Engine   │  │   Fast-Path      │
-                                       │ (aiEngine.js)│  │ (Regex Engine)   │
-                                       └──────┬───────┘  └─────────┬────────┘
-                                              │                    │ (Miss)
-                                              ▼                    ▼
-                                       ┌──────────────┐  ┌──────────────────┐
-                                       │ Ollama API   │  │  Planner (LLM)   │
-                                       │ (qwen3:8b)   │  │  backend/        │
-                                       └──────────────┘  │  planner.js      │
-                                                         └─────────┬────────┘
-                                                                   │
-                                                                   ▼
-                                                         ┌──────────────────┐
-                                                         │     ToolMap      │
-                                                         │(backend/tool-    │
-                                                         │    map.js)       │
-                                                         └─────────┬────────┘
-                                                                   │
-                                                                   ▼
-                                                         ┌──────────────────┐
-                                                         │     Resolver     │
-                                                         │ (backend/        │
-                                                         │  resolver.js)    │
-                                                         └─────────┬────────┘
-                                                                   │
-                                                                   ▼
-                                                         ┌──────────────────┐
-                                                         │BrowserController │
-                                                         │(Playwright CDP   │
-                                                         │  -> Port 9222)   │
-                                                         └──────────────────┘
+               â”‚                                         â”‚
+               â–¼                                         â–¼
+   â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”                 â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+   â”‚ Frontend UI (Vanilla) â”‚                 â”‚ Express Backend (9000)â”‚
+   â”‚ - index.html          â”‚                 â”‚ backend/server.js     â”‚
+   â”‚ - ai.js               â”‚                 â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+   â”‚ - styles.css          â”‚                             â”‚
+   â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜                             â–¼
+                                             â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+                                             â”‚    Command Router     â”‚
+                                             â”‚ (backend/command-     â”‚
+                                             â”‚    router.js)         â”‚
+                                             â””â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”˜
+                                                   â”‚           â”‚
+                                           [Chat]  â”‚           â”‚  [Action]
+                                                   â–¼           â–¼
+                                       â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+                                       â”‚  AI Engine   â”‚  â”‚   Fast-Path      â”‚
+                                       â”‚ (aiEngine.js)â”‚  â”‚ (Regex Engine)   â”‚
+                                       â””â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”˜  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+                                              â”‚                    â”‚ (Miss)
+                                              â–¼                    â–¼
+                                       â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+                                       â”‚ Ollama API   â”‚  â”‚  Planner (LLM)   â”‚
+                                       â”‚ (qwen3:8b) â”‚  â”‚  backend/        â”‚
+                                       â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜  â”‚  planner.js      â”‚
+                                                         â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+                                                                   â”‚
+                                                                   â–¼
+                                                         â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+                                                         â”‚     ToolMap      â”‚
+                                                         â”‚(backend/tool-    â”‚
+                                                         â”‚    map.js)       â”‚
+                                                         â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+                                                                   â”‚
+                                                                   â–¼
+                                                         â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+                                                         â”‚     Resolver     â”‚
+                                                         â”‚ (backend/        â”‚
+                                                         â”‚  resolver.js)    â”‚
+                                                         â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+                                                                   â”‚
+                                                                   â–¼
+                                                         â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+                                                         â”‚BrowserController â”‚
+                                                         â”‚(Playwright CDP   â”‚
+                                                         â”‚  -> Port 9222)   â”‚
+                                                         â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
 ```
 
 ### Process Layout & Topology
@@ -149,7 +149,7 @@ The agent runtime in Friday operates as a linear multi-phase pipeline with deter
 
 ## 4. Existing Actions / Tools
 
-Registered tools in `backend/tool-map.js` (lines 433–1280):
+Registered tools in `backend/tool-map.js` (lines 433â€“1280):
 
 | Tool Name | Handler Source | Purpose | Arguments |
 |---|---|---|---|
@@ -321,7 +321,7 @@ contextBridge.exposeInMainWorld("browserAPI", {
 2. **Heavy DOM Injections:**
    - `browser-svg` and `browser-container-data` inject large stringified JavaScript functions (over 200 lines each) into the target page on every poll, causing noticeable micro-stutters.
 3. **Ollama Planner Latency:**
-   - Snapshot text dumps (often 10,000–30,000 characters) sent to local `qwen3:8b` take 3,000ms–8,000ms to process before the first action can run.
+   - Snapshot text dumps (often 10,000â€“30,000 characters) sent to local `qwen3:8b` take 3,000msâ€“8,000ms to process before the first action can run.
 4. **Window Bounds Calculation via JS Eval:**
    - Every resize triggers `win.webContents.executeJavaScript()` to get boundingClientRect of `#browser` instead of using native layout calculations.
 5. **No Parallel Execution:**
@@ -379,7 +379,7 @@ contextBridge.exposeInMainWorld("browserAPI", {
   - `BLOCKED` (file system writes outside sandbox, dangerous protocols)
 
 ### Phase 4: Production Agent Runtime & Vector Memory
-- Implement an autonomous ReAct loop (Observe → Orient → Decide → Act) with goal replanning.
+- Implement an autonomous ReAct loop (Observe â†’ Orient â†’ Decide â†’ Act) with goal replanning.
 - Add local vector memory (LanceDB or SQLite-vec) for site recipes, UI patterns, and learned workflows.
 
 ---
@@ -394,3 +394,4 @@ contextBridge.exposeInMainWorld("browserAPI", {
 | `backend/auth/credential-manager.js` | Insecure `createCipher` and hardcoded secret | **Secure Credential Vault** (`crypto.createCipheriv` + AES-256-GCM) | Transparently re-encrypt existing `credentials.json` on startup with migration fallback | **100% Compatible** with existing logins |
 | `database/gameservice.js` | Works well, but timestamp ordering discrepancy in tests | **Standardized Game Service** | Preserve Firestore `Bio_sic` 90-item chunk schema; provide explicit chronological sorting options | **100% Compatible** with live Firebase board |
 | `main/renderer/ai.js` | Triple-dismiss race condition, monolithic UI script | **Modular Agent UI Controller** | De-duplicate popup dismissers into a unified guarded hook; preserve 4-Values Board UI | **100% Compatible** with existing visual layout |
+

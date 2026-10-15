@@ -54,12 +54,17 @@ export const ACTION_MAP = [
     }),
   },
   {
-    name: "search_google",
-    patterns: [/search for (.+)/i, /google (.+)/i, /find (.+)/i],
-    build: (input, match) => ({
-      type: ACTION_TYPES.NAVIGATE,
-      url: `https://www.google.com/search?q=${encodeURIComponent(match[1])}`,
-    }),
+    name: "internal_route_search",
+    patterns: [/search for (.+)/i, /find (.+)/i, /look up (.+)/i],
+    build: (input, match) => {
+      const target = String(match[1] || "").trim();
+      return {
+        type: ACTION_TYPES.NAVIGATE,
+        url: target.startsWith("/") || target.startsWith("#") || target.startsWith("app:") || target.startsWith("about:")
+          ? target
+          : "about:blank",
+      };
+    },
   },
 
   // =========================

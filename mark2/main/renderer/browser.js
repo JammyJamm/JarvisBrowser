@@ -52,13 +52,34 @@ function renderBrowser() {
   container.appendChild(webview);
 }
 
-function navigate() {
-  let url = document.getElementById("url").value.trim();
+function normalizeNavigationTarget(rawValue) {
+  const value = String(rawValue || "").trim();
 
-  // ✅ Auto-fix URL (important)
-  if (!url.startsWith("http")) {
-    url = "https://www.google.com/search?q=" + encodeURIComponent(url);
+  if (!value) {
+    return "about:blank";
   }
+
+  if (/^https?:\/\//i.test(value)) {
+    return value;
+  }
+
+  if (/^(?:about:|\/|#|app:|file:)/i.test(value)) {
+    return value;
+  }
+
+  if (/^www\./i.test(value)) {
+    return `https://${value}`;
+  }
+
+  if (/^[a-z0-9.-]+\.[a-z]{2,}(?:[/?#].*)?$/i.test(value)) {
+    return `https://${value}`;
+  }
+
+  return "about:blank";
+}
+
+function navigate() {
+  const url = normalizeNavigationTarget(document.getElementById("url").value);
 
   const tab = tabs.find((t) => t.id === activeTab);
   tab.url = url;

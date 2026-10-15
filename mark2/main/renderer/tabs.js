@@ -1,7 +1,7 @@
 let tabs = [];
 let activeTab = null;
 
-function newTab(url = "https://google.com") {
+function newTab(url = "about:blank") {
   const id = Date.now();
 
   tabs.push({ id, url });

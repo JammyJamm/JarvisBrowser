@@ -92,10 +92,10 @@ class MultiStepPlanner {
       steps.push({
         id: 1,
         action: "navigate",
-        target: urlMatch || "google.com",
+        target: urlMatch || "about:blank",
         description: urlMatch
           ? `Open ${urlMatch}`
-          : "Open default search engine",
+          : "Open the app's internal destination router",
       });
     }
 

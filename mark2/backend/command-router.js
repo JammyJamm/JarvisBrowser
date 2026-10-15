@@ -242,6 +242,10 @@ export default class CommandRouter {
 
       /^(watch|stream|track|monitor|convert|start\s+interval|stop\s+interval|cancel\s+interval)\b/,
 
+      /^(approve|approved|yes|proceed|do\s+it|confirm|authorized|go\s+ahead|execute)\b/,
+
+      /^(do\s+this|complete\s+it|complete|next|handle\s+this|continue|finish\s+this)\b/,
+
       /\bsvg\b/i,
     ];
 
@@ -308,7 +312,8 @@ export default class CommandRouter {
     //------------------------------------------------------
 
     const questionPatterns = [
-      /^(what|why|how|when|where|who|which|can|could|would|should|is|are|do|does|did)\b/,
+      /^(what|why|how|when|where|who|which|can|could|would|should|is|are|does|did)\b/,
+      /^do\s+(?!this|it|that|now)\b/,
     ];
 
     const matchedQuestion = questionPatterns.find((pattern) =>

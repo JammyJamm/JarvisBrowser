@@ -38,6 +38,8 @@
 
   let eventSource = null;
   let currentPendingQuestion = null;
+  let currentPendingPlannerCheck = null;
+  let currentPendingCredentialRequest = null;
 
   // ==========================================================
   // 1. CONNECT SERVER-SENT EVENTS (SSE)
@@ -462,6 +464,8 @@
       clarificationContainer.innerHTML = "";
     }
     currentPendingQuestion = null;
+    currentPendingPlannerCheck = null;
+    currentPendingCredentialRequest = null;
   }
 
   function resetClarificationCard() {
@@ -474,6 +478,8 @@
 
   function renderPlannerCheckCard(plannerCheck) {
     if (!clarificationContainer || !plannerCheck) return;
+
+    currentPendingPlannerCheck = plannerCheck;
 
     // Switch to Planner Tab
     const tabPlannerBtn = document.getElementById("tabPlannerBtn");
@@ -600,6 +606,8 @@
 
   function renderCredentialPromptCard(credReq) {
     if (!clarificationContainer || !credReq) return;
+
+    currentPendingCredentialRequest = credReq;
 
     // Switch to Planner Tab
     const tabPlannerBtn = document.getElementById("tabPlannerBtn");
@@ -963,6 +971,34 @@
     if (!goal) return;
 
     if (input) input.value = "";
+
+    // 1. If waiting for Planner Check / Approval
+    if (currentPendingPlannerCheck) {
+      const lower = goal.toLowerCase();
+      const checkId = currentPendingPlannerCheck.id;
+      if (
+        /^(approve|approved|yes|do\s+it|ok|continue|resolved|handled|proceed|submit|complete\s+it|complete|next)\b/i.test(lower)
+      ) {
+        if (typeof log === "function") log(`✔ Approval received: "${goal}". Continuing workflow...`, "success");
+        return submitPlannerCheck(checkId, "resolved");
+      }
+      if (/^retry\b/i.test(lower)) {
+        return submitPlannerCheck(checkId, "retry");
+      }
+      if (/^skip\b/i.test(lower)) {
+        return submitPlannerCheck(checkId, "skip");
+      }
+      if (/^(stop|cancel|abort)\b/i.test(lower)) {
+        return submitPlannerCheck(checkId, "stop");
+      }
+      // Custom instruction
+      return submitPlannerCheck(checkId, "instruction", goal);
+    }
+
+    // 2. If waiting for Clarification Question
+    if (currentPendingQuestion) {
+      return submitQuestionAnswer(currentPendingQuestion.id, goal);
+    }
 
     if (typeof log === "function") {
       log(`🚀 Submitting mission goal: "${goal}"`, "info");

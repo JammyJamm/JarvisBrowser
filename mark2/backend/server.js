@@ -7,40 +7,40 @@
 // Architecture
 //
 // Client
-//     │
+//     â”‚
 // Express API
-//     │
+//     â”‚
 // Command Router
-//     │
-//     ├─────────────── CHAT ───────────────► AI Engine
-//     │                                      │
-//     │                                      ▼
-//     │                                    Ollama
-//     │
-//     └──────────── ACTION ───────────────► Planner
-//                                            │
-//                                            ▼
+//     â”‚
+//     â”œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ CHAT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â–º AI Engine
+//     â”‚                                      â”‚
+//     â”‚                                      â–¼
+//     â”‚                                    Ollama
+//     â”‚
+//     â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ ACTION â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â–º Planner
+//                                            â”‚
+//                                            â–¼
 //                                          ToolMap
-//                                            │
-//                                            ▼
+//                                            â”‚
+//                                            â–¼
 //                                          Resolver
-//                                            │
-//                                            ▼
+//                                            â”‚
+//                                            â–¼
 //                                      Playwright MCP
 //
 // PERFORMANCE / STABILITY
 // -----------------------
-// ✔ Single /run execution lock
-// ✔ Duplicate request protection
-// ✔ No networkidle waits
-// ✔ No snapshot before deterministic fast path
-// ✔ Browser connection is lazy
-// ✔ Browser connection is not required for chat
-// ✔ Sequential action execution
-// ✔ Fast browser recovery
-// ✔ DevTools page protection
-// ✔ Navigation invalidates DOM cache
-// ✔ Detailed execution timing
+// âœ” Single /run execution lock
+// âœ” Duplicate request protection
+// âœ” No networkidle waits
+// âœ” No snapshot before deterministic fast path
+// âœ” Browser connection is lazy
+// âœ” Browser connection is not required for chat
+// âœ” Sequential action execution
+// âœ” Fast browser recovery
+// âœ” DevTools page protection
+// âœ” Navigation invalidates DOM cache
+// âœ” Detailed execution timing
 //
 //==========================================================
 
@@ -112,7 +112,10 @@ const CONFIG = {
   fastPath: process.env.FAST_PATH !== "false",
 
   endpoint:
-    process.env.OLLAMA_ENDPOINT || "http://localhost:11434/api/generate",
+    process.env.OLLAMA_ENDPOINT ||
+    (process.env.OLLAMA_BASE_URL
+      ? `${process.env.OLLAMA_BASE_URL.replace(/\/+$/, "")}/api/generate`
+      : "http://localhost:11434/api/generate"),
 
   debug: process.env.DEBUG === "true",
 
@@ -266,9 +269,14 @@ const pageContextEngine = new PageContextEngine({
 
 const modelRouter = new ModelRouter({
   debug: CONFIG.debug,
+  ollamaBaseUrl: process.env.OLLAMA_BASE_URL,
+  ollamaEndpoint: CONFIG.endpoint,
+  openaiBaseUrl: process.env.OPENAI_BASE_URL,
+  openaiApiKey: process.env.OPENAI_API_KEY,
+  openaiFallbackModel: process.env.OPENAI_FALLBACK_MODEL,
   models: {
-    fast: CONFIG.model,
-    reasoning: CONFIG.model,
+    fast: process.env.FAST_MODEL || CONFIG.model,
+    reasoning: process.env.REASONING_MODEL || CONFIG.model,
     vision: process.env.VISION_MODEL || "gpt-4o",
   },
 });
@@ -2986,19 +2994,19 @@ try {
 
     console.log("==========================================");
 
-    console.log("🚀 Ultra Intelligent AI Server Started");
+    console.log("ðŸš€ Ultra Intelligent AI Server Started");
 
-    console.log(`🌐 http://${HOST}:${PORT}`);
+    console.log(`ðŸŒ http://${HOST}:${PORT}`);
 
-    console.log(`🤖 Model: ${CONFIG.model}`);
+    console.log(`ðŸ¤– Model: ${CONFIG.model}`);
 
-    console.log(`🔌 Ollama: ${CONFIG.endpoint}`);
+    console.log(`ðŸ”Œ Ollama: ${CONFIG.endpoint}`);
 
     console.log(
-      `💬 Chat AI: ${serverState.chatAIReady ? "READY" : "NOT READY"}`,
+      `ðŸ’¬ Chat AI: ${serverState.chatAIReady ? "READY" : "NOT READY"}`,
     );
 
-    console.log(`⚡ Fast Path: ${CONFIG.fastPath ? "ENABLED" : "DISABLED"}`);
+    console.log(`âš¡ Fast Path: ${CONFIG.fastPath ? "ENABLED" : "DISABLED"}`);
 
     console.log("==========================================");
 
@@ -3147,3 +3155,4 @@ export {
   stats,
   serverState,
 };
+

@@ -84,6 +84,7 @@ async function runTests() {
   await cm.remove("flipkart.com", { storage: "both" });
   await cm.remove("zinghr.com", { storage: "both" });
   await cm.remove("udemy.com", { storage: "both" });
+  await cm.remove("test-site-unknown-99.com", { storage: "both" });
   console.log("   ✔ Cleaned up test credentials from Local and Firebase");
 
   // ==========================================================
@@ -101,9 +102,10 @@ async function runTests() {
   console.log("   Planning: 'Buy a iphone 17 from flipkart'");
   const flipSteps = await engine.plan("Buy a iphone 17 from flipkart");
   assert.strictEqual(engine.getState().category, "ecommerce");
+  assert.ok(flipSteps.some((s) => s.tool === "navigate" && s.args.url.includes("flipkart.com")), "Flipkart plan must navigate to the requested store");
   assert.ok(flipSteps.some((s) => s.tool === "login_handler"), "Flipkart plan must include login_handler step");
   assert.ok(flipSteps.some((s) => s.tool === "clarify_variant"), "Flipkart plan must include variant clarification");
-  assert.ok(flipSteps.some((s) => s.tool === "click_buy"), "Flipkart plan must include click_buy step");
+  assert.ok(flipSteps.some((s) => s.workflowActions?.some((action) => action.tool === "click_buy")), "Flipkart plan must include a verified click_buy workflow action");
   console.log(`   ✔ Flipkart plan generated ${flipSteps.length} sequential steps including login handler`);
 
   // 2.2 ZingHR Leave Application Plan

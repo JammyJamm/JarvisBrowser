@@ -280,70 +280,57 @@ export default class PlaywrightMCPClient {
         await this.disconnect();
       }
 
-      this.log("Connecting to Electron CDP:", this.options.cdpURL);
-
       //------------------------------------------------------
-      // CONNECT TO ELECTRON
-      //------------------------------------------------------
-
-      const browser = await chromium.connectOverCDP(this.options.cdpURL);
-
-      //------------------------------------------------------
-      // Store browser
+      // Agent must drive the actual Electron WebContentsView
+      // Chromium instance. Never create a separate Playwright
+      // browser or page here.
       //------------------------------------------------------
 
-      this.browser = browser;
-
-      //------------------------------------------------------
-      // Browser disconnect
-      //------------------------------------------------------
-
-      browser.on("disconnected", () => {
-        this.connected = false;
-
-        this.browser = null;
-        this.context = null;
-        this.page = null;
-
-        this.warn("Electron CDP connection disconnected.");
-      });
-
-      //------------------------------------------------------
-      // CONTEXT
-      //------------------------------------------------------
-
-      const contexts = browser.contexts();
-
-      if (!contexts.length) {
-        throw new Error("No browser contexts available from Electron CDP.");
+      if (
+        !this.browserController ||
+        typeof this.browserController.connect !== "function"
+      ) {
+        throw new Error(
+          "BrowserController is unavailable; the agent cannot attach to the Electron BrowserView.",
+        );
       }
 
-      this.context = contexts[0];
+      this.log("Connecting to Electron WebContentsView via BrowserController");
+
+      const page = await this.browserController.connect(force);
+
+      this.syncControllerState();
+
+      if (!this.page || this.page.isClosed()) {
+        throw new Error(
+          "No live Electron BrowserView page is available for automation.",
+        );
+      }
 
       //------------------------------------------------------
-      // FIND AUTOMATION PAGE
+      // Allow only real automation pages attached to the
+      // Electron BrowserView. Ignore independent Playwright
+      // tabs or devtools pages.
       //------------------------------------------------------
 
-      await this.refreshActivePage();
+      if (!this.isRealBrowserPage(this.page)) {
+        throw new Error(
+          "BrowserController selected an invalid/non-web page; the agent must use the real Electron BrowserView.",
+        );
+      }
 
       //------------------------------------------------------
-      // EVENTS
+      // Observers/events must belong to the actual BrowserView.
       //------------------------------------------------------
 
       this.attachEventsToAllPages();
 
       this.attachContextEvents();
 
-      //------------------------------------------------------
-      // CONNECTED
-      //------------------------------------------------------
-
       this.connected = true;
-
       this.lastConnected = Date.now();
 
       this.log("Connected successfully.");
-
       this.log("Automation page:", this.lastURL);
 
       return this.page;
@@ -355,7 +342,6 @@ export default class PlaywrightMCPClient {
       //------------------------------------------------------
 
       this.connected = false;
-
       this.browser = null;
       this.context = null;
       this.page = null;
@@ -754,25 +740,9 @@ export default class PlaywrightMCPClient {
   async newTab(url = "about:blank") {
     await this.ensureConnected();
 
-    const page = await this.context.newPage();
-
-    if (url && url !== "about:blank") {
-      await page.goto(url, {
-        waitUntil: this.options.waitUntil,
-
-        timeout: this.options.navigationTimeout,
-      });
-    }
-
-    this.page = page;
-
-    this.lastURL = page.url();
-
-    this.stats.pageSwitches++;
-
-    this.attachEvents();
-
-    return page;
+    throw new Error(
+      "Independent Playwright tabs are disabled. The agent must use the active Electron WebContentsView Chromium instance.",
+    );
   }
 
   async switchToPage(index = 0) {

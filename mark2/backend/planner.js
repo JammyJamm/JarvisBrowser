@@ -1,4 +1,4 @@
-//==========================================================
+﻿//==========================================================
 //
 // backend/planner.js
 //
@@ -7,35 +7,35 @@
 // Architecture
 //
 // User Command
-//       │
-//       ▼
+//       â”‚
+//       â–¼
 // Current Page Snapshot
-//       │
-//       ▼
+//       â”‚
+//       â–¼
 // LLM Planner
-//       │
-//       ▼
+//       â”‚
+//       â–¼
 // JSON Parser / Repair
-//       │
-//       ▼
+//       â”‚
+//       â–¼
 // Plan Normalizer
-//       │
-//       ▼
+//       â”‚
+//       â–¼
 // Plan Validator
-//       │
-//       ├── Valid ───────────────► Executor / ToolMap
-//       │
-//       └── Invalid
-//              │
-//              ├── Deterministic Recovery
-//              │
-//              ▼
+//       â”‚
+//       â”œâ”€â”€ Valid â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â–º Executor / ToolMap
+//       â”‚
+//       â””â”€â”€ Invalid
+//              â”‚
+//              â”œâ”€â”€ Deterministic Recovery
+//              â”‚
+//              â–¼
 //        LLM Repair Attempt
-//              │
-//              ▼
+//              â”‚
+//              â–¼
 //           Validator
-//              │
-//              ▼
+//              â”‚
+//              â–¼
 //           ToolMap
 //
 //==========================================================
@@ -2316,3 +2316,4 @@ FINAL RULES
     };
   }
 }
+

@@ -59,17 +59,34 @@ async function runDomainTests() {
   assert.ok(mapSteps[0].args.url.includes("maps"), "Step 1 should navigate to Google Maps");
   console.log(`   ✔ Map plan generated ${mapSteps.length} steps with target: ${mapSteps[0].args.url}`);
 
-  // TEST 5: E-COMMERCE BUYING (AMAZON)
-  console.log("\n🛍️ [TEST 5] E-Commerce Buying: 'Buy Sony WH-1000XM5 headphones on Amazon'");
-  const shopSteps = await engine.plan("Buy Sony WH-1000XM5 headphones on Amazon");
+  // TEST 5: GENERIC ITEM WORKFLOW
+  console.log("\n🛍️ [TEST 5] Generic item selection and collection workflow");
+  const shopSteps = await engine.plan("Buy a generic item");
   assert.strictEqual(engine.getState().category, "ecommerce", "Category should be 'ecommerce'");
-  assert.ok(shopSteps.length >= 5, "Shopping plan should have at least 5 steps");
-  assert.strictEqual(shopSteps[0].tool, "navigate");
-  assert.ok(shopSteps[0].args.url.includes("amazon.com"), "Step 1 should navigate to Amazon");
-  console.log(`   ✔ E-Commerce plan generated ${shopSteps.length} steps with target: ${shopSteps[0].args.url}`);
+  assert.ok(shopSteps.length >= 3, "Generic item plan should include search, a verified variant workflow, and completion");
+  assert.strictEqual(shopSteps[0].tool, "search");
+  const variantWorkflow = shopSteps.find((step) => step.workflowActions?.length);
+  assert.ok(variantWorkflow, "Selection and collection actions should be grouped into one verified workflow step");
+  assert.deepStrictEqual(
+    variantWorkflow.workflowActions.map((action) => action.tool),
+    ["select_option", "click_buy"],
+  );
+  assert.strictEqual(variantWorkflow.workflowActions[1].verification.type, "cart_changed");
+  assert.ok(!shopSteps.some((step) => step.tool === "navigate" && /amazon|flipkart/i.test(step.args.url || "")));
+  console.log(`   ✔ Generic item plan generated ${shopSteps.length} steps without a hardcoded destination`);
 
-  // TEST 6: FULL EXECUTION WITH CLARIFICATION ON FLIGHT BOOKING
-  console.log("\n🚀 [TEST 6] Live Simulated Execution & Human-In-The-Loop on Flight Goal");
+  // TEST 6: GENERIC SEARCH FALLBACK
+  console.log("\n🔍 [TEST 6] Generic Search: fallback should open a real search destination");
+  const searchSteps = await engine.plan("Find the latest research about solar energy");
+  assert.strictEqual(engine.getState().category, "search");
+  assert.strictEqual(searchSteps[0].tool, "navigate");
+  assert.strictEqual(searchSteps[0].args.url, "https://www.google.com");
+  assert.strictEqual(searchSteps[1].tool, "search");
+  assert.strictEqual(searchSteps[1].args.query, "Find the latest research about solar energy");
+  console.log("   ✔ Generic search plan no longer navigates to about:blank");
+
+  // TEST 7: FULL EXECUTION WITH CLARIFICATION ON FLIGHT BOOKING
+  console.log("\n🚀 [TEST 7] Live Simulated Execution & Human-In-The-Loop on Flight Goal");
   const flightGoal = "Book a flight from San Francisco to Tokyo next month";
   let capturedQuestion = null;
   engine.on("question_required", (data) => {

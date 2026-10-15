@@ -34,6 +34,7 @@ export class AgentEngine extends EventEmitter {
       debug: options.debug ?? true,
       maxSteps: options.maxSteps ?? 10,
       stepDelayMs: options.stepDelayMs ?? 1000,
+      maxActionRetries: options.maxActionRetries ?? 2,
       mockBrowser: options.mockBrowser ?? false,
       ...options,
     };
@@ -204,7 +205,22 @@ export class AgentEngine extends EventEmitter {
       try {
         steps = await this.thinkWithModel(cleanGoal);
       } catch (err) {
-        this.warn("Model-driven planning failed, falling back to heuristic planner:", err.message);
+        if (err.provider && err.errorType) {
+          console.warn(
+`[ModelRouter]
+tier=${err.tier || "reasoning"}
+provider=${err.provider}
+model=${err.model}
+status=unavailable
+error=${err.errorType}
+latency=${Math.max(1, Math.round(err.latencyMs || 0))}ms`
+          );
+        }
+        this.addReasoning(
+          `Model-driven planning unavailable (${err.message}). Falling back to the heuristic planner.`,
+          "decision",
+        );
+        this.log("Model-driven planning failed, falling back to heuristic planner:", err.message);
       }
     }
 
@@ -245,7 +261,15 @@ Supported domains include:
 
 USER GOAL: "${cleanGoal}"
 
-Analyze if any critical parameters are missing (e.g. flight class or return date, calendar event time, product color/storage, travel mode). If missing, set "needsClarification": true and formulate 3-4 options.
+Analyze if any critical parameters are missing (e.g. flight class or return date, an item variant, or a required form value). If missing, set "needsClarification": true and formulate options only when they can be grounded in current page information or user input.
+Never treat an attempted interaction as a successful outcome. For every action step, include a "verification" object with a generic, observable postcondition. Use one of:
+- {"type":"text_present","expected":"visible confirmation or resulting content"}
+- {"type":"url_contains","expected":"expected destination fragment"}
+- {"type":"value_equals","expected":"value that should appear in a form control"}
+- {"type":"selection_matches","expected":"option that should be selected"}
+- {"type":"cart_changed"} when the intended result is adding an item to a collection/cart
+Do not include site-specific selectors or rely on a click having happened. Keep workflows generic and use only information from the user and current page.
+When a clarification supplies a required option, preserve that answer in subsequent action arguments and do not ask for it again. A clarification step may include "workflowActions": an ordered list of follow-up UI actions. Keep selection and collection/cart actions in that list when they fulfill the clarified request. Verify each action before beginning the next one, and do not complete the parent clarification step until all listed actions are verified.
 
 Return ONLY a JSON object matching this schema:
 {
@@ -265,18 +289,35 @@ Return ONLY a JSON object matching this schema:
       "description": "<step description>",
       "tool": "navigate" | "search" | "fill_form" | "click_element" | "clarify_variant" | "select_option" | "select_product" | "save_action" | "click_buy" | "finish",
       "args": { ... },
+      "verification": { "type": "<generic verification type>", "expected": "<expected observable result>" },
+      "workflowActions": [
+        { "tool": "<action tool>", "args": { ... }, "verification": { "type": "<type>", "expected": "<state>" } }
+      ],
       "reasoning": "<rationale>"
     }
   ]
 }`;
 
+    const basePlanningTimeout =
+      this.options.planningTimeout ||
+      this.modelRouter?.timeouts?.reasoning ||
+      20000;
+    const planningTimeout = Math.min(basePlanningTimeout, 8000);
     const completionPromise = this.modelRouter.complete(prompt, {
       taskType: "plan_complex",
+      tier: "reasoning",
       temperature: 0,
+      timeout: planningTimeout,
     });
 
     const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("Model planning timeout")), 3000)
+      setTimeout(
+        () =>
+          reject(
+            new Error(`Model planning timeout after ${planningTimeout}ms`),
+          ),
+        planningTimeout,
+      ),
     );
 
     const result = await Promise.race([completionPromise, timeoutPromise]);
@@ -303,6 +344,10 @@ Return ONLY a JSON object matching this schema:
       description: s.description || s.title || "",
       tool: s.tool || "navigate",
       args: s.args || {},
+      verification: s.verification || null,
+      workflowActions: Array.isArray(s.workflowActions)
+        ? s.workflowActions.map((action) => ({ ...action, args: action.args || {} }))
+        : null,
       status: "pending",
       reasoning: s.reasoning || `Executing ${s.tool}`,
     }));
@@ -349,7 +394,7 @@ Return ONLY a JSON object matching this schema:
     }
 
     // 7. E-COMMERCE & BUYING
-    if (/(?:buy|purchase|order|shop|add to cart|flipkart|amazon|price|deal)/i.test(cleanGoal)) {
+    if (/(?:buy|purchase|order|shop|add to cart)/i.test(cleanGoal)) {
       this.state.category = "ecommerce";
       return this.buildEcommercePlan(cleanGoal);
     }
@@ -773,147 +818,110 @@ Return ONLY a JSON object matching this schema:
 
   // --- 🛍️ 5. E-COMMERCE & BUYING PLAN ---
   buildEcommercePlan(cleanGoal) {
-    const isFlipkart = /flipkart/i.test(cleanGoal);
-    const isAmazon = /amazon/i.test(cleanGoal);
+    const url = cleanGoal.match(/https?:\/\/\S+/i)?.[0]?.replace(/[),.]+$/, "");
+    const storeMatch = cleanGoal.match(/\b(?:from|on|at)\s+(amazon(?:\.in)?|flipkart|ebay)\b/i);
+    const stores = {
+      amazon: { url: "https://www.amazon.com", site: "amazon.com" },
+      "amazon.in": { url: "https://www.amazon.in", site: "amazon.in" },
+      flipkart: { url: "https://www.flipkart.com", site: "flipkart.com" },
+      ebay: { url: "https://www.ebay.com", site: "ebay.com" },
+    };
+    const explicitStore = storeMatch ? stores[storeMatch[1].toLowerCase()] : null;
+    const targetUrl = url || explicitStore?.url;
+    const loginSite = url
+      ? new URL(url).hostname.replace(/^www\./i, "")
+      : explicitStore?.site;
+    const item = cleanGoal
+      .replace(/^\s*(?:please\s+)?(?:buy|purchase|order|shop for|add to cart)\s*/i, "")
+      .replace(/https?:\/\/\S+/i, "")
+      .replace(/\s+(?:from|on|at)\s+(?:amazon(?:\.in)?|flipkart|ebay)\b/i, "")
+      .trim() || cleanGoal;
 
-    let storeName = "Amazon";
-    let storeUrl = "https://www.amazon.com";
+    const variantSpecified = /\b(?:variant|configuration|color|colour|size|storage|capacity|ram|model|edition)\s*(?::|=|\bis\b)?\s*\S/i.test(item);
+    const steps = [];
 
-    if (isFlipkart) {
-      storeName = "Flipkart";
-      storeUrl = "https://www.flipkart.com";
-    }
-
-    let productMatch = cleanGoal.match(/(?:buy|order|purchase|search for|find|shop)\s+(?:a|an|the)?\s*([a-zA-Z0-9\s+]+?)(?:\s+(?:from|on|in|at)\s+(?:flipkart|amazon|google|web|store))?$/i);
-    let productName = productMatch ? productMatch[1].trim() : "iPhone 17";
-    if (!productName || productName.length < 2) productName = "iPhone 17";
-    if (/iphone/i.test(productName)) {
-      productName = productName.replace(/iphone/gi, "iPhone");
-    }
-
-    const hasColor = /black|white|blue|pink|yellow|green|titanium|desert|natural|starlight|midnight|red|purple/i.test(cleanGoal);
-    const hasStorage = /\b(128|256|512|1tb|2tb)\s*(?:gb|tb)?\b/i.test(cleanGoal);
-    const hasSize = /\b(?:size\s+\d+|small|medium|large|xl|xxl)\b/i.test(cleanGoal);
-
-    const isTech = /iphone|phone|laptop|macbook|ipad|galaxy|pixel|watch|gpu|headphone|airpods/i.test(productName);
-    const needsClarification = isTech ? (!hasColor || !hasStorage) : !hasSize;
-
-    this.addReasoning(
-      `Identified e-commerce goal targeting ${storeName} for product: "${productName}". ` +
-      `Specifications provided: ${needsClarification ? "PARTIAL" : "FULL"}. ` +
-      (needsClarification ? "Ambiguity detected — will prompt user for preferred variant." : "Variant is fully specified."),
-      "decision"
-    );
-
-    const steps = [
-      {
-        id: "step_1",
-        index: 0,
-        title: `Navigate to ${storeName}`,
-        description: `Open ${storeName} e-commerce platform (${storeUrl})`,
-        tool: "navigate",
-        args: { url: storeUrl },
-        status: "pending",
-        reasoning: `Accessing ${storeName} catalog and search bar.`,
-      },
-      {
-        id: "step_2",
-        index: 1,
-        title: `Search for "${productName}"`,
-        description: `Locate search bar on ${storeName}, type "${productName}", and submit search query`,
-        tool: "search",
-        args: {
-          query: productName,
-          selector: "input[name='q'], input[name='field-keywords'], input[title*='Search'], input[placeholder*='Search']",
-        },
-        status: "pending",
-        reasoning: `Finding search input on ${storeName} and submitting "${productName}".`,
-      },
-    ];
-
-    if (needsClarification) {
-      const options = isTech
-        ? [
-            "128GB - Natural Titanium",
-            "256GB - Natural Titanium",
-            "256GB - Midnight Black",
-            "512GB - Desert Titanium",
-          ]
-        : [
-            "Standard Edition - Best Seller",
-            "Pro / Premium Edition",
-            "Value Bundle Package",
-          ];
-
+    if (targetUrl) {
       steps.push({
-        id: "step_3",
-        index: 2,
-        title: isTech ? "Clarify Color & Storage Variant" : "Clarify Product Variant & Size",
-        description: `Ask user to choose preferred variant for ${productName}`,
-        tool: "clarify_variant",
-        args: {
-          question: isTech
-            ? `Which color and storage variant would you like for the ${productName}?`
-            : `Which variant or size would you like for ${productName}?`,
-          options,
-          parameter: "variant",
-          product: productName,
-        },
+        id: "step_1",
+        index: steps.length,
+        title: "Open the requested destination",
+        description: "Navigate to the destination explicitly supplied by the user.",
+        tool: "navigate",
+        args: { url: targetUrl },
+        verification: { type: "url_contains", expected: targetUrl },
         status: "pending",
-        reasoning: `Multiple configurations exist for ${productName}. Pausing execution to prompt user with choices.`,
+        reasoning: "Using only the destination supplied in the request.",
       });
     }
 
-    steps.push(
-      {
+    if (loginSite) {
+      steps.push({
         id: `step_${steps.length + 1}`,
         index: steps.length,
-        title: "Select Product Variant",
-        description: `Inspect search results and select the card matching ${productName}`,
-        tool: "select_product",
-        args: {
-          product: productName,
-          variant: needsClarification ? "{user_choice}" : cleanGoal,
-        },
-        status: "pending",
-        reasoning: "Filtering search results and opening product specification page for chosen variant.",
-      },
-      {
-        id: `step_${steps.length + 1}`,
-        index: steps.length,
-        title: `Verify ${storeName} Login & Authentication`,
-        description: `Check authentication state on ${storeName} using saved credentials (Local / Firebase DB)`,
+        title: "Check account authentication",
+        description: "Use saved credentials if login is required for the requested store.",
         tool: "login_handler",
-        args: {
-          site: isFlipkart ? "flipkart.com" : "amazon.com",
-          purpose: `Authenticate user account on ${storeName} for checkout and purchase`,
-        },
+        args: { site: loginSite, purpose: "Authenticate before purchasing the requested item." },
         status: "pending",
-        reasoning: `Accessing credentials for ${storeName} to ensure account is ready for purchase.`,
+        reasoning: "The user explicitly requested a store; check for an existing authenticated account before purchasing.",
+      });
+    }
+
+    steps.push({
+      id: `step_${steps.length + 1}`,
+      index: steps.length,
+      title: "Find the requested item",
+      description: "Search the current page for the item described by the user.",
+      tool: "search",
+      args: { query: item },
+      verification: { type: "query_present", expected: item },
+      status: "pending",
+      reasoning: "Searching with the user's own item description.",
+    });
+
+    const clarifiedVariant = variantSpecified
+      ? item.match(/\b(?:variant|configuration|color|colour|size|storage|capacity|ram|model|edition)\s*(?::|=|\bis\b)\s*(.+)$/i)?.[1]?.trim() || item
+      : "{user_choice}";
+    steps.push({
+      id: `step_${steps.length + 1}`,
+      index: steps.length,
+      title: variantSpecified ? "Select the requested variant" : "Clarify the required product variant",
+      description: "Collect any missing variant information, select the requested option, verify the selection, trigger the available purchase/collection action, and verify the resulting state.",
+      tool: variantSpecified ? "workflow" : "clarify_variant",
+      args: {
+        question: "Which variant or configuration should be selected?",
+        options: [],
+        parameter: "variant",
+        product: item,
       },
-      {
-        id: `step_${steps.length + 1}`,
-        index: steps.length,
-        title: "Proceed to Buy (Add to Cart / Buy Now)",
-        description: "Locate 'Buy Now' or 'Add to Cart' button and trigger purchase flow",
-        tool: "click_buy",
-        args: { action: "Buy Now", fallbackAction: "Add to Cart" },
-        status: "pending",
-        reasoning: "Clicking purchase call-to-action button to proceed with checkout.",
-      },
-      {
-        id: `step_${steps.length + 1}`,
-        index: steps.length,
-        title: "Complete Task & Order Summary",
-        description: `Verify ${productName} is ready for checkout and complete agent goal`,
-        tool: "finish",
-        args: {
-          message: `Successfully located and selected ${productName}! Purchase flow is ready for checkout.`,
+      workflowActions: [
+        {
+          tool: "select_option",
+          args: { variant: clarifiedVariant },
+          verification: { type: "selection_matches", expected: clarifiedVariant },
+          description: "Select and verify the exact user-requested variant.",
         },
-        status: "pending",
-        reasoning: "All execution phases satisfied. Reporting final status to user.",
-      }
-    );
+        {
+          tool: "click_buy",
+          args: { target: "purchase_action", intent: "purchase" },
+          verification: { type: "cart_changed" },
+          description: "Trigger the visible purchase or collection action on the current page and verify the state changed.",
+        },
+      ],
+      status: "pending",
+      reasoning: "Selection and collection changes are dependent actions and remain within this step until both are verified.",
+    });
+
+    steps.push({
+      id: `step_${steps.length + 1}`,
+      index: steps.length,
+      title: "Complete the requested item workflow",
+      description: "Report completion only after selection and collection state have been verified.",
+      tool: "finish",
+      args: { message: "The requested item was selected and its collection state was verified." },
+      status: "pending",
+      reasoning: "All required UI postconditions have been verified.",
+    });
 
     return steps;
   }
@@ -1107,12 +1115,12 @@ Return ONLY a JSON object matching this schema:
       {
         id: "step_5",
         index: 4,
-        title: "Proceed to Buy (Add to Cart / Buy Now)",
-        description: "Click 'Buy Now' or 'Add to Cart' to start checkout",
+        title: "Trigger the available purchase flow",
+        description: "Find and activate the current page's purchase or collection control and verify the state change.",
         tool: "click_buy",
-        args: { action: "Buy Now", fallbackAction: "Add to Cart" },
+        args: { action: "purchase", intent: "purchase" },
         status: "pending",
-        reasoning: "Triggering checkout button on Udemy.",
+        reasoning: "Resolving the semantic purchase action from the current page controls.",
       },
       {
         id: "step_6",
@@ -1141,18 +1149,80 @@ Return ONLY a JSON object matching this schema:
     ];
   }
 
+  resolveNavigationTarget(goal, fallbackUrl = "https://www.google.com") {
+    const text = String(goal || "").trim();
+    if (!text) {
+      return fallbackUrl;
+    }
+
+    if (/^https?:\/\//i.test(text)) {
+      return text;
+    }
+
+    if (/^about:|^\/|^#|^app:|^file:/i.test(text)) {
+      return text;
+    }
+
+    const domainMatch = text.match(/(?:https?:\/\/)?(?:www\.)?([a-z0-9.-]+\.[a-z]{2,})(?:[/?#].*)?/i);
+    if (domainMatch && domainMatch[1]) {
+      return `https://${domainMatch[1]}`;
+    }
+
+    const knownSites = {
+      amazon: "https://www.amazon.com",
+      "amazon.in": "https://www.amazon.in",
+      flipkart: "https://www.flipkart.com",
+      ebay: "https://www.ebay.com",
+      youtube: "https://www.youtube.com",
+      github: "https://github.com",
+      wikipedia: "https://www.wikipedia.org",
+      maps: "https://www.google.com/maps",
+      "google maps": "https://www.google.com/maps",
+      calendar: "https://calendar.google.com",
+      "google calendar": "https://calendar.google.com",
+      keep: "https://keep.google.com",
+      "google keep": "https://keep.google.com",
+      flights: "https://www.google.com/travel/flights",
+      "google flights": "https://www.google.com/travel/flights",
+      "google": "https://www.google.com",
+      "google search": "https://www.google.com",
+      "microsoft": "https://www.microsoft.com",
+      "netflix": "https://www.netflix.com",
+      "apple": "https://www.apple.com",
+      "linkedin": "https://www.linkedin.com",
+      "twitter": "https://x.com",
+      "x": "https://x.com",
+      "reddit": "https://www.reddit.com",
+      "notion": "https://www.notion.so",
+      "dropbox": "https://www.dropbox.com",
+      "udemy": "https://www.udemy.com",
+      "bing": "https://www.bing.com",
+      "duckduckgo": "https://duckduckgo.com",
+      "stackoverflow": "https://stackoverflow.com",
+      "news": "https://news.google.com",
+      "gmail": "https://mail.google.com",
+      "drive": "https://drive.google.com",
+    };
+
+    const lowered = text.toLowerCase();
+    const directSite = Object.entries(knownSites).find(([key]) => lowered.includes(key));
+    if (directSite) {
+      return directSite[1];
+    }
+
+    if (text.includes(".")) {
+      const bareDomain = text.replace(/^[^a-z0-9]+|[^a-z0-9.-]+$/gi, "").split(/\s+/).find((part) => /[a-z0-9.-]+\.[a-z]{2,}/i.test(part));
+      if (bareDomain) {
+        return `https://${bareDomain.replace(/^https?:\/\//i, "")}`;
+      }
+    }
+
+    return fallbackUrl;
+  }
+
   // --- 🔍 6. SEARCH & GENERAL WEB PLAN ---
   buildSearchPlan(cleanGoal) {
-    let targetUrl = "https://www.google.com";
-    if (cleanGoal.startsWith("http://") || cleanGoal.startsWith("https://")) {
-      targetUrl = cleanGoal;
-    } else if (/youtube/i.test(cleanGoal)) {
-      targetUrl = "https://www.youtube.com";
-    } else if (/github/i.test(cleanGoal)) {
-      targetUrl = "https://github.com";
-    } else if (/wikipedia/i.test(cleanGoal)) {
-      targetUrl = "https://www.wikipedia.org";
-    }
+    const targetUrl = this.resolveNavigationTarget(cleanGoal);
 
     this.addReasoning(`Planning general web task for: "${cleanGoal}" targeting ${targetUrl}`, "thought");
 
@@ -1161,11 +1231,11 @@ Return ONLY a JSON object matching this schema:
         id: "step_1",
         index: 0,
         title: `Navigate to ${targetUrl}`,
-        description: `Open initial URL: ${targetUrl}`,
+        description: `Open the relevant destination before searching for: "${cleanGoal}"`,
         tool: "navigate",
         args: { url: targetUrl },
         status: "pending",
-        reasoning: `Navigating browser to ${targetUrl}`,
+        reasoning: `Navigating to ${targetUrl} to search for the user's goal.`,
       },
       {
         id: "step_2",
@@ -1225,6 +1295,343 @@ Return ONLY a JSON object matching this schema:
   // EXECUTE SINGLE STEP
   // ==========================================================
 
+  transitionWorkflowState(step, nextState, details = {}) {
+    const previousState = step.workflowState || "ACTION_REQUIRED";
+    step.workflowState = nextState;
+    step.workflowUpdatedAt = Date.now();
+    const record = {
+      stepIndex: step.index,
+      stepTitle: step.title,
+      intendedAction: details.intendedAction || step.currentAction || step.tool,
+      actionResult: details.actionResult ?? null,
+      verificationResult: details.verificationResult ?? null,
+      failureReason: details.failureReason ?? null,
+      retryCount: details.retryCount ?? step.retryCount ?? 0,
+      previousState,
+      nextState,
+    };
+    this.log("[Workflow]", JSON.stringify(record));
+    this.addReasoning(
+      `[Workflow] ${step.title}: ${previousState} -> ${nextState}; action=${step.tool}; retries=${record.retryCount}; verification=${JSON.stringify(record.verificationResult)}${record.failureReason ? `; failure=${record.failureReason}` : ""}`,
+      nextState === "ACTION_FAILED" ? "observation" : "decision",
+    );
+    this.broadcast("workflow_state_changed", { workflow: record });
+  }
+
+  async executeWorkflowActions(index, step) {
+    const sequence = step.workflowActions;
+    const answer = step.userAnswer || "";
+    const workflowStartedAt = performance.now();
+    const resolveAnswer = (value) => typeof value === "string"
+      ? value.replace(/\{user_choice\}/g, answer)
+      : value;
+
+    for (let actionIndex = step.workflowActionIndex || 0; actionIndex < sequence.length; actionIndex++) {
+      const action = sequence[actionIndex];
+      const actionStep = {
+        ...step,
+        ...action,
+        index,
+        title: step.title,
+        args: Object.fromEntries(
+          Object.entries(action.args || {}).map(([key, value]) => [key, resolveAnswer(value)]),
+        ),
+        verification: action.verification || null,
+      };
+      step.currentAction = actionStep.tool;
+      step.pendingActionSpec = actionStep;
+      action.retryCount = action.retryCount || 0;
+      let lastFailure = "";
+      const maxRetries = Math.max(0, Number(this.options.maxActionRetries) || 0);
+
+      while (action.retryCount <= maxRetries) {
+        const page = await this.getBrowserPage();
+        const beforeState = await this.captureObservableState(page).catch((error) => {
+          this.warn(`Could not capture pre-action state for Step ${index + 1}:`, error.message);
+          return null;
+        });
+        this.transitionWorkflowState(step, "ACTION_REQUIRED", {
+          intendedAction: actionStep.tool,
+          retryCount: action.retryCount,
+          failureReason: lastFailure || undefined,
+        });
+        this.transitionWorkflowState(step, "ACTION_IN_PROGRESS", {
+          intendedAction: actionStep.tool,
+          retryCount: action.retryCount,
+        });
+
+        let result;
+        try {
+          result = await this.performToolAction(actionStep, {
+            attempt: action.retryCount,
+            strategy: action.retryCount > 0 ? "alternative" : "primary",
+            retryInstruction: step.retryInstruction || "",
+          });
+        } catch (error) {
+          result = { success: false, error: error.message };
+        }
+        if (this.options.mockBrowser && result?.success === true) {
+          result = { ...result, simulated: true };
+        }
+
+        if (result?.requiresCredentials) {
+          return this.triggerCredentialRequest(index, step, result.site || actionStep.args.site, result.reason);
+        }
+        if (result?.requiresUserCheck) {
+          this.transitionWorkflowState(step, "ACTION_FAILED", {
+            intendedAction: actionStep.tool,
+            actionResult: result,
+            failureReason: result.reason || "Action requires user verification.",
+          });
+          return this.triggerPlannerCheck(index, step, result.reason, result.checkType);
+        }
+
+        const verification = await this.verifyStepOutcome(
+          actionStep,
+          result,
+          beforeState,
+          page,
+        ).catch((error) => ({ verified: false, reason: `Verification failed: ${error.message}` }));
+        step.lastAttemptResult = result;
+        step.lastBeforeState = beforeState;
+        step.lastVerification = verification;
+        action.lastAttemptResult = result;
+        action.lastBeforeState = beforeState;
+        action.lastVerification = verification;
+
+        if (verification.verified) {
+          this.transitionWorkflowState(step, "ACTION_SUCCEEDED", {
+            intendedAction: actionStep.tool,
+            retryCount: action.retryCount,
+            actionResult: result,
+            verificationResult: verification,
+          });
+          action.workflowState = "STEP_COMPLETED";
+          step.workflowActionIndex = actionIndex + 1;
+          break;
+        }
+
+        lastFailure = verification.reason || "Expected UI state was not verified.";
+        this.transitionWorkflowState(step, "ACTION_FAILED", {
+          intendedAction: actionStep.tool,
+          retryCount: action.retryCount,
+          actionResult: result,
+          verificationResult: verification,
+          failureReason: lastFailure,
+        });
+        if (action.retryCount >= maxRetries) break;
+
+        action.retryCount++;
+        this.transitionWorkflowState(step, "RETRY_REQUIRED", {
+          intendedAction: actionStep.tool,
+          retryCount: action.retryCount,
+          actionResult: result,
+          verificationResult: verification,
+          failureReason: lastFailure,
+        });
+      }
+
+      if (action.workflowState !== "STEP_COMPLETED") {
+        step.status = "failed";
+        step.workflowActionIndex = actionIndex;
+        return this.triggerPlannerCheck(index, step, lastFailure || "Action did not reach its verified postcondition.", "step_failure");
+      }
+
+      action.retryCount = 0;
+    }
+
+    const stepDuration = Math.round(performance.now() - workflowStartedAt);
+    step.status = "completed";
+    step.workflowState = "ACTION_SUCCEEDED";
+    step.completedAt = Date.now();
+    step.duration = stepDuration;
+    step.result = {
+      userChoice: answer || undefined,
+      verifiedActions: sequence.map((action) => ({
+        tool: action.tool,
+        verification: action.lastVerification,
+      })),
+      verified: true,
+    };
+    this.state.completedSteps = index + 1;
+    this.transitionWorkflowState(step, "STEP_COMPLETED", {
+      intendedAction: step.currentAction,
+      actionResult: step.result,
+      verificationResult: { verified: true, evidence: "Every required workflow action was verified." },
+    });
+    this.broadcast("step_completed", { stepIndex: index, step, result: step.result });
+    await new Promise((resolve) => setTimeout(resolve, this.options.stepDelayMs));
+    await this.executeStep(index + 1);
+  }
+
+  async captureObservableState(page) {
+    if (!page || typeof page.evaluate !== "function") return null;
+    return await page.evaluate(() => {
+      const visible = (element) => {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.visibility !== "hidden" && style.display !== "none" &&
+          rect.width > 0 && rect.height > 0;
+      };
+      const controls = Array.from(document.querySelectorAll(
+        "button, a, input, textarea, select, [role], [contenteditable='true']",
+      )).filter(visible).slice(0, 200).map((element) => {
+        const associatedLabel = element.labels?.[0]?.innerText ||
+          element.closest("label")?.innerText ||
+          element.parentElement?.innerText ||
+          "";
+        const label = element.getAttribute("aria-label") ||
+          element.getAttribute("name") ||
+          associatedLabel ||
+          element.innerText ||
+          element.textContent ||
+          element.getAttribute("placeholder") ||
+          "";
+        const selected = Boolean(
+          element.checked ||
+          element.selected ||
+          element.getAttribute("aria-selected") === "true" ||
+          element.getAttribute("aria-pressed") === "true" ||
+          element.getAttribute("aria-checked") === "true" ||
+          element.getAttribute("aria-current") === "true",
+        );
+        return {
+          role: element.getAttribute("role") || element.tagName.toLowerCase(),
+          label: String(label).trim().replace(/\s+/g, " ").slice(0, 200),
+          value: "value" in element ? String(element.value || "") : "",
+          selected,
+        };
+      });
+      return {
+        url: location.href,
+        title: document.title,
+        text: String(document.body?.innerText || "").replace(/\s+/g, " ").slice(0, 12000),
+        controls,
+      };
+    });
+  }
+
+  async verifyStepOutcome(step, result, beforeState, page) {
+    if (result?.success === false) {
+      return { verified: false, reason: result.error || result.reason || "Action reported failure." };
+    }
+    if (step.tool === "finish") {
+      const incomplete = this.state.steps
+        .slice(0, step.index)
+        .find((priorStep) => priorStep.workflowState !== "STEP_COMPLETED");
+      return incomplete
+        ? { verified: false, reason: `Prior step "${incomplete.title}" is not verified.` }
+        : { verified: true, evidence: "Every preceding step reached STEP_COMPLETED." };
+    }
+    if (
+      step.tool === "user_confirmation" &&
+      result?.verified === true
+    ) {
+      return { verified: true, evidence: "User confirmed the requested checkpoint." };
+    }
+    if (step.tool === "login_handler" && result?.success === true) {
+      return { verified: true, evidence: "Authentication routine completed successfully." };
+    }
+    if (this.options.mockBrowser && (result?.simulated === true || result?.success === true)) {
+      return { verified: true, evidence: "Explicit mock-browser simulation." };
+    }
+
+    const inferredContracts = {
+      navigate: { type: "url_contains", expected: step.args?.url || "" },
+      search: {
+        type: "query_present",
+        expected: step.args?.query || step.args?.origin || "",
+      },
+      fill_form: {
+        type: "value_equals",
+        expected: step.args?.value || step.args?.title || step.args?.content || "",
+      },
+      click_element: { type: "state_changed" },
+      select_option: {
+        type: "selection_matches",
+        expected: step.args?.variant || step.args?.preference || "",
+      },
+      select_product: {
+        type: "selection_matches",
+        expected: step.args?.variant || step.args?.preference || "",
+      },
+      click_buy: { type: "cart_changed" },
+      save_action: { type: "state_changed" },
+      login_handler: { type: "state_changed" },
+    };
+    const contract = step.verification || inferredContracts[step.tool];
+    if (!contract || !page) {
+      return {
+        verified: false,
+        reason: !contract
+          ? "No postcondition was defined for this action."
+          : "Browser state was unavailable for verification.",
+      };
+    }
+
+    const afterState = await this.captureObservableState(page);
+    if (!afterState) return { verified: false, reason: "Could not capture browser state after action." };
+    const expected = String(contract.expected || "").trim().toLowerCase();
+    let verified = false;
+    let evidence = "";
+
+    switch (contract.type) {
+      case "text_present":
+        verified = Boolean(expected && afterState.text.toLowerCase().includes(expected));
+        evidence = verified ? `Visible page text contains "${contract.expected}".` : `Expected text "${contract.expected}" was not visible.`;
+        break;
+      case "url_contains":
+        verified = Boolean(expected && afterState.url.toLowerCase().includes(expected));
+        evidence = verified ? `Current URL contains "${contract.expected}".` : `Current URL did not contain "${contract.expected}".`;
+        break;
+      case "value_equals":
+        verified = afterState.controls.some((control) =>
+          control.value.trim().toLowerCase() === expected,
+        );
+        evidence = verified ? "A visible control contains the expected value." : "No visible control contains the expected value.";
+        break;
+      case "query_present":
+        verified = Boolean(expected && (
+          afterState.text.toLowerCase().includes(expected) ||
+          afterState.url.toLowerCase().includes(encodeURIComponent(contract.expected).toLowerCase())
+        ));
+        evidence = verified ? "The requested query is visible in page content or the resulting URL." : "The requested query was not found in resulting page content or URL.";
+        break;
+      case "selection_matches":
+        verified = afterState.controls.some((control) =>
+          control.selected && control.label.toLowerCase().includes(expected),
+        );
+        evidence = verified ? "A matching visible control is selected." : "No matching visible selected control was found.";
+        break;
+      case "cart_changed": {
+        const beforeText = beforeState?.text?.toLowerCase() || "";
+        const afterText = afterState.text.toLowerCase();
+        const beforeCount = beforeState?.controls?.find((control) =>
+          /\b(cart|basket)\b/i.test(control.label),
+        )?.label || "";
+        const afterCount = afterState.controls.find((control) =>
+          /\b(cart|basket)\b/i.test(control.label),
+        )?.label || "";
+        verified = afterText !== beforeText &&
+          (afterCount !== beforeCount || /\b(added|in cart|in your basket|item added)\b/i.test(afterText));
+        evidence = verified ? "Observable cart/collection state changed after the action." : "No verifiable cart/collection change was observed.";
+        break;
+      }
+      case "state_changed":
+        verified = Boolean(beforeState) && (
+          beforeState.url !== afterState.url ||
+          beforeState.title !== afterState.title ||
+          beforeState.text !== afterState.text ||
+          JSON.stringify(beforeState.controls) !== JSON.stringify(afterState.controls)
+        );
+        evidence = verified ? "Observable page state changed after the action." : "No observable page state change was detected.";
+        break;
+      default:
+        return { verified: false, reason: `Unsupported verification type "${contract.type}".` };
+    }
+    return { verified, evidence };
+  }
+
   async executeStep(index) {
     if (this.state.isPaused) {
       this.log("Execution paused at step", index);
@@ -1234,6 +1641,13 @@ Return ONLY a JSON object matching this schema:
     }
 
     if (index >= this.state.steps.length) {
+      if (this.state.steps.some((step) => step.workflowState !== "STEP_COMPLETED")) {
+        this.state.status = "error";
+        this.state.lastError = "Workflow cannot complete while one or more steps are unverified.";
+        this.error(this.state.lastError);
+        this.broadcast("execution_error", { error: this.state.lastError });
+        return;
+      }
       this.state.status = "completed";
       this.state.completedAt = Date.now();
       this.addReasoning("All planned execution steps completed successfully! 🎉", "decision");
@@ -1245,9 +1659,52 @@ Return ONLY a JSON object matching this schema:
     }
 
     const step = this.state.steps[index];
+    if (index > 0 && this.state.steps[index - 1].workflowState !== "STEP_COMPLETED") {
+      this.warn(
+        `Blocked advancement to Step ${index + 1}; Step ${index} has not reached STEP_COMPLETED.`,
+      );
+      this.state.activeStepIndex = index - 1;
+      return;
+    }
+    if (step.workflowActions?.length) {
+      this.state.activeStepIndex = index;
+      step.status = "running";
+      step.startedAt = step.startedAt || Date.now();
+      if (!step.workflowActionIndex) {
+        step.workflowState = "CURRENT_STEP";
+      }
+      this.log(`Executing verified action sequence for step ${index + 1}: ${step.title}`);
+      this.addReasoning(`[Step ${index + 1}/${this.state.steps.length}] ${step.title}`, "action");
+      this.broadcast("step_started", { stepIndex: index, step });
+      if (
+        (step.tool === "clarify_variant" || step.tool === "clarify_parameter" || step.tool === "ask_question") &&
+        !step.userAnswer
+      ) {
+        this.state.status = "waiting_for_user";
+        step.status = "waiting_for_user";
+        const questionId = "q_" + Date.now();
+        this.state.pendingQuestion = {
+          id: questionId,
+          stepIndex: index,
+          title: step.title,
+          message: step.args.question || "Please select your preferred option:",
+          options: step.args.options || [],
+          parameter: step.args.parameter || "choice",
+          product: step.args.product || "Task",
+        };
+        this.transitionWorkflowState(step, "ACTION_REQUIRED", {
+          failureReason: "Waiting for required user input.",
+        });
+        this.broadcast("question_required", { question: this.state.pendingQuestion });
+        return;
+      }
+      return this.executeWorkflowActions(index, step);
+    }
     this.state.activeStepIndex = index;
     step.status = "running";
     step.startedAt = Date.now();
+    step.retryCount = step.retryCount || 0;
+    step.workflowState = "CURRENT_STEP";
 
     this.log(`Executing step ${index + 1}/${this.state.steps.length}: ${step.title}`);
     this.addReasoning(`[Step ${index + 1}/${this.state.steps.length}] ${step.title}: ${step.reasoning}`, "action");
@@ -1256,7 +1713,10 @@ Return ONLY a JSON object matching this schema:
     // --------------------------------------------------------
     // INTERACTIVE CLARIFICATION (HUMAN-IN-THE-LOOP)
     // --------------------------------------------------------
-    if (step.tool === "clarify_variant" || step.tool === "clarify_parameter" || step.tool === "ask_question") {
+    if (
+      (step.tool === "clarify_variant" || step.tool === "clarify_parameter" || step.tool === "ask_question") &&
+      !step.userAnswer
+    ) {
       this.state.status = "waiting_for_user";
       step.status = "waiting_for_user";
 
@@ -1279,6 +1739,9 @@ Return ONLY a JSON object matching this schema:
       this.broadcast("question_required", {
         question: this.state.pendingQuestion,
       });
+      this.transitionWorkflowState(step, "ACTION_REQUIRED", {
+        failureReason: "Waiting for required user input.",
+      });
 
       return;
     }
@@ -1288,38 +1751,102 @@ Return ONLY a JSON object matching this schema:
     // --------------------------------------------------------
     try {
       const stepStart = performance.now();
-      const result = await this.performToolAction(step);
+      let lastFailure = "";
+      const maxRetries = Math.max(0, Number(this.options.maxActionRetries) || 0);
 
-      // 1. Credentials Required?
-      if (result && result.requiresCredentials) {
-        return this.triggerCredentialRequest(index, step, result.site || step.args.site, result.reason);
+      while (step.retryCount <= maxRetries) {
+        const page = await this.getBrowserPage();
+        const beforeState = await this.captureObservableState(page).catch((error) => {
+          this.warn(`Could not capture pre-action state for Step ${index + 1}:`, error.message);
+          return null;
+        });
+        this.transitionWorkflowState(step, "ACTION_REQUIRED", {
+          failureReason: lastFailure || undefined,
+        });
+        this.transitionWorkflowState(step, "ACTION_IN_PROGRESS");
+
+        let result;
+        try {
+          result = await this.performToolAction(step, {
+            attempt: step.retryCount,
+            strategy: step.retryCount > 0 ? "alternative" : "primary",
+            retryInstruction: step.retryInstruction || "",
+          });
+        } catch (error) {
+          result = { success: false, error: error.message };
+        }
+        if (this.options.mockBrowser && result?.success === true) {
+          result = { ...result, simulated: true };
+        }
+
+        if (result?.requiresCredentials) {
+          return this.triggerCredentialRequest(index, step, result.site || step.args.site, result.reason);
+        }
+        if (result?.requiresUserCheck) {
+          this.transitionWorkflowState(step, "ACTION_FAILED", {
+            actionResult: result,
+            failureReason: result.reason || "Action requires user verification.",
+          });
+          return this.triggerPlannerCheck(index, step, result.reason, result.checkType);
+        }
+
+        const verification = await this.verifyStepOutcome(step, result, beforeState, page).catch((error) => ({
+          verified: false,
+          reason: `Verification failed: ${error.message}`,
+        }));
+        step.lastAttemptResult = result;
+        step.lastBeforeState = beforeState;
+        step.lastVerification = verification;
+        step.actionResult = result;
+        step.verificationResult = verification;
+
+        if (verification.verified) {
+          this.transitionWorkflowState(step, "ACTION_SUCCEEDED", {
+            actionResult: result,
+            verificationResult: verification,
+          });
+          break;
+        }
+
+        lastFailure = verification.reason || "Expected UI state was not verified.";
+        this.transitionWorkflowState(step, "ACTION_FAILED", {
+          actionResult: result,
+          verificationResult: verification,
+          failureReason: lastFailure,
+        });
+        if (step.retryCount >= maxRetries) break;
+
+        step.retryCount++;
+        step.status = "retrying";
+        this.transitionWorkflowState(step, "RETRY_REQUIRED", {
+          actionResult: result,
+          verificationResult: verification,
+          failureReason: lastFailure,
+        });
       }
 
-      // 2. Human check / verification / unexpected outcome?
-      if (result && result.requiresUserCheck) {
-        return this.triggerPlannerCheck(index, step, result.reason, result.checkType);
+      if (step.workflowState !== "ACTION_SUCCEEDED") {
+        step.status = "failed";
+        return this.triggerPlannerCheck(index, step, lastFailure || "Action did not reach its verified postcondition.", "step_failure");
       }
 
       const stepDuration = Math.round(performance.now() - stepStart);
-
       step.status = "completed";
       step.completedAt = Date.now();
       step.duration = stepDuration;
-      step.result = result;
+      step.result = { ...step.lastAttemptResult, verified: true, verification: step.lastVerification };
       this.state.completedSteps = index + 1;
-
-      this.addReasoning(`✔ Step ${index + 1} completed (${stepDuration}ms): ${JSON.stringify(result)}`, "observation");
-      this.broadcast("step_completed", { stepIndex: index, step, result });
-
-      // Grace delay for clean visual UI feedback
+      this.transitionWorkflowState(step, "STEP_COMPLETED", {
+        actionResult: step.lastAttemptResult,
+        verificationResult: step.lastVerification,
+      });
+      this.broadcast("step_completed", { stepIndex: index, step, result: step.result });
       await new Promise((r) => setTimeout(r, this.options.stepDelayMs));
-
-      // Advance to next step
       await this.executeStep(index + 1);
     } catch (err) {
       this.warn(`Step ${index + 1} execution error:`, err.message);
-      // Human-in-the-loop: when planner encounters an unexpected error or element is missing,
-      // ask the user to wait for response / check!
+      step.status = "failed";
+      this.transitionWorkflowState(step, "ACTION_FAILED", { failureReason: err.message });
       return this.triggerPlannerCheck(index, step, err.message, "step_failure");
     }
   }
@@ -1343,203 +1870,181 @@ Return ONLY a JSON object matching this schema:
   // UNIVERSAL TOOL ACTION EXECUTOR
   // ==========================================================
 
-  async performToolAction(step) {
+  async resolveSemanticPurchaseAction(page) {
+    const purchasePatterns = [
+      /\b(?:buy\s+now|buy|purchase|pay|pay\s+now|checkout|place\s+order|complete\s+purchase|proceed|continue|add\s+to\s+(?:cart|bag)|add\s+(?:to\s+)?(?:cart|bag)|add\s+item|shop\s+now)\b/i,
+    ];
+
+    const textCandidates = [
+      page.getByRole("button"),
+      page.getByRole("link"),
+      page.locator("button, a, input[type='submit'], input[type='button']"),
+    ];
+
+    for (const list of textCandidates) {
+      try {
+        const count = await list.count();
+        for (let i = 0; i < count; i++) {
+          const candidate = list.nth(i);
+          try {
+            const text = await candidate.textContent().catch(() => "");
+            const aria = await candidate.getAttribute("aria-label").catch(() => "");
+            const value = await candidate.getAttribute("value").catch(() => "");
+            const combined = `${text || ""} ${aria || ""} ${value || ""}`;
+            if (purchasePatterns.some((pattern) => pattern.test(combined))) {
+              if (await candidate.isVisible().catch(() => false)) {
+                await candidate.click({ timeout: 3000 }).catch(() => {});
+                return true;
+              }
+            }
+          } catch {}
+        }
+      } catch {}
+    }
+
+    return false;
+  }
+
+  async clickGenericTarget(page, target, attempt = 0) {
+    const label = String(target || "").trim();
+    if (!label) return false;
+
+    const semanticPurchase = /(?:purchase|checkout|buy|add\s+to\s+(?:cart|bag)|add\s+(?:item|to\s+cart)|proceed|continue|place\s+order)/i.test(label);
+    if (semanticPurchase && (await this.resolveSemanticPurchaseAction(page))) {
+      return true;
+    }
+
+    const clickByText = async (exact) => {
+      try {
+        const locator = page.getByText(label, { exact }).first();
+        if (await locator.isVisible()) {
+          await locator.click({ timeout: 3000 });
+          return true;
+        }
+      } catch {}
+      return false;
+    };
+    if (attempt > 0 && await clickByText(false)) return true;
+
+    const roleOrder = attempt > 0
+      ? ["radio", "option", "button", "link", "checkbox", "tab"]
+      : ["button", "link", "radio", "option", "checkbox", "tab"];
+    for (const role of roleOrder) {
+      try {
+        const locator = page.getByRole(role, { name: label, exact: attempt === 0 }).first();
+        if (await locator.isVisible()) {
+          await locator.click({ timeout: 3000 });
+          return true;
+        }
+      } catch {}
+    }
+
+    return await clickByText(false);
+  }
+
+  async performToolAction(step, context = {}) {
+    if (this.options.mockBrowser) {
+      return {
+        success: true,
+        simulated: true,
+        action: step.tool,
+        args: step.args,
+      };
+    }
     let page = await this.getBrowserPage();
 
     switch (step.tool) {
       case "navigate": {
-        const url = step.args.url || "https://www.google.com";
+        const url = step.args.url;
+        if (!url) return { success: false, error: "Navigation step has no destination." };
         this.addReasoning(`Navigating to ${url}...`, "action");
 
-        if (page) {
-          try {
-            await page.goto(url, { waitUntil: "domcontentloaded", timeout: 25000 });
-            await this.dismissModals(page);
-          } catch (e) {
-            this.warn("Page navigation warning, continuing:", e.message);
-          }
-        }
-        return { success: true, action: "navigate", url };
+        if (!page) return { success: false, error: "Browser page is unavailable." };
+        await page.goto(url, { waitUntil: "domcontentloaded", timeout: 25000 });
+        return { success: true, attempted: true, action: "navigate", url };
       }
 
       case "search": {
-        const query = step.args.query || step.args.origin || "Query";
+        const query = step.args.query || step.args.origin;
+        if (!query) return { success: false, error: "Search step has no query." };
         this.addReasoning(`Searching for query "${query}" on page...`, "action");
 
-        if (page) {
+        if (!page) return { success: false, error: "Browser page is unavailable." };
+        let searchBox = null;
+        for (const role of ["searchbox", "textbox"]) {
           try {
-            await this.dismissModals(page);
-
-            const searchSelectors = [
-              "input#searchboxinput",
-              "input[name='q']",
-              "input[name='field-keywords']",
-              "input[title*='Search']",
-              "input[placeholder*='Search' i]",
-              "input[placeholder*='Where' i]",
-              "input[aria-label*='Search' i]",
-              "input.Pke_EE",
-              "input[type='search']",
-              "input[type='text']",
-              "textarea[name='q']",
-            ];
-
-            let foundInput = false;
-            for (const sel of searchSelectors) {
-              const el = await page.$(sel).catch(() => null);
-              if (el) {
-                await el.click().catch(() => {});
-                await el.fill(query).catch(() => {});
-                await page.keyboard.press("Enter").catch(() => {});
-                foundInput = true;
-                this.addReasoning(`Entered "${query}" into (${sel}) and submitted.`, "action");
-                break;
-              }
+            const candidate = page.getByRole(role).first();
+            if (await candidate.isVisible()) {
+              searchBox = candidate;
+              break;
             }
-
-            if (!foundInput) {
-              this.addReasoning(`Executed search query: "${query}".`, "observation");
-            }
-
-            await page.waitForTimeout(1500).catch(() => {});
-            await this.dismissModals(page);
-          } catch (e) {
-            this.warn("Search execution error:", e.message);
-          }
+          } catch {}
         }
-        return { success: true, action: "search", query };
+        if (!searchBox) return { success: false, error: "No visible search field was found." };
+        await searchBox.fill(query);
+        await searchBox.press("Enter");
+        return { success: true, attempted: true, action: "search", query };
       }
 
       case "fill_form": {
-        const title = step.args.title || step.args.content || "Form Entry";
+        const title = step.args.value || step.args.title || step.args.content;
+        if (!title) return { success: false, error: "Form step has no value to enter." };
         this.addReasoning(`Filling form fields with: "${title}"...`, "action");
 
-        if (page) {
-          try {
-            await page.evaluate((textToFill) => {
-              const inputs = Array.from(document.querySelectorAll("input[type='text'], textarea, [contenteditable='true']"));
-              for (const inp of inputs) {
-                if (inp.offsetParent !== null) {
-                  inp.focus();
-                  if (inp.value !== undefined) inp.value = textToFill;
-                  if (inp.innerText !== undefined) inp.innerText = textToFill;
-                  return true;
-                }
-              }
-              return false;
-            }, title);
-            await page.waitForTimeout(500).catch(() => {});
-          } catch (e) {
-            this.warn("Fill form error:", e.message);
-          }
-        }
-        return { success: true, action: "fill_form", content: title };
+        if (!page) return { success: false, error: "Browser page is unavailable." };
+        let textbox = null;
+        try {
+          const candidate = page.getByRole("textbox").first();
+          if (await candidate.isVisible()) textbox = candidate;
+        } catch {}
+        if (!textbox) return { success: false, error: "No visible text field was found." };
+        await textbox.fill(title);
+        return { success: true, attempted: true, action: "fill_form", content: title };
       }
 
       case "click_element": {
-        const target = step.args.target || "Button";
+        const target = step.args.target;
+        if (!target) return { success: false, error: "Click step has no target." };
         this.addReasoning(`Interacting with: "${target}"...`, "action");
 
-        if (page) {
-          try {
-            await page.evaluate((btnTarget) => {
-              const elements = Array.from(document.querySelectorAll("button, a, [role='button'], input[type='button'], input[type='submit']"));
-              const lowerTarget = btnTarget.toLowerCase();
-              for (const el of elements) {
-                const txt = (el.innerText || el.textContent || el.getAttribute("aria-label") || "").toLowerCase();
-                if (txt.includes(lowerTarget)) {
-                  el.scrollIntoView({ behavior: "smooth", block: "center" });
-                  el.click();
-                  return true;
-                }
-              }
-              return false;
-            }, target);
-            await page.waitForTimeout(1000).catch(() => {});
-          } catch (e) {
-            this.warn("Click element error:", e.message);
-          }
-        }
-        return { success: true, action: "click_element", target };
+        if (!page) return { success: false, error: "Browser page is unavailable." };
+        const clicked = await this.clickGenericTarget(page, target, context.attempt);
+        return clicked
+          ? { success: true, attempted: true, action: "click_element", target }
+          : { success: false, error: `No visible control matching "${target}" was found.` };
       }
 
       case "select_product":
       case "select_option": {
-        const variant = step.args.variant || step.args.preference || "Option";
+        const variant = step.args.variant || step.args.preference;
         this.addReasoning(`Selecting option matching: "${variant}"...`, "thought");
-
-        if (page) {
-          try {
-            await page.evaluate((chosenOption) => {
-              const cards = Array.from(document.querySelectorAll("div[data-id], a[href*='/p/'], div[role='article'], .KzDlHZ, ._4rR01T, a"));
-              const optLower = (chosenOption || "").toLowerCase();
-              for (const card of cards) {
-                const text = (card.innerText || card.textContent || "").toLowerCase();
-                if (text.includes(optLower) || text.includes("natural") || text.includes("titanium") || text.includes("256")) {
-                  card.scrollIntoView({ behavior: "smooth", block: "center" });
-                  card.click();
-                  return true;
-                }
-              }
-              // Fallback: click first link
-              const firstLink = document.querySelector("a[href*='/p/'], h3 a, [role='main'] a");
-              if (firstLink) {
-                firstLink.click();
-                return true;
-              }
-              return false;
-            }, variant);
-            await page.waitForTimeout(1500).catch(() => {});
-          } catch (e) {
-            this.warn("Select option error:", e.message);
-          }
-        }
-        return { success: true, action: "select_option", variant };
+        if (!variant) return { success: false, error: "Selection step has no requested option." };
+        if (!page) return { success: false, error: "Browser page is unavailable." };
+        const selected = await this.clickGenericTarget(page, variant, context.attempt);
+        return selected
+          ? { success: true, attempted: true, action: "select_option", variant }
+          : { success: false, error: `No visible option matching "${variant}" was found.` };
       }
 
       case "click_buy": {
-        this.addReasoning("Locating purchase CTA ('Buy Now' or 'Add to Cart')...", "action");
-
-        if (page) {
-          try {
-            await page.evaluate(() => {
-              const buttons = Array.from(document.querySelectorAll("button, a, input[type='button']"));
-              for (const btn of buttons) {
-                const txt = (btn.innerText || btn.textContent || btn.value || "").trim().toUpperCase();
-                if (txt.includes("BUY NOW") || txt.includes("ADD TO CART") || txt.includes("BOOK") || txt.includes("PROCEED")) {
-                  btn.scrollIntoView({ behavior: "smooth", block: "center" });
-                  btn.style.outline = "3px solid #ff9f00";
-                  btn.click();
-                  return txt;
-                }
-              }
-              return null;
-            });
-          } catch (e) {
-            this.warn("Click buy error:", e.message);
-          }
-        }
-        return { success: true, action: "click_buy", status: "ready_for_checkout" };
+        const target = step.args.target || step.args.action || step.args.intent || "purchase";
+        this.addReasoning(`Locating the current page's purchase or collection action...`, "action");
+        if (!page) return { success: false, error: "Browser page is unavailable." };
+        const clicked = await this.clickGenericTarget(page, target, context.attempt);
+        return clicked
+          ? { success: true, attempted: true, action: "click_buy", target }
+          : { success: false, error: `No visible purchase or collection control was found for the current page.` };
       }
 
       case "save_action": {
-        this.addReasoning("Saving changes and committing action...", "action");
-        if (page) {
-          try {
-            await page.evaluate(() => {
-              const buttons = Array.from(document.querySelectorAll("button, div[role='button']"));
-              for (const btn of buttons) {
-                const txt = (btn.innerText || btn.textContent || "").trim().toLowerCase();
-                if (txt === "save" || txt === "done" || txt === "create" || txt.includes("confirm")) {
-                  btn.click();
-                  return true;
-                }
-              }
-              return false;
-            });
-          } catch {}
-        }
-        return { success: true, action: "save_action" };
+        const target = step.args.target || step.args.action;
+        if (!target) return { success: false, error: "Save step has no target control." };
+        this.addReasoning(`Saving changes using "${target}"...`, "action");
+        if (!page) return { success: false, error: "Browser page is unavailable." };
+        const clicked = await this.clickGenericTarget(page, target, context.attempt);
+        return clicked
+          ? { success: true, attempted: true, action: "save_action", target }
+          : { success: false, error: `No visible control matching "${target}" was found.` };
       }
 
       case "login_handler": {
@@ -1604,7 +2109,7 @@ Return ONLY a JSON object matching this schema:
       case "finish": {
         const msg = step.args.message || "Goal successfully completed!";
         this.addReasoning(`🏁 ${msg}`, "decision");
-        return { success: true, message: msg };
+        return { success: true, verified: true, evidence: "All preceding workflow steps reached STEP_COMPLETED.", message: msg };
       }
 
       default: {
@@ -1615,50 +2120,14 @@ Return ONLY a JSON object matching this schema:
   }
 
   // ==========================================================
-  // UNIVERSAL MODAL & COOKIE POPUP DISMISSER
-  // ==========================================================
-
-  async dismissModals(page) {
-    if (!page) return;
-    try {
-      await page.evaluate(() => {
-        const closeSelectors = [
-          // E-commerce login popups
-          "button._2KpZ6l._2doB4z",
-          "span._30XB9F",
-          "button[class*='_2doB4z']",
-          "span[role='button']:has-text('✕')",
-          // Cookie consent dialogs (Google, Travel, General)
-          "button:has-text('Accept all')",
-          "button:has-text('I agree')",
-          "button:has-text('Dismiss')",
-          "button:has-text('Got it')",
-          "button:has-text('Not now')",
-          "button:has-text('Close')",
-          "#onetrust-accept-btn-handler",
-          "button#L2AGLb", // Google consent
-        ];
-        for (const sel of closeSelectors) {
-          try {
-            const btn = document.querySelector(sel);
-            if (btn) {
-              btn.click();
-              return true;
-            }
-          } catch {}
-        }
-        return false;
-      }).catch(() => {});
-    } catch {}
-  }
-
-  // ==========================================================
   // HUMAN-IN-THE-LOOP: PLANNER CHECK & FALLBACK ESCALATION
   // ==========================================================
 
   triggerPlannerCheck(index, step, reason, checkType = "step_check") {
     this.state.status = "waiting_for_user_check";
-    step.status = "waiting_for_user_check";
+    if (step.workflowState !== "ACTION_FAILED") {
+      step.status = "waiting_for_user_check";
+    }
 
     const checkId = "check_" + Date.now();
     this.state.pendingPlannerCheck = {
@@ -1672,7 +2141,7 @@ Return ONLY a JSON object matching this schema:
       options: [
         "✔ I resolved it in the browser — Continue",
         "🔄 Retry this step",
-        "⏭ Skip this step and proceed",
+        "✔ Verify the current state",
         "⏹ Stop execution",
       ],
       timestamp: Date.now(),
@@ -1704,16 +2173,98 @@ Return ONLY a JSON object matching this schema:
     this.log(`Resolving planner check (${checkId}) with action: "${action}"`);
     this.state.pendingPlannerCheck = null;
 
-    // 1. User resolved in browser -> Continue
-    if (normalizedAction.includes("resolved") || normalizedAction.includes("solved") || normalizedAction.includes("continue")) {
+    // Acknowledging an issue never completes it; verify the resulting UI state first.
+    if (
+      normalizedAction.includes("resolved") ||
+      normalizedAction.includes("solved") ||
+      normalizedAction.includes("continue") ||
+      normalizedAction.includes("approve") ||
+      normalizedAction.includes("approved") ||
+      normalizedAction.includes("yes") ||
+      normalizedAction.includes("do it") ||
+      normalizedAction.includes("ok") ||
+      normalizedAction.includes("proceed") ||
+      normalizedAction.includes("confirm") ||
+      normalizedAction.includes("authorized") ||
+      normalizedAction.includes("complete it") ||
+      normalizedAction.includes("handle this") ||
+      normalizedAction.includes("submit")
+    ) {
+      let verification = { verified: false, reason: "No action result is available to verify." };
+      if (check.checkType === "user_confirmation") {
+        verification = { verified: true, evidence: "User confirmed the requested review checkpoint." };
+      } else if (step?.lastAttemptResult) {
+        const page = await this.getBrowserPage();
+        verification = await this.verifyStepOutcome(
+          step.pendingActionSpec || step,
+          { ...step.lastAttemptResult, success: true, verified: false },
+          step.lastBeforeState,
+          page,
+        ).catch((error) => ({
+          verified: false,
+          reason: `Verification failed: ${error.message}`,
+        }));
+      } else if (normalizedAction.includes("resolved") || normalizedAction.includes("solved")) {
+        verification = { verified: true, evidence: "User resolved issue in browser." };
+      }
+      step.lastVerification = verification;
+      if (!verification.verified) {
+        step.status = "failed";
+        this.state.pendingPlannerCheck = check;
+        this.state.status = "waiting_for_user_check";
+        this.transitionWorkflowState(step, "ACTION_FAILED", {
+          intendedAction: step.pendingActionSpec?.tool || step.tool,
+          actionResult: step.lastAttemptResult,
+          verificationResult: verification,
+          failureReason: verification.reason,
+        });
+        this.addReasoning(
+          `Cannot advance from Step ${stepIndex + 1}; verification failed: ${verification.reason}`,
+          "observation",
+        );
+        this.broadcast("planner_check_required", { plannerCheck: check });
+        return this.getState();
+      }
+
+      if (step.workflowActions?.length) {
+        const actionIndex = step.workflowActionIndex || 0;
+        const pendingAction = step.workflowActions[actionIndex];
+        if (pendingAction) {
+          pendingAction.workflowState = "STEP_COMPLETED";
+          pendingAction.lastVerification = verification;
+          step.workflowActionIndex = actionIndex + 1;
+          pendingAction.retryCount = 0;
+        }
+        step.status = "running";
+        step.lastVerification = verification;
+        this.state.status = "executing";
+        this.transitionWorkflowState(step, "ACTION_SUCCEEDED", {
+          intendedAction: step.pendingActionSpec?.tool,
+          actionResult: step.lastAttemptResult,
+          verificationResult: verification,
+        });
+        this.broadcast("planner_check_resolved", { checkId, action: "resolved" });
+        await this.executeStep(stepIndex);
+        return this.getState();
+      }
+
       step.status = "completed";
+      step.workflowState = "ACTION_SUCCEEDED";
       step.completedAt = Date.now();
-      step.result = { resolvedByUser: true, instruction: customInstruction };
+      step.result = {
+        ...(step.lastAttemptResult || {}),
+        verified: true,
+        verification,
+        resolvedByUser: true,
+      };
       this.state.completedSteps = stepIndex + 1;
       this.state.status = "executing";
-
+      this.transitionWorkflowState(step, "STEP_COMPLETED", {
+        actionResult: step.lastAttemptResult,
+        verificationResult: verification,
+      });
       this.addReasoning(
-        `✔ User resolved check in browser. Continuing execution to Step ${stepIndex + 2}...`,
+        `✔ Step ${stepIndex + 1} postcondition verified. Resuming execution to Step ${stepIndex + 2}...`,
         "decision"
       );
       this.broadcast("planner_check_resolved", { checkId, action: "resolved" });
@@ -1725,8 +2276,17 @@ Return ONLY a JSON object matching this schema:
     // 2. Retry this step
     if (normalizedAction.includes("retry")) {
       step.status = "pending";
+      step.retryCount = 0;
+      if (step.workflowActions?.length) {
+        const action = step.workflowActions[step.workflowActionIndex || 0];
+        if (action) action.retryCount = 0;
+      }
+      step.retryInstruction = customInstruction || "";
       this.state.status = "executing";
 
+      this.transitionWorkflowState(step, "RETRY_REQUIRED", {
+        failureReason: "User requested a retry of the same step.",
+      });
       this.addReasoning(`🔄 Retrying Step ${stepIndex + 1}: "${step.title}" per user request...`, "decision");
       this.broadcast("planner_check_resolved", { checkId, action: "retry" });
 
@@ -1736,15 +2296,9 @@ Return ONLY a JSON object matching this schema:
 
     // 3. Skip this step
     if (normalizedAction.includes("skip")) {
-      step.status = "completed";
-      step.result = { skippedByUser: true };
-      this.state.completedSteps = stepIndex + 1;
-      this.state.status = "executing";
-
-      this.addReasoning(`⏭ Skipped Step ${stepIndex + 1} per user request. Advancing...`, "decision");
-      this.broadcast("planner_check_resolved", { checkId, action: "skip" });
-
-      await this.executeStep(stepIndex + 1);
+      this.addReasoning(`⛔ Step ${stepIndex + 1} cannot be skipped because its postcondition is unverified.`, "observation");
+      this.state.pendingPlannerCheck = check;
+      this.state.status = "waiting_for_user_check";
       return this.getState();
     }
 
@@ -1756,15 +2310,22 @@ Return ONLY a JSON object matching this schema:
     // 5. Custom instruction provided
     if (customInstruction || action) {
       const instruction = customInstruction || action;
-      step.status = "completed";
-      step.result = { userInstruction: instruction };
-      this.state.completedSteps = stepIndex + 1;
+      step.retryInstruction = instruction;
+      step.retryCount = 0;
+      if (step.workflowActions?.length) {
+        const pendingAction = step.workflowActions[step.workflowActionIndex || 0];
+        if (pendingAction) pendingAction.retryCount = 0;
+      }
+      step.status = "pending";
       this.state.status = "executing";
 
-      this.addReasoning(`💬 User instruction received: "${instruction}". Proceeding...`, "decision");
+      this.transitionWorkflowState(step, "RETRY_REQUIRED", {
+        failureReason: "User provided an alternative instruction; the step remains incomplete.",
+      });
+      this.addReasoning(`💬 User instruction received: "${instruction}". Retrying the current step...`, "decision");
       this.broadcast("planner_check_resolved", { checkId, action: "instruction", instruction });
 
-      await this.executeStep(stepIndex + 1);
+      await this.executeStep(stepIndex);
       return this.getState();
     }
 
@@ -1868,11 +2429,40 @@ Return ONLY a JSON object matching this schema:
       "decision"
     );
 
+    if (currentStep.workflowActions?.length) {
+      currentStep.userAnswer = cleanAnswer;
+      currentStep.args.variant = cleanAnswer;
+      for (const action of currentStep.workflowActions) {
+        action.args = Object.fromEntries(
+          Object.entries(action.args || {}).map(([key, value]) => [
+            key,
+            typeof value === "string" ? value.replace(/\{user_choice\}/g, cleanAnswer) : value,
+          ]),
+        );
+        if (action.verification?.expected === "{user_choice}") {
+          action.verification.expected = cleanAnswer;
+        }
+      }
+      this.state.pendingQuestion = null;
+      this.state.status = "executing";
+      this.broadcast("question_answered", {
+        questionId,
+        answer: cleanAnswer,
+        stepIndex: currentStepIndex,
+      });
+      await this.executeStep(currentStepIndex);
+      return this.getState();
+    }
+
     // Complete clarification step
     currentStep.status = "completed";
     currentStep.completedAt = Date.now();
     currentStep.result = { userChoice: cleanAnswer };
     this.state.completedSteps = currentStepIndex + 1;
+    this.transitionWorkflowState(currentStep, "STEP_COMPLETED", {
+      actionResult: { userChoice: cleanAnswer },
+      verificationResult: { verified: true, evidence: "Required user information was received." },
+    });
 
     // Propagate answer forward to downstream steps
     for (let i = currentStepIndex + 1; i < this.state.steps.length; i++) {
@@ -1880,6 +2470,9 @@ Return ONLY a JSON object matching this schema:
       if (s.tool === "select_product" || s.tool === "select_option") {
         s.args.variant = cleanAnswer;
         s.description = `Apply preference: ${cleanAnswer}`;
+        if (s.verification?.type === "selection_matches") {
+          s.verification.expected = cleanAnswer;
+        }
       }
     }
 

@@ -238,7 +238,6 @@ class ActionParser {
         patterns: [
           /^(?:search\s+for)\s+(.+)$/i,
           /^(?:search)\s+(.+)$/i,
-          /^(?:google)\s+(.+)$/i,
           /^(?:find)\s+(.+)$/i,
           /^(?:look\s+up)\s+(.+)$/i,
           /^(?:lookup)\s+(.+)$/i,
@@ -1023,7 +1022,7 @@ class ActionParser {
 
   normalizeUrl(url) {
     if (!url) {
-      return "";
+      return "about:blank";
     }
 
     let value = String(url).trim();
@@ -1034,6 +1033,56 @@ class ActionParser {
       return value;
     }
 
+    if (/^about:|^\/|^#|^app:|^file:/i.test(value)) {
+      return value;
+    }
+
+    const shortcuts = {
+      amazon: "https://www.amazon.com",
+      "amazon.in": "https://www.amazon.in",
+      flipkart: "https://www.flipkart.com",
+      ebay: "https://www.ebay.com",
+      youtube: "https://www.youtube.com",
+      github: "https://github.com",
+      wikipedia: "https://www.wikipedia.org",
+      maps: "https://www.google.com/maps",
+      "google maps": "https://www.google.com/maps",
+      calendar: "https://calendar.google.com",
+      "google calendar": "https://calendar.google.com",
+      keep: "https://keep.google.com",
+      "google keep": "https://keep.google.com",
+      flights: "https://www.google.com/travel/flights",
+      "google flights": "https://www.google.com/travel/flights",
+      google: "https://www.google.com",
+      "google search": "https://www.google.com",
+      microsoft: "https://www.microsoft.com",
+      netflix: "https://www.netflix.com",
+      apple: "https://www.apple.com",
+      linkedin: "https://www.linkedin.com",
+      twitter: "https://x.com",
+      x: "https://x.com",
+      reddit: "https://www.reddit.com",
+      notion: "https://www.notion.so",
+      dropbox: "https://www.dropbox.com",
+      udemy: "https://www.udemy.com",
+      bing: "https://www.bing.com",
+      duckduckgo: "https://duckduckgo.com",
+      stackoverflow: "https://stackoverflow.com",
+      news: "https://news.google.com",
+      gmail: "https://mail.google.com",
+      drive: "https://drive.google.com",
+    };
+
+    const lowered = value.toLowerCase();
+    if (shortcuts[lowered]) {
+      return shortcuts[lowered];
+    }
+
+    const matchedShortcut = Object.entries(shortcuts).find(([key]) => lowered.includes(key));
+    if (matchedShortcut) {
+      return matchedShortcut[1];
+    }
+
     if (/^www\./i.test(value)) {
       return `https://${value}`;
     }
@@ -1042,7 +1091,7 @@ class ActionParser {
       return `https://${value}`;
     }
 
-    return "https://www.google.com/search?q=" + encodeURIComponent(value);
+    return "about:blank";
   }
 
   //========================================================

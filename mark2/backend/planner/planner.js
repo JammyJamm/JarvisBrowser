@@ -1,50 +1,50 @@
-// backend/planner/planner.js
+﻿// backend/planner/planner.js
 //
 // Ultra Intelligent Planner
 //
 // Architecture
 //
 // User Command
-//      │
-//      ▼
+//      â”‚
+//      â–¼
 // Command Classification
-//      │
-//      ▼
+//      â”‚
+//      â–¼
 // IntentParser
-//      │
-//      ├── Fast Intent Detection
-//      ├── Multi-Step Parsing
-//      └── Action Extraction
-//      │
-//      ▼
+//      â”‚
+//      â”œâ”€â”€ Fast Intent Detection
+//      â”œâ”€â”€ Multi-Step Parsing
+//      â””â”€â”€ Action Extraction
+//      â”‚
+//      â–¼
 // ScoringEngine
-//      │
-//      ├── Exact Matching
-//      ├── Token Matching
-//      ├── Fuzzy Matching
-//      ├── Semantic Matching
-//      └── Candidate Ranking
-//      │
-//      ▼
+//      â”‚
+//      â”œâ”€â”€ Exact Matching
+//      â”œâ”€â”€ Token Matching
+//      â”œâ”€â”€ Fuzzy Matching
+//      â”œâ”€â”€ Semantic Matching
+//      â””â”€â”€ Candidate Ranking
+//      â”‚
+//      â–¼
 // Planner
-//      │
-//      ├── High Confidence → Direct Execution
-//      │
-//      └── Low Confidence / Ambiguous
-//              │
-//              ▼
+//      â”‚
+//      â”œâ”€â”€ High Confidence â†’ Direct Execution
+//      â”‚
+//      â””â”€â”€ Low Confidence / Ambiguous
+//              â”‚
+//              â–¼
 //          LLM Fallback
-//              │
-//              ▼
+//              â”‚
+//              â–¼
 //          Structured Plan
-//              │
-//              ▼
+//              â”‚
+//              â–¼
 //          ToolMap
-//              │
-//              ▼
+//              â”‚
+//              â–¼
 //          Resolver
-//              │
-//              ▼
+//              â”‚
+//              â–¼
 //          Playwright
 //
 // IMPORTANT
@@ -53,19 +53,19 @@
 // Fuzzy matching belongs exclusively to ScoringEngine.
 //
 // Planner responsibilities:
-// ✔ Parse user intent
-// ✔ Coordinate IntentParser
-// ✔ Coordinate ScoringEngine
-// ✔ Generate multi-step plans
-// ✔ Use LLM only when required
-// ✔ Repair invalid LLM JSON
-// ✔ Normalize plans
-// ✔ Validate plans
-// ✔ Preserve step ordering
-// ✔ Prevent skipped steps
-// ✔ Support chat and action modes
-// ✔ Resolve each step independently
-// ✔ Never silently drop failed steps
+// âœ” Parse user intent
+// âœ” Coordinate IntentParser
+// âœ” Coordinate ScoringEngine
+// âœ” Generate multi-step plans
+// âœ” Use LLM only when required
+// âœ” Repair invalid LLM JSON
+// âœ” Normalize plans
+// âœ” Validate plans
+// âœ” Preserve step ordering
+// âœ” Prevent skipped steps
+// âœ” Support chat and action modes
+// âœ” Resolve each step independently
+// âœ” Never silently drop failed steps
 //
 //==========================================================
 
@@ -1673,7 +1673,7 @@ Return a valid JSON execution plan only.`;
   }
 
   //======================================================
-  // ACTION → TOOL
+  // ACTION â†’ TOOL
   //======================================================
 
   actionToTool(action) {
@@ -1979,3 +1979,4 @@ Return a valid JSON execution plan only.`;
     };
   }
 }
+

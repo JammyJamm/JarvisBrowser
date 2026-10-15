@@ -1,4 +1,4 @@
-// constants.js
+﻿// constants.js
 // Global configuration constants for Jarvis Browser / Planner System
 
 module.exports = {
@@ -169,3 +169,4 @@ module.exports = {
     MOCK_MODE: false,
   },
 };
+

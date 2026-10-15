@@ -33,7 +33,7 @@
             ></path>
           </svg>
           <span id="tabTitle" class="chrome-tab-title"
-            >Google - Search & Explore</span
+            >Jarvis Browser</span
           >
           <span class="chrome-tab-close" title="Close Tab">×</span>
         </div>
@@ -102,11 +102,11 @@
         <input
           id="url"
           type="text"
-          value="https://www.google.com"
+          value="about:blank"
           autocomplete="off"
           spellcheck="false"
           aria-label="Address Bar"
-          placeholder="Search with Google or enter URL"
+          placeholder="Enter URL or internal app route"
         />
       </div>
 
@@ -541,7 +541,7 @@
       window.aiState = {
         ready: true,
         backendReady: false,
-        currentUrl: "https://www.google.com",
+        currentUrl: "about:blank",
         backendUrl: BACKEND_URL,
       };
 
@@ -573,29 +573,57 @@
       // URL Formatting
       function formatURL(value) {
         let url = String(value || "").trim();
-        if (!url) return "https://www.google.com";
+        if (!url) return "about:blank";
         if (/^https?:\/\//i.test(url)) return url;
+        if (/^about:|^\/|^#|^app:|^file:/i.test(url)) return url;
         if (/^localhost(?::\d+)?(?:\/|$)/i.test(url)) return `http://${url}`;
-        if (/\s/.test(url) || !url.includes(".")) {
-          return `https://www.google.com/search?q=${encodeURIComponent(url)}`;
+
+        const shortcuts = {
+          calendar: "https://calendar.google.com",
+          "google calendar": "https://calendar.google.com",
+          keep: "https://keep.google.com",
+          "google keep": "https://keep.google.com",
+          maps: "https://www.google.com/maps",
+          "google maps": "https://www.google.com/maps",
+          flights: "https://www.google.com/travel/flights",
+          "google flights": "https://www.google.com/travel/flights",
+          youtube: "https://www.youtube.com",
+          github: "https://github.com",
+          wikipedia: "https://www.wikipedia.org",
+        };
+
+        const lowered = url.toLowerCase();
+        const direct = shortcuts[lowered] || Object.entries(shortcuts).find(([key]) => lowered.includes(key))?.[1];
+        if (direct) return direct;
+
+        if (/^www\./i.test(url)) return `https://${url}`;
+        if (/^[a-z0-9.-]+\.[a-z]{2,}(?:[/?#].*)?$/i.test(url)) {
+          return `https://${url}`;
         }
-        return `https://${url}`;
+        return `https://www.google.com/search?q=${encodeURIComponent(url)}`;
       }
 
       // Navigation Actions
       async function navigate(customUrl) {
         const input = $("url");
-        const url =
-          customUrl || (input ? input.value : "") || "https://www.google.com";
+        const url = customUrl || (input ? input.value : "") || "about:blank";
         const formatted = formatURL(url);
         if (input) input.value = formatted;
         const tabTitle = $("tabTitle");
-        if (tabTitle)
-          tabTitle.innerText = formatted.replace(/^https?:\/\/(?:www\.)?/, "");
+        if (tabTitle) {
+          const title = formatted === "about:blank" ? "Jarvis Browser" : formatted.replace(/^https?:\/\/(?:www\.)?/, "");
+          tabTitle.innerText = title;
+        }
 
         if (window.browserAPI?.navigate) {
           log(`Navigating to ${formatted}...`);
-          await window.browserAPI.navigate(formatted);
+          try {
+            await window.browserAPI.navigate(formatted);
+          } catch (err) {
+            console.error("Navigation failed:", err);
+            log(`❌ Navigation failed: ${err.message}`, "error");
+            setStatus("Navigation failed", "error");
+          }
         }
       }
 
