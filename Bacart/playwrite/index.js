@@ -62,9 +62,7 @@ function appendSvgRoundsToHistory(date, rounds, baseDate = new Date()) {
     roundHistory.unshift(day);
   }
 
-  const values = rounds.flatMap((round) =>
-    Array.isArray(round) ? round : [],
-  );
+  const values = rounds.flatMap((round) => (Array.isArray(round) ? round : []));
   values.forEach((value, index) => {
     const timestamp = new Date(
       baseDate.getTime() - (values.length - index - 1) * 1000,
@@ -84,7 +82,16 @@ let browser;
 let page;
 let scrapeInProgress = false;
 let scrapeTimer;
-/* Get the live Evolution game iframe. */
+const TARGET_IFRAME_URL =
+  "https://5ixuqg75.nijsdyfigq.link/frontend/evo/r3/#category=blackjack";
+const TARGET_FRAME_KEYWORDS = [
+  "5ixuqg75.nijsdyfigq.link",
+  "category=blackjack",
+  "/frontend/evo/r3/",
+  "/frontend/evo/",
+];
+
+/* Get the live Evolution game iframe safely. */
 async function getGameFrame() {
   if (!page || page.isClosed()) return null;
 
@@ -93,12 +100,17 @@ async function getGameFrame() {
       if (frame === page.mainFrame()) continue;
 
       try {
-        const gameSvg = frame.locator("svg[data-role='recent-results']");
-        if (await gameSvg.count()) {
+        const frameUrl = frame.url();
+        if (TARGET_FRAME_KEYWORDS.some((kw) => frameUrl.includes(kw))) {
           return frame;
         }
 
-        if (frame.url().includes("/frontend/evo/")) return frame;
+        const targetEl = frame.locator(
+          ".i-1wnr, [class*='i-1wnr'], svg[data-role='recent-results'], [data-role='round-history']",
+        );
+        if (await targetEl.count()) {
+          return frame;
+        }
       } catch {
         // The iframe can be replaced while the page is refreshing.
       }
@@ -113,21 +125,69 @@ async function getGameFrame() {
 async function getGameFrameWithSvg() {
   if (!page || page.isClosed()) return null;
 
-  for (let attempt = 0; attempt < 8; attempt++) {
-    for (const frame of page.frames()) {
-      if (frame === page.mainFrame()) continue;
+  const historySelectors = [
+    "svg.i-1wnr",
+    ".i-1wnr",
+    "[class*='i-1wnr']",
+    "svg[data-role='recent-results']",
+    "[data-role='round-history']",
+    "[data-role='recent-results']",
+    "svg[data-type='coordinates']",
+  ];
+  const fallbackHistorySelectors = ["[class*='history']"];
 
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const frames = page.frames().filter((frame) => frame !== page.mainFrame());
+    const orderedFrames = frames.sort((left, right) => {
+      let leftIsTarget = false;
+      let rightIsTarget = false;
       try {
-        const svg = frame.locator("svg[data-role='recent-results']");
-        if (await svg.count()) return frame;
+        leftIsTarget = TARGET_FRAME_KEYWORDS.some((keyword) =>
+          left.url().includes(keyword),
+        );
+        rightIsTarget = TARGET_FRAME_KEYWORDS.some((keyword) =>
+          right.url().includes(keyword),
+        );
       } catch {
-        // The iframe can be replaced while the game is loading.
+        // Detached frames are checked and ignored below.
+      }
+      return Number(rightIsTarget) - Number(leftIsTarget);
+    });
+
+    for (const selectors of [historySelectors, fallbackHistorySelectors]) {
+      for (const frame of orderedFrames) {
+        for (const selector of selectors) {
+          try {
+            if ((await frame.locator(selector).count()) > 0) return frame;
+          } catch {
+            // The iframe can be replaced while the game is loading.
+            break;
+          }
+        }
       }
     }
 
     await page.waitForTimeout(500);
   }
 
+  console.warn(
+    "⚠️ No frame exposed a round-history marker:",
+    await Promise.all(
+      page.frames()
+        .filter((frame) => frame !== page.mainFrame())
+        .map(async (frame) => {
+          const selectorCounts = {};
+          for (const selector of historySelectors) {
+            try {
+              selectorCounts[selector] = await frame.locator(selector).count();
+            } catch {
+              selectorCounts[selector] = "frame unavailable";
+            }
+          }
+          return { url: frame.url(), selectorCounts };
+        }),
+    ),
+  );
   return null;
 }
 
@@ -174,7 +234,9 @@ async function clickRoundHistoryPlayButton() {
 
   for (const frame of page.frames()) {
     try {
-      const playButton = frame.locator("button[data-role='play-button']").first();
+      const playButton = frame
+        .locator("button[data-role='play-button']")
+        .first();
       if ((await playButton.count()) === 0) continue;
       if (!(await playButton.isVisible({ timeout: 500 }))) continue;
 
@@ -253,7 +315,7 @@ function startAutomaticScraping() {
       }
     });
 
-    const loginUrl = "https://1xlite-12947.pro/en/user/login";
+    const loginUrl = "https://1-x-bet-india.com/en/user/login";
     let lastError;
 
     for (let attempt = 1; attempt <= 3; attempt++) {
@@ -302,41 +364,221 @@ app.get("/round-history", async (req, res) => {
     }
 
     const svgData = await frame.evaluate(() => {
-      const svg = document.querySelector("svg[data-role='recent-results']");
-      const rounds = [];
-
-      if (svg) {
-        const groups = Array.from(svg.querySelectorAll("g")).filter(
-          (group) => !group.querySelector("g"),
-        );
-
-        for (const group of groups) {
-          const values = [];
-          const childSvgs = Array.from(group.querySelectorAll("svg")).filter(
-            (candidate) => !candidate.querySelector("svg"),
-          );
-          const valueNodes = childSvgs.length > 0 ? childSvgs : [group];
-
-          for (const valueNode of valueNodes) {
-            const text = Array.from(valueNode.querySelectorAll("text"))
-              .map((node) => node.textContent || "")
-              .join(" ")
-              .replace(",", ".");
-            const match = text.match(/-?\d+(?:\.\d+)?/);
-            if (match) values.push(Number.parseFloat(match[0]));
+      // Helper to serialize an SVG node and its children into JSON-compatible structure
+      function serializeSvg(node) {
+        if (!node || node.nodeType !== Node.ELEMENT_NODE) return null;
+        const attributes = {};
+        if (node.attributes) {
+          for (let i = 0; i < node.attributes.length; i++) {
+            attributes[node.attributes[i].name] = node.attributes[i].value;
           }
+        }
+        let directText = "";
+        for (let i = 0; i < node.childNodes.length; i++) {
+          if (node.childNodes[i].nodeType === Node.TEXT_NODE) {
+            const t = (node.childNodes[i].textContent || "").trim();
+            if (t) directText = directText ? `${directText} ${t}` : t;
+          }
+        }
+        const children = [];
+        for (let i = 0; i < node.children.length; i++) {
+          const childJson = serializeSvg(node.children[i]);
+          if (childJson) children.push(childJson);
+        }
+        const res = {
+          tagName: node.tagName.toLowerCase(),
+          attributes: Object.keys(attributes).length ? attributes : undefined,
+        };
+        if (directText) res.textContent = directText;
+        else if (children.length === 0 && (node.textContent || "").trim()) {
+          res.textContent = node.textContent.trim();
+        }
+        if (children.length) res.children = children;
+        return res;
+      }
 
-          if (values.length >= 4) rounds.push(values.slice(0, 4));
+      // Check whether element with class i-1wnr exists, or inspect fallback selectors
+      const PRIMARY_CLASS = ".i-1wnr";
+      const FALLBACK_SELECTORS = [
+        "svg.i-1wnr",
+        ".i-1wnr",
+        "[class*='i-1wnr']",
+        "[data-role='recent-results'] .i-1wnr",
+        "[data-role='round-history'] .i-1wnr",
+        "svg[data-role='recent-results']",
+        "[data-role='recent-results']",
+        "[data-role='round-history']",
+        "[data-role='game-history']",
+        "[data-role*='history']",
+        "[data-role*='results']",
+        "[class*='round-history']",
+        "[class*='recent-results']",
+        "[class*='history']",
+        "[data-type='coordinates']",
+        "[aria-label*='history' i]",
+      ];
+
+      let targetElement = null;
+      let resolvedSelector = null;
+
+      for (const sel of FALLBACK_SELECTORS) {
+        try {
+          const el = document.querySelector(sel);
+          if (el) {
+            targetElement = el;
+            resolvedSelector = sel;
+            break;
+          }
+        } catch {}
+      }
+
+      // Dynamic fallback inspection
+      if (!targetElement) {
+        const historyCandidates = document.querySelectorAll(
+          "[class*='history'], [class*='results'], [data-role*='history'], [data-role*='results']",
+        );
+        for (const candidate of historyCandidates) {
+          if (
+            candidate.querySelector("svg") ||
+            candidate.tagName.toLowerCase() === "svg"
+          ) {
+            targetElement = candidate;
+            resolvedSelector = candidate.className
+              ? `.${candidate.className.trim().split(/\s+/)[0]}`
+              : candidate.tagName.toLowerCase();
+            break;
+          }
         }
       }
 
+      // Requirement 5: Log whether the target element exists
+      const targetExists = targetElement !== null;
+      console.log(
+        `[RoundHistory] Target element exists: ${targetExists} (selector: "${resolvedSelector || PRIMARY_CLASS}")`,
+      );
+
+      let extractedSvgsJson = [];
+      let rounds = [];
+      let coordinateHistory = {
+        found: false,
+        count: 0,
+        results: [],
+      };
+
+      if (targetExists) {
+        const history =
+          document.querySelector("svg.i-1wnr") ||
+          targetElement.querySelector("svg.i-1wnr") ||
+          targetElement;
+        const coordinateCells = [
+          ...(history.matches('svg[data-type="coordinates"]') ? [history] : []),
+          ...history.querySelectorAll('svg[data-type="coordinates"]'),
+        ];
+        const coordinateResults = Array.from(
+          coordinateCells,
+        )
+          .map((cell) => {
+            const item = cell.querySelector('svg[data-role="roadItem"][name]');
+            if (!item) return null;
+
+            const text = item.querySelector("text");
+            const path = item.querySelector('[data-role="roadItemColor"] path');
+            const markers = Array.from(item.querySelectorAll("circle")).map(
+              (circle) => ({
+                fill: circle.getAttribute("fill"),
+                cx: circle.getAttribute("cx"),
+                cy: circle.getAttribute("cy"),
+                r: circle.getAttribute("r"),
+              }),
+            );
+
+            return {
+              x: Number(cell.getAttribute("data-x")),
+              y: Number(cell.getAttribute("data-y")),
+              result: item.getAttribute("name"),
+              value: text?.textContent?.trim() ?? null,
+              color: path?.getAttribute("fill") ?? null,
+              markers,
+            };
+          })
+          .filter(Boolean);
+        coordinateHistory = {
+          found:
+            history.matches('svg[data-type="coordinates"]') ||
+            coordinateCells.length > 0,
+          count: coordinateResults.length,
+          results: coordinateResults,
+        };
+        console.log(
+          "[RoundHistory] Coordinate history:",
+          JSON.stringify(coordinateHistory, null, 2),
+        );
+
+        // Requirement 3: Find all SVG elements within the relevant round-history element
+        const svgs = [];
+        if (targetElement.tagName.toLowerCase() === "svg") {
+          svgs.push(targetElement);
+        } else {
+          svgs.push(...targetElement.querySelectorAll("svg"));
+        }
+
+        // Requirement 4: Convert each SVG into JSON-compatible data
+        extractedSvgsJson = svgs.map((s, idx) => ({
+          index: idx,
+          selector: resolvedSelector,
+          svg: serializeSvg(s),
+        }));
+
+        // Requirement 6: Output extracted SVG data using console.log(JSON.stringify(data, null, 2))
+        console.log(JSON.stringify(extractedSvgsJson, null, 2));
+
+        // Also extract numerical values for rounds compatibility
+        for (const svgEl of svgs) {
+          const groups = Array.from(svgEl.querySelectorAll("g")).filter(
+            (g) => !g.querySelector("g"),
+          );
+          const nodes = groups.length > 0 ? groups : [svgEl];
+          for (const node of nodes) {
+            const values = [];
+            const textNodes = Array.from(
+              node.querySelectorAll("text, tspan"),
+            ).map((n) => n.textContent || "");
+            const joinedText = (
+              textNodes.length ? textNodes.join(" ") : node.textContent || ""
+            ).replace(",", ".");
+            const matches = joinedText.match(/-?\d+(?:\.\d+)?/g);
+            if (matches) {
+              matches.forEach((m) => values.push(Number.parseFloat(m)));
+            }
+            if (values.length >= 4) {
+              rounds.push(values.slice(0, 4));
+            } else if (values.length > 0) {
+              rounds.push(values);
+            }
+          }
+        }
+      } else {
+        // Requirement 7: Log clear message when element does not exist
+        console.warn(
+          `[RoundHistory] Element with class "${PRIMARY_CLASS}" and fallback round-history selectors not found in frame.`,
+        );
+      }
+
       return {
+        targetExists,
+        resolvedSelector,
+        frameUrl: location.href,
+        extractedSvgsJson,
+        coordinateHistory,
         time: new Date().toLocaleTimeString("en-US"),
         rounds,
       };
     });
     console.log(
-      `📥 /round-history scraped ${svgData.rounds?.length || 0} round(s)`,
+      `📥 /round-history targetExists: ${svgData.targetExists}, SVGs: ${svgData.extractedSvgsJson?.length || 0}, rounds: ${svgData.rounds?.length || 0}`,
+    );
+    console.log(
+      `📍 /round-history frame: ${svgData.frameUrl}, coordinate cells: ${svgData.coordinateHistory?.count || 0}`,
     );
 
     const historyRounds =
@@ -345,8 +587,10 @@ app.get("/round-history", async (req, res) => {
       return res.json({
         success: true,
         dateId: getTodayDateId(),
+        frameUrl: svgData.frameUrl,
         history: roundHistory,
         parsedSvgRounds: [],
+        coordinateHistory: svgData.coordinateHistory,
         duplicate: true,
         saved: false,
         saveResult: null,
@@ -384,8 +628,10 @@ app.get("/round-history", async (req, res) => {
     res.json({
       success: true,
       dateId,
+      frameUrl: svgData.frameUrl,
       history: roundHistory,
       parsedSvgRounds: roundsToSave,
+      coordinateHistory: svgData.coordinateHistory,
       scrapedSvgRounds: newRounds,
       duplicate: isDuplicate,
       saved: saveResult?.success === true,
