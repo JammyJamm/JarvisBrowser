@@ -24,7 +24,7 @@ import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import "./App.css";
 
-const COLLECTION_NAME = "Bio_sic";
+const COLLECTION_NAME = "Bacart";
 
 function formatDateId(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(
@@ -36,9 +36,13 @@ function formatDateId(date) {
 function getRoundValues(round) {
   if (Array.isArray(round)) {
     return round
-      .map((value) =>
-        value && typeof value === "object" ? Object.values(value)[0] : value,
-      )
+      .flatMap((value) => {
+        if (Array.isArray(value)) return getRoundValues(value);
+        if (value && typeof value === "object") {
+          return Object.values(value).slice(0, 1);
+        }
+        return [value];
+      })
       .filter((value) => value !== undefined && value !== null);
   }
 
@@ -53,14 +57,6 @@ function formatValue(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return String(value ?? "-");
   return Number.isInteger(number) ? String(number) : number.toFixed(2);
-}
-
-function valueState(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return "unknown";
-  if (number > 10) return "high";
-  if (number < 10) return "low";
-  return "target";
 }
 
 function formatUpdatedAt(value) {
@@ -127,44 +123,46 @@ export default function App() {
     [documentData],
   );
 
-  const chartRows = useMemo(
+  const results = useMemo(
     () =>
       rows
-        .map(([time, round]) => {
-          const value = getRoundValues(round)[0];
-          const number = Number(value);
-          return {
+        .slice()
+        .reverse()
+        .flatMap(([time, round]) =>
+          getRoundValues(round).map((value) => ({
             time,
             value,
-            number,
-            state: valueState(value),
-          };
-        })
-        .filter(({ number }) => Number.isFinite(number))
-        .reverse(),
+          })),
+        ),
     [rows],
   );
 
-  const chartLines = useMemo(() => {
-    const lines = [];
-    chartRows.forEach((item) => {
-      const currentLine = lines[lines.length - 1];
-      if (!currentLine || currentLine[0].state !== item.state) {
-        lines.push([item]);
-      } else {
-        currentLine.push(item);
-      }
-    });
-    return lines;
-  }, [chartRows]);
+  const uniqueResultCount = useMemo(
+    () => new Set(results.map(({ value }) => formatValue(value))).size,
+    [results],
+  );
 
-  const chartSummary = useMemo(
+  const resultCounts = useMemo(
     () =>
-      chartRows.reduce(
-        (summary, { state }) => ({ ...summary, [state]: summary[state] + 1 }),
-        { high: 0, low: 0, target: 0, unknown: 0 },
-      ),
-    [chartRows],
+      results.reduce((counts, { value }) => {
+        const formattedValue = formatValue(value);
+        counts.set(formattedValue, (counts.get(formattedValue) || 0) + 1);
+        return counts;
+      }, new Map()),
+    [results],
+  );
+
+  const resultSummary = useMemo(
+    () =>
+      Array.from(resultCounts.entries()).sort(([left], [right]) => {
+        const leftNumber = Number(left);
+        const rightNumber = Number(right);
+        if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
+          return leftNumber - rightNumber;
+        }
+        return left.localeCompare(right);
+      }),
+    [resultCounts],
   );
 
   const updatedAt = formatUpdatedAt(documentData.updatedAt);
@@ -197,7 +195,7 @@ export default function App() {
               Round history
             </Typography>
             <Typography color="text.secondary">
-            Live game results from the Bio_sic Firestore collection.
+              Live results from the Bacart Firestore collection.
             </Typography>
           </Box>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
@@ -222,7 +220,11 @@ export default function App() {
             <Button
               variant="contained"
               startIcon={
-                refreshing ? <CircularProgress size={18} color="inherit" /> : <RefreshIcon />
+                refreshing ? (
+                  <CircularProgress size={18} color="inherit" />
+                ) : (
+                  <RefreshIcon />
+                )
               }
               onClick={loadData}
               disabled={refreshing}
@@ -233,7 +235,11 @@ export default function App() {
           </Stack>
         </Stack>
 
-        {error && <Alert severity="error" sx={{ mb: 3 }}>{error}</Alert>}
+        {error && (
+          <Alert severity="error" sx={{ mb: 3 }}>
+            {error}
+          </Alert>
+        )}
 
         <Card
           elevation={0}
@@ -271,12 +277,10 @@ export default function App() {
                 <CircularProgress />
               </Stack>
             ) : rows.length === 0 ? (
-              <Alert severity="info">
-                No round data exists for this date.
-              </Alert>
+              <Alert severity="info">No round data exists for this date.</Alert>
             ) : (
               <>
-                <Box className="chart-panel sic-board">
+                <Box className="result-board">
                   <Stack
                     direction={{ xs: "column", md: "row" }}
                     justifyContent="space-between"
@@ -286,42 +290,68 @@ export default function App() {
                   >
                     <Box>
                       <Typography variant="h6" sx={{ fontWeight: 800 }}>
-                        SIC-BIO live board
+                        Result sequence
                       </Typography>
                       <Typography variant="body2" color="text.secondary">
-                        Chronological first values · a new row starts only when the value changes side
+                        All saved values in chronological order
                       </Typography>
                     </Box>
                     <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                      <Chip className="chart-legend-chip high" label={`Above 10 · ${chartSummary.high}`} size="small" />
-                      <Chip className="chart-legend-chip target" label={`At 10 · ${chartSummary.target}`} size="small" />
-                      <Chip className="chart-legend-chip low" label={`Below 10 · ${chartSummary.low}`} size="small" />
+                      <Chip
+                        className="result-summary-chip"
+                        label={`${results.length} results`}
+                        size="small"
+                      />
+                      <Chip
+                        className="result-summary-chip"
+                        label={`${uniqueResultCount} unique values`}
+                        size="small"
+                      />
                     </Stack>
                   </Stack>
 
-                  {chartRows.length === 0 ? (
-                    <Typography color="text.secondary">No numeric first values are available to plot.</Typography>
+                  {results.length === 0 ? (
+                    <Typography color="text.secondary">
+                      No results are available to display.
+                    </Typography>
                   ) : (
-                    <Box className="chart-scroll-area">
-                      <Box className="sic-lobby-table">
-                        {chartLines.map((line, lineIndex) => (
-                          <Box className="sic-board-grid" key={`line-${lineIndex}`}>
-                            {line.map(({ time, value, state }) => (
-                              <Box className="sic-round-column" key={time} title={`${time}: ${formatValue(value)}`}>
-                                <Box className="sic-round-values">
-                                  <Box className={`sic-value-cell primary ${state}`}>
-                                    {formatValue(value)}
-                                  </Box>
-                                </Box>
-                              </Box>
-                            ))}
+                    <Box className="results-content">
+                      <Box className="result-summary">
+                        {resultSummary.map(([value, count]) => (
+                          <Typography
+                            className="result-frequency"
+                            component="span"
+                            key={value}
+                          >
+                            {value}: {count}
+                          </Typography>
+                        ))}
+                      </Box>
+                      <Box className="result-grid">
+                        {results.map(({ time, value }, index) => (
+                          <Box
+                            className="result-tile"
+                            key={`${time}-${index}`}
+                            title={`${time} · Result ${index + 1}`}
+                          >
+                            <Typography
+                              className="result-index"
+                              component="span"
+                            >
+                              {index + 1}
+                            </Typography>
+                            <Typography
+                              className="result-value"
+                              component="span"
+                            >
+                              {formatValue(value)}
+                            </Typography>
                           </Box>
                         ))}
                       </Box>
                     </Box>
                   )}
                 </Box>
-
               </>
             )}
           </CardContent>

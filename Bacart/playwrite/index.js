@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { chromium } from "playwright";
-import { getRoundValues, getTodayDateId, saveRound } from "./gameservice.js";
+import { getTodayDateId, saveRound } from "./gameservice.js";
 
 const app = express();
 app.use(cors({ origin: "http://localhost:3006" }));
@@ -12,14 +12,7 @@ let roundHistory = [];
 let lastHistorySvgRounds = [];
 
 function sameRound(left, right) {
-  try {
-    return (
-      JSON.stringify(getRoundValues(left)) ===
-      JSON.stringify(getRoundValues(right))
-    );
-  } catch {
-    return false;
-  }
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function getNewRounds(rounds, previousRounds) {
@@ -62,13 +55,12 @@ function appendSvgRoundsToHistory(date, rounds, baseDate = new Date()) {
     roundHistory.unshift(day);
   }
 
-  const values = rounds.flatMap((round) => (Array.isArray(round) ? round : []));
-  values.forEach((value, index) => {
+  rounds.forEach((round, index) => {
     const timestamp = new Date(
-      baseDate.getTime() - (values.length - index - 1) * 1000,
+      baseDate.getTime() - (rounds.length - index - 1) * 1000,
     );
     day[date].push({
-      [timestamp.toLocaleTimeString("en-US")]: value,
+      [timestamp.toLocaleTimeString("en-US")]: round,
     });
   });
 
@@ -458,6 +450,7 @@ app.get("/round-history", async (req, res) => {
       );
 
       let extractedSvgsJson = [];
+      let extractedSvgText = [];
       let rounds = [];
       let coordinateHistory = {
         found: false,
@@ -516,11 +509,25 @@ app.get("/round-history", async (req, res) => {
 
         // Requirement 3: Find all SVG elements within the relevant round-history element
         const svgs = [];
-        if (targetElement.tagName.toLowerCase() === "svg") {
-          svgs.push(targetElement);
+        if (history.tagName.toLowerCase() === "svg") {
+          svgs.push(history);
         } else {
-          svgs.push(...targetElement.querySelectorAll("svg"));
+          svgs.push(...history.querySelectorAll("svg"));
         }
+
+        extractedSvgText = svgs.map((svg, index) => ({
+          index,
+          texts: Array.from(svg.querySelectorAll("text"))
+            .map((text) => text.innerHTML.trim())
+            .filter(Boolean),
+        }));
+        rounds = extractedSvgText
+          .map(({ texts }) => texts)
+          .filter((texts) => texts.length > 0);
+        console.log(
+          "[RoundHistory] Extracted SVG text:",
+          JSON.stringify(extractedSvgText, null, 2),
+        );
 
         // Requirement 4: Convert each SVG into JSON-compatible data
         extractedSvgsJson = svgs.map((s, idx) => ({
@@ -531,32 +538,6 @@ app.get("/round-history", async (req, res) => {
 
         // Requirement 6: Output extracted SVG data using console.log(JSON.stringify(data, null, 2))
         console.log(JSON.stringify(extractedSvgsJson, null, 2));
-
-        // Also extract numerical values for rounds compatibility
-        for (const svgEl of svgs) {
-          const groups = Array.from(svgEl.querySelectorAll("g")).filter(
-            (g) => !g.querySelector("g"),
-          );
-          const nodes = groups.length > 0 ? groups : [svgEl];
-          for (const node of nodes) {
-            const values = [];
-            const textNodes = Array.from(
-              node.querySelectorAll("text, tspan"),
-            ).map((n) => n.textContent || "");
-            const joinedText = (
-              textNodes.length ? textNodes.join(" ") : node.textContent || ""
-            ).replace(",", ".");
-            const matches = joinedText.match(/-?\d+(?:\.\d+)?/g);
-            if (matches) {
-              matches.forEach((m) => values.push(Number.parseFloat(m)));
-            }
-            if (values.length >= 4) {
-              rounds.push(values.slice(0, 4));
-            } else if (values.length > 0) {
-              rounds.push(values);
-            }
-          }
-        }
       } else {
         // Requirement 7: Log clear message when element does not exist
         console.warn(
@@ -569,31 +550,39 @@ app.get("/round-history", async (req, res) => {
         resolvedSelector,
         frameUrl: location.href,
         extractedSvgsJson,
+        extractedSvgText,
         coordinateHistory,
         time: new Date().toLocaleTimeString("en-US"),
         rounds,
       };
     });
     console.log(
-      `📥 /round-history targetExists: ${svgData.targetExists}, SVGs: ${svgData.extractedSvgsJson?.length || 0}, rounds: ${svgData.rounds?.length || 0}`,
+      `📥 /round-history targetExists: ${svgData.targetExists}, SVGs: ${svgData.extractedSvgsJson?.length || 0}, HTML rounds: ${svgData.rounds?.length || 0}`,
     );
     console.log(
       `📍 /round-history frame: ${svgData.frameUrl}, coordinate cells: ${svgData.coordinateHistory?.count || 0}`,
+    );
+    console.log(
+      `📝 /round-history SVG text nodes: ${svgData.extractedSvgText?.reduce((count, svg) => count + svg.texts.length, 0) || 0}`,
     );
 
     const historyRounds =
       svgData && Array.isArray(svgData.rounds) ? svgData.rounds : [];
     if (historyRounds.length === 0) {
+      const dateId = getTodayDateId();
+      const saveResult = await saveRound(dateId, []);
+      lastHistorySvgRounds = [];
       return res.json({
         success: true,
-        dateId: getTodayDateId(),
+        dateId,
         frameUrl: svgData.frameUrl,
         history: roundHistory,
         parsedSvgRounds: [],
+        extractedSvgText: svgData.extractedSvgText,
         coordinateHistory: svgData.coordinateHistory,
         duplicate: true,
-        saved: false,
-        saveResult: null,
+        saved: saveResult.savedCount > 0,
+        saveResult,
       });
     }
 
@@ -631,6 +620,7 @@ app.get("/round-history", async (req, res) => {
       frameUrl: svgData.frameUrl,
       history: roundHistory,
       parsedSvgRounds: roundsToSave,
+      extractedSvgText: svgData.extractedSvgText,
       coordinateHistory: svgData.coordinateHistory,
       scrapedSvgRounds: newRounds,
       duplicate: isDuplicate,

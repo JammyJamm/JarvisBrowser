@@ -41,62 +41,77 @@ export function normalizeRound(round) {
 }
 
 export function getRoundValues(round) {
-  if (!Array.isArray(round)) {
-    return normalizeRound(round).map((item) => Number(Object.values(item)[0]));
-  }
+  const values = [];
+  const addValue = (item, firstObjectValue = false) => {
+    if (Array.isArray(item)) {
+      item.forEach((value) => addValue(value, true));
+      return;
+    }
 
-  return round
-    .map((item) => {
-      if (item && typeof item === "object") {
-        const [value] = Object.values(item);
-        return Number(value);
-      }
-      return Number(item);
-    })
-    .filter((value) => Number.isFinite(value));
+    if (item && typeof item === "object") {
+      const objectValues = Object.values(item);
+      (firstObjectValue ? objectValues.slice(0, 1) : objectValues).forEach(
+        (value) => addValue(value, true),
+      );
+      return;
+    }
+
+    if (
+      (typeof item !== "number" && typeof item !== "string") ||
+      (typeof item === "string" && item.trim() === "")
+    ) {
+      return;
+    }
+
+    const number = Number(item);
+    if (Number.isFinite(number)) values.push(number);
+  };
+
+  addValue(round);
+  return values;
 }
 
-function roundKey(round) {
-  return JSON.stringify(
-    getRoundValues(round).map((value) =>
-      Number.isInteger(value) ? value : Number(value.toFixed(6)),
-    ),
-  );
+function timeKeyOrder(timeKey) {
+  const match = /^(\d{2}):(\d{2}):(\d{2})(am|pm)$/.exec(timeKey);
+  if (!match) return -1;
+
+  const [, hourText, minuteText, secondText, suffix] = match;
+  const hour = Number(hourText) % 12 + (suffix === "pm" ? 12 : 0);
+  return hour * 3600 + Number(minuteText) * 60 + Number(secondText);
+}
+
+function latestRoundKey(data) {
+  const keys = Object.keys(data)
+    .filter((key) => key !== "updatedAt" && Array.isArray(data[key]))
+    .sort((left, right) => timeKeyOrder(left) - timeKeyOrder(right));
+  return keys[keys.length - 1];
 }
 
 /**
- * Save each parsed SVG round under its own time key.
- * The final round is saved at baseDate; earlier rounds use earlier minutes.
+ * Replace the active round when its first three values match; empty arrays
+ * mark round completion so the next result starts under a new time key.
  */
 export const saveRound = async (dateStr, rounds, options = {}) => {
   if (!dateStr) throw new Error("A Firestore date document ID is required.");
-  if (!Array.isArray(rounds) || rounds.length === 0) {
-    throw new Error("No SVG rounds supplied.");
+  if (!Array.isArray(rounds)) {
+    throw new Error("SVG rounds must be supplied as an array.");
   }
 
-  const docRef = doc(db, "Bio_sic", dateStr);
+  const docRef = doc(db, "Bacart", dateStr);
   const existingSnapshot = await getDoc(docRef);
   const existingData = existingSnapshot.exists() ? existingSnapshot.data() : {};
-  const uniqueRounds = [];
+  const roundsToSave = rounds.length === 0 ? [[]] : rounds;
+  const numericRounds = roundsToSave.map((round) => ({
+    isCompletionMarker: Array.isArray(round) && round.length === 0,
+    values: getRoundValues(round),
+  }));
+  const validRounds = numericRounds.filter(
+    ({ isCompletionMarker, values }) =>
+      isCompletionMarker || values.length > 0,
+  );
 
-  for (const round of rounds) {
-    const normalizedRound = normalizeRound(round);
-    const values = getRoundValues(normalizedRound);
-    if (values.length !== 4) {
-      console.warn(
-        `[Firebase] Skipping invalid SVG round: ${JSON.stringify(values)}`,
-      );
-      continue;
-    }
-
-    console.log(
-      `[Firebase] Queuing round ${JSON.stringify(getRoundValues(normalizedRound))}`,
-    );
-    uniqueRounds.push(normalizedRound);
-  }
-
-  if (uniqueRounds.length === 0) {
-    console.log("[Firebase] No valid SVG rounds to save.");
+  if (validRounds.length === 0) {
+    console.log("[Firebase] No numeric round values to save.");
     return {
       success: true,
       dateId: dateStr,
@@ -106,47 +121,89 @@ export const saveRound = async (dateStr, rounds, options = {}) => {
     };
   }
 
+  const workingData = { ...existingData };
+  const updates = {};
+  const timeKeys = [];
   const baseDate =
-    options.baseDate instanceof Date ? options.baseDate : new Date();
-  const updates = {
-    updatedAt: serverTimestamp(),
-  };
+    options.baseDate instanceof Date ? new Date(options.baseDate) : new Date();
+  let savedCount = 0;
 
-  const existingTimeKeys = new Set(
-    Object.keys(existingData).filter((key) => key !== "updatedAt"),
-  );
-  uniqueRounds.forEach((round, index) => {
-    const roundTime = new Date(
-      baseDate.getTime() - (uniqueRounds.length - 1 - index) * 1000,
-    );
-    let timeKey = formatTimeKey(roundTime);
-    while (existingTimeKeys.has(timeKey) || updates[timeKey]) {
-      roundTime.setSeconds(roundTime.getSeconds() + 1);
-      timeKey = formatTimeKey(roundTime);
+  for (const { isCompletionMarker, values } of validRounds) {
+    const previousKey = latestRoundKey(workingData);
+    const previousValues = previousKey
+      ? getRoundValues(workingData[previousKey])
+      : [];
+
+    if (isCompletionMarker) {
+      if (previousKey && previousValues.length === 0) continue;
+
+      let markerKey = formatTimeKey(baseDate);
+      while (Object.prototype.hasOwnProperty.call(workingData, markerKey)) {
+        baseDate.setSeconds(baseDate.getSeconds() + 1);
+        markerKey = formatTimeKey(baseDate);
+      }
+      updates[markerKey] = [];
+      workingData[markerKey] = [];
+      timeKeys.push(markerKey);
+      savedCount += 1;
+      continue;
     }
-    updates[timeKey] = round;
-  });
 
+    if (
+      previousKey &&
+      previousValues.length >= 3 &&
+      values.length >= 3 &&
+      previousValues
+        .slice(0, 3)
+        .every((value, index) => value === values[index])
+    ) {
+      updates[previousKey] = values;
+      workingData[previousKey] = values;
+      timeKeys.push(previousKey);
+      savedCount += 1;
+      continue;
+    }
+
+    let timeKey = formatTimeKey(baseDate);
+    while (Object.prototype.hasOwnProperty.call(workingData, timeKey)) {
+      baseDate.setSeconds(baseDate.getSeconds() + 1);
+      timeKey = formatTimeKey(baseDate);
+    }
+    updates[timeKey] = values;
+    workingData[timeKey] = values;
+    timeKeys.push(timeKey);
+    savedCount += 1;
+  }
+
+  if (savedCount === 0) {
+    return {
+      success: true,
+      dateId: dateStr,
+      savedCount: 0,
+      skipped: true,
+      timeKeys: [],
+    };
+  }
+
+  updates.updatedAt = serverTimestamp();
   await setDoc(docRef, updates, { merge: true });
   console.log(
-    `[Firebase] Saved ${uniqueRounds.length} SVG round(s):`,
-    JSON.stringify(updates, (_, value) =>
-      value?.constructor?.name === "FieldValue" ? undefined : value,
-    ),
+    `[Firebase] Saved ${savedCount} round update(s):`,
+    JSON.stringify(updates),
   );
 
   return {
     success: true,
     dateId: dateStr,
-    savedCount: uniqueRounds.length,
-    timeKeys: Object.keys(updates).filter((key) => key !== "updatedAt"),
+    savedCount,
+    timeKeys,
   };
 };
 
 export const getRounds = async (dateStr) => {
   if (!dateStr) throw new Error("A Firestore date document ID is required.");
 
-  const snapshot = await getDoc(doc(db, "Bio_sic", dateStr));
+  const snapshot = await getDoc(doc(db, "Bacart", dateStr));
   return snapshot.exists() ? snapshot.data() : {};
 };
 
