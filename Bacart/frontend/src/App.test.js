@@ -126,7 +126,7 @@ test("renders saved coordinate history on the Baccarat board", async () => {
   expect(container.querySelectorAll(".baccarat-marker")).toHaveLength(1);
 });
 
-test("highlights matching values and displays each result's previous value", async () => {
+test("highlights matching values without rendering the previous-results section", async () => {
   getDocs.mockResolvedValue({ docs: [{ id: "2026-10-16" }] });
   getDoc.mockResolvedValue({
     exists: () => true,
@@ -166,12 +166,10 @@ test("highlights matching values and displays each result's previous value", asy
 
   const { container } = render(<App />);
 
+  expect(await screen.findByText("Baccarat road board")).toBeInTheDocument();
   expect(
-    await screen.findByText("Matching values and their previous results"),
-  ).toBeInTheDocument();
-  expect(screen.getByText("4", { selector: ".matching-pair-value" })).toBeInTheDocument();
-  expect(screen.getByText("Results 2 & 3")).toBeInTheDocument();
-  expect(screen.getByText("Previous: 7 & 4")).toBeInTheDocument();
+    screen.queryByText("Matching values and their previous results"),
+  ).toBeNull();
   expect(container.querySelectorAll(".baccarat-cell.paired")).toHaveLength(2);
 });
 
@@ -197,4 +195,96 @@ test("does not pair equal values separated by a different result", async () => {
   expect(await screen.findByText("Baccarat road board")).toBeInTheDocument();
   expect(screen.queryByText("Matching values and their previous results")).toBeNull();
   expect(container.querySelectorAll(".baccarat-cell.paired")).toHaveLength(0);
+});
+
+test("shows the prior three values, matching pair, and Banker or Player target", async () => {
+  const values = [
+    ["Player", "8"],
+    ["Banker", "6"],
+    ["Player", "5"],
+    ["Player", "7"],
+    ["Banker", "7"],
+    ["Banker", "9"],
+    ["Player", "4"],
+    ["Player", "3"],
+    ["Banker", "3"],
+    ["Player", "2"],
+  ];
+
+  getDocs.mockResolvedValue({ docs: [{ id: "2026-10-16" }] });
+  getDoc.mockResolvedValue({
+    exists: () => true,
+    data: () => ({
+      coordinateHistory: {
+        found: true,
+        count: values.length,
+        results: values.map(([result, value], x) => ({
+          x,
+          y: 0,
+          result,
+          value,
+          markers: [],
+        })),
+      },
+    }),
+  });
+
+  const { container } = render(<App />);
+
+  expect(
+    await screen.findByText("Consecutive number signals"),
+  ).toBeInTheDocument();
+  const bankerSignal = container.querySelector(".sequence-signal.banker");
+  const playerSignal = container.querySelector(".sequence-signal.player");
+
+  expect(bankerSignal).toHaveTextContent("Banker target");
+  expect(
+    Array.from(bankerSignal.querySelectorAll(".sequence-signal-value")).map(
+      (tile) => tile.textContent,
+    ),
+  ).toEqual(["8", "6", "5", "7", "7", "9"]);
+  expect(playerSignal).toHaveTextContent("Player target");
+  expect(
+    Array.from(playerSignal.querySelectorAll(".sequence-signal-value")).map(
+      (tile) => tile.textContent,
+    ),
+  ).toEqual(["7", "9", "4", "3", "3", "2"]);
+});
+
+test("shows placeholders when a matching pair has fewer than three prior results", async () => {
+  const values = [
+    ["Player", "8"],
+    ["Banker", "5"],
+    ["Player", "5"],
+    ["Banker", "9"],
+  ];
+
+  getDocs.mockResolvedValue({ docs: [{ id: "2026-10-16" }] });
+  getDoc.mockResolvedValue({
+    exists: () => true,
+    data: () => ({
+      coordinateHistory: {
+        found: true,
+        count: values.length,
+        results: values.map(([result, value], x) => ({
+          x,
+          y: 0,
+          result,
+          value,
+          markers: [],
+        })),
+      },
+    }),
+  });
+
+  const { container } = render(<App />);
+  const bankerSignal = await screen.findByText("Banker target");
+
+  expect(
+    Array.from(
+      bankerSignal.parentElement.parentElement.querySelectorAll(
+        ".sequence-signal-value",
+      ),
+    ).map((tile) => tile.textContent),
+  ).toEqual(["-", "-", "8", "5", "5", "9"]);
 });

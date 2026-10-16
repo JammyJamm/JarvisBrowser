@@ -71,6 +71,13 @@ function getBaccaratColor(result, color) {
   return "#8491a5";
 }
 
+function getBaccaratSide(result) {
+  const normalizedResult = String(result || "").toLowerCase();
+  if (normalizedResult.includes("banker")) return "banker";
+  if (normalizedResult.includes("player")) return "player";
+  return null;
+}
+
 function getCoordinateIndex(value, fallback) {
   if (value === null || value === undefined || value === "") return fallback;
   const number = Number(value);
@@ -216,9 +223,6 @@ export default function App() {
         value,
         firstIndex: index,
         secondIndex: index + 1,
-        firstPreviousValue:
-          index > 0 ? coordinateResults[index - 1].value : null,
-        secondPreviousValue: coordinateResults[index].value,
       });
       pairedIndexes.set(index, pairId);
       pairedIndexes.set(index + 1, pairId);
@@ -226,6 +230,28 @@ export default function App() {
     }
 
     return { duplicatePairs: pairs, pairedResultIndexes: pairedIndexes };
+  }, [coordinateResults]);
+  const sequenceSignals = useMemo(() => {
+    const signals = [];
+    for (let index = 0; index + 2 < coordinateResults.length; index += 1) {
+      const value = String(coordinateResults[index].value ?? "").trim();
+      const nextValue = String(coordinateResults[index + 1].value ?? "").trim();
+      const targetResult = coordinateResults[index + 2];
+      const targetSide = getBaccaratSide(targetResult.result);
+      if (!value || value !== nextValue || !targetSide) continue;
+
+      signals.push({
+        id: `${index}-${targetSide}`,
+        precedingResults: [
+          ...Array(Math.max(0, 3 - index)).fill(null),
+          ...coordinateResults.slice(Math.max(0, index - 3), index),
+        ],
+        matchingResults: coordinateResults.slice(index, index + 2),
+        targetResult,
+        targetSide,
+      });
+    }
+    return signals;
   }, [coordinateResults]);
   const baccaratRows = Math.max(
     1,
@@ -399,25 +425,54 @@ export default function App() {
                     )}
                   </Stack>
                 </Stack>
-                {duplicatePairs.length > 0 && (
-                  <Box className="matching-pairs-panel">
-                    <Typography className="matching-pairs-title">
-                      Matching values and their previous results
+                {sequenceSignals.length > 0 && (
+                  <Box className="sequence-signals-panel">
+                    <Typography className="sequence-signals-title">
+                      Consecutive number signals
                     </Typography>
-                    <Box className="matching-pairs-list">
-                      {duplicatePairs.map((pair) => (
-                        <Box className="matching-pair" key={pair.id}>
-                          <Typography className="matching-pair-value">
-                            {pair.value}
+                    <Box className="sequence-signals-list">
+                      {sequenceSignals.map((signal) => (
+                        <Box
+                          className={`sequence-signal ${signal.targetSide}`}
+                          key={signal.id}
+                        >
+                          <Typography
+                            className="sequence-signal-heading"
+                            component="span"
+                          >
+                            {signal.targetSide === "banker"
+                              ? "Banker target"
+                              : "Player target"}
                           </Typography>
-                          <Typography className="matching-pair-detail">
-                            Results {pair.firstIndex + 1} &amp;{" "}
-                            {pair.secondIndex + 1}
-                          </Typography>
-                          <Typography className="matching-pair-detail">
-                            Previous: {pair.firstPreviousValue ?? "—"} &amp;{" "}
-                            {pair.secondPreviousValue ?? "—"}
-                          </Typography>
+                          <Box className="sequence-signal-values">
+                            {signal.precedingResults.map((result, index) => (
+                              <Typography
+                                className="sequence-signal-value"
+                                component="span"
+                                key={`before-${index}`}
+                                title="Previous result"
+                              >
+                                {result ? formatValue(result.value) : "-"}
+                              </Typography>
+                            ))}
+                            {signal.matchingResults.map((result, index) => (
+                              <Typography
+                                className="sequence-signal-value matching"
+                                component="span"
+                                key={`matching-${index}`}
+                                title="Consecutive matching result"
+                              >
+                                {formatValue(result.value)}
+                              </Typography>
+                            ))}
+                            <Typography
+                              className="sequence-signal-value target"
+                              component="span"
+                              title={`${signal.targetResult.result} target`}
+                            >
+                              {formatValue(signal.targetResult.value)}
+                            </Typography>
+                          </Box>
                         </Box>
                       ))}
                     </Box>
