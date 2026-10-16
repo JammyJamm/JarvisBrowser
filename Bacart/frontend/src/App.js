@@ -59,6 +59,24 @@ function formatValue(value) {
   return Number.isInteger(number) ? String(number) : number.toFixed(2);
 }
 
+function getBaccaratColor(result, color) {
+  if (typeof color === "string" && /^#[\da-f]{3,8}$/i.test(color)) {
+    return color;
+  }
+
+  const normalizedResult = String(result || "").toLowerCase();
+  if (normalizedResult.includes("banker")) return "#ec2024";
+  if (normalizedResult.includes("player")) return "#2475d0";
+  if (normalizedResult.includes("tie")) return "#27a36a";
+  return "#8491a5";
+}
+
+function getCoordinateIndex(value, fallback) {
+  if (value === null || value === undefined || value === "") return fallback;
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 0 ? number : fallback;
+}
+
 function formatUpdatedAt(value) {
   if (value instanceof Timestamp) return value.toDate().toLocaleString();
   if (value?.toDate) return value.toDate().toLocaleString();
@@ -165,6 +183,66 @@ export default function App() {
     [resultCounts],
   );
 
+  const coordinateHistory = documentData.coordinateHistory;
+  const coordinateResults = useMemo(
+    () =>
+      Array.isArray(coordinateHistory?.results)
+        ? coordinateHistory.results.filter(
+            (result) => result && typeof result === "object",
+          )
+        : [],
+    [coordinateHistory],
+  );
+  const coordinateCounts = useMemo(
+    () =>
+      coordinateResults.reduce((counts, result) => {
+        const name = result.result || "Unknown";
+        counts.set(name, (counts.get(name) || 0) + 1);
+        return counts;
+      }, new Map()),
+    [coordinateResults],
+  );
+  const { duplicatePairs, pairedResultIndexes } = useMemo(() => {
+    const pairs = [];
+    const pairedIndexes = new Map();
+    for (let index = 0; index + 1 < coordinateResults.length; index += 1) {
+      const value = String(coordinateResults[index].value ?? "").trim();
+      const nextValue = String(coordinateResults[index + 1].value ?? "").trim();
+      if (!value || value !== nextValue) continue;
+
+      const pairId = `${value}-${index}-${index + 1}`;
+      pairs.push({
+        id: pairId,
+        value,
+        firstIndex: index,
+        secondIndex: index + 1,
+        firstPreviousValue:
+          index > 0 ? coordinateResults[index - 1].value : null,
+        secondPreviousValue: coordinateResults[index].value,
+      });
+      pairedIndexes.set(index, pairId);
+      pairedIndexes.set(index + 1, pairId);
+      index += 1;
+    }
+
+    return { duplicatePairs: pairs, pairedResultIndexes: pairedIndexes };
+  }, [coordinateResults]);
+  const baccaratRows = Math.max(
+    1,
+    ...coordinateResults.map((result) => getCoordinateIndex(result.y, 0) + 1),
+  );
+  const baccaratColumns = Math.max(
+    1,
+    ...coordinateResults.map(
+      (result, index) => getCoordinateIndex(result.x, index) + 1,
+    ),
+  );
+  const displayCount = coordinateHistory
+    ? coordinateResults.length
+      ? coordinateHistory.count
+      : results.length || rows.length
+    : results.length || rows.length;
+
   const updatedAt = formatUpdatedAt(documentData.updatedAt);
 
   return (
@@ -192,10 +270,10 @@ export default function App() {
               Firestore dashboard
             </Typography>
             <Typography variant="h3" sx={{ fontWeight: 800, color: "#172033" }}>
-              Round history
+              Baccarat results
             </Typography>
             <Typography color="text.secondary">
-              Live results from the Bacart Firestore collection.
+              Live road board from the Bacart Firestore collection.
             </Typography>
           </Box>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
@@ -262,12 +340,12 @@ export default function App() {
                   {selectedDate}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
-                  {rows.length} saved rounds · Last update: {updatedAt}
+                  {displayCount} results · Last update: {updatedAt}
                 </Typography>
               </Box>
               <Chip
-                label={rows.length ? "Data available" : "No rounds found"}
-                color={rows.length ? "success" : "default"}
+                label={displayCount ? "Data available" : "No results found"}
+                color={displayCount ? "success" : "default"}
                 variant="outlined"
               />
             </Stack>
@@ -276,8 +354,150 @@ export default function App() {
               <Stack alignItems="center" sx={{ py: 10 }}>
                 <CircularProgress />
               </Stack>
+            ) : coordinateResults.length > 0 ? (
+              <Box className="result-board baccarat-board">
+                <Stack
+                  direction={{ xs: "column", md: "row" }}
+                  justifyContent="space-between"
+                  alignItems={{ xs: "flex-start", md: "center" }}
+                  spacing={2}
+                  sx={{ mb: 3 }}
+                >
+                  <Box>
+                    <Typography variant="h6" sx={{ fontWeight: 800 }}>
+                      Baccarat road board
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      Results arranged by their SVG coordinates
+                    </Typography>
+                  </Box>
+                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                    <Chip
+                      className="result-summary-chip"
+                      label={`${coordinateHistory.count} results`}
+                      size="small"
+                    />
+                    {duplicatePairs.length > 0 && (
+                      <Chip
+                        className="pair-summary-chip"
+                        label={`${duplicatePairs.length} matching pairs`}
+                        size="small"
+                      />
+                    )}
+                    {Array.from(coordinateCounts.entries()).map(
+                      ([name, count]) => (
+                        <Chip
+                          className="baccarat-legend-chip"
+                          key={name}
+                          label={`${name} · ${count}`}
+                          size="small"
+                          style={{
+                            "--result-color": getBaccaratColor(name),
+                          }}
+                        />
+                      ),
+                    )}
+                  </Stack>
+                </Stack>
+                {duplicatePairs.length > 0 && (
+                  <Box className="matching-pairs-panel">
+                    <Typography className="matching-pairs-title">
+                      Matching values and their previous results
+                    </Typography>
+                    <Box className="matching-pairs-list">
+                      {duplicatePairs.map((pair) => (
+                        <Box className="matching-pair" key={pair.id}>
+                          <Typography className="matching-pair-value">
+                            {pair.value}
+                          </Typography>
+                          <Typography className="matching-pair-detail">
+                            Results {pair.firstIndex + 1} &amp;{" "}
+                            {pair.secondIndex + 1}
+                          </Typography>
+                          <Typography className="matching-pair-detail">
+                            Previous: {pair.firstPreviousValue ?? "—"} &amp;{" "}
+                            {pair.secondPreviousValue ?? "—"}
+                          </Typography>
+                        </Box>
+                      ))}
+                    </Box>
+                  </Box>
+                )}
+                <Box className="baccarat-board-scroll">
+                  <Box
+                    className="baccarat-grid"
+                    style={{
+                      gridTemplateColumns: `repeat(${baccaratColumns}, 64px)`,
+                      gridTemplateRows: `repeat(${baccaratRows}, 64px)`,
+                    }}
+                  >
+                    {coordinateResults.map((result, index) => {
+                      const x = getCoordinateIndex(result.x, index);
+                      const y = getCoordinateIndex(result.y, 0);
+                      const resultColor = getBaccaratColor(
+                        result.result,
+                        result.color,
+                      );
+                      const pairId = pairedResultIndexes.get(index);
+
+                      return (
+                        <Box
+                          className={`baccarat-cell${pairId ? " paired" : ""}`}
+                          key={`${x}-${y}-${index}`}
+                          style={{
+                            gridColumn: x + 1,
+                            gridRow: y + 1,
+                            "--result-color": resultColor,
+                          }}
+                          title={`${result.result || "Unknown"} · ${result.value ?? "-"} · (${result.x ?? "?"}, ${result.y ?? "?"})${pairId ? " · Matching value pair" : ""}`}
+                        >
+                          {pairId && (
+                            <Typography
+                              className="baccarat-pair-badge"
+                              component="span"
+                            >
+                              PAIR
+                            </Typography>
+                          )}
+                          <Typography
+                            className="baccarat-coordinate"
+                            component="span"
+                          >
+                            {result.x ?? "?"},{result.y ?? "?"}
+                          </Typography>
+                          <Typography
+                            className="baccarat-value"
+                            component="span"
+                          >
+                            {result.value ?? "-"}
+                          </Typography>
+                          <Box className="baccarat-markers">
+                            {(Array.isArray(result.markers)
+                              ? result.markers
+                              : []
+                            ).map((marker, markerIndex) => (
+                              <Box
+                                className="baccarat-marker"
+                                key={`${marker.cx}-${marker.cy}-${markerIndex}`}
+                                style={{
+                                  backgroundColor: getBaccaratColor(
+                                    result.result,
+                                    marker.fill,
+                                  ),
+                                }}
+                              />
+                            ))}
+                          </Box>
+                        </Box>
+                      );
+                    })}
+                  </Box>
+                </Box>
+              </Box>
             ) : rows.length === 0 ? (
-              <Alert severity="info">No round data exists for this date.</Alert>
+              <Alert severity="info">
+                No Baccarat results exist for this date.
+              </Alert>
             ) : (
               <>
                 <Box className="result-board">

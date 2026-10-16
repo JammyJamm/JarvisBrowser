@@ -200,6 +200,44 @@ export const saveRound = async (dateStr, rounds, options = {}) => {
   };
 };
 
+export const saveCoordinateHistory = async (dateStr, coordinateHistory) => {
+  if (!dateStr) throw new Error("A Firestore date document ID is required.");
+  if (
+    !coordinateHistory ||
+    typeof coordinateHistory.found !== "boolean" ||
+    !Number.isInteger(coordinateHistory.count) ||
+    coordinateHistory.count < 0 ||
+    coordinateHistory.count !== coordinateHistory.results?.length ||
+    coordinateHistory.found !== (coordinateHistory.count > 0) ||
+    !Array.isArray(coordinateHistory.results)
+  ) {
+    throw new Error(
+      "Coordinate history must contain consistent found, count, and results.",
+    );
+  }
+
+  const docRef = doc(db, "Bacart", dateStr);
+  const snapshot = await getDoc(docRef);
+  const existingData = snapshot.exists() ? snapshot.data() : {};
+  if (
+    JSON.stringify(existingData.coordinateHistory) ===
+    JSON.stringify(coordinateHistory)
+  ) {
+    return { success: true, dateId: dateStr, skipped: true };
+  }
+
+  await setDoc(
+    docRef,
+    {
+      coordinateHistory,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true },
+  );
+
+  return { success: true, dateId: dateStr, skipped: false };
+};
+
 export const getRounds = async (dateStr) => {
   if (!dateStr) throw new Error("A Firestore date document ID is required.");
 
@@ -207,4 +245,9 @@ export const getRounds = async (dateStr) => {
   return snapshot.exists() ? snapshot.data() : {};
 };
 
-export default { getTodayDateId, saveRound, getRounds };
+export default {
+  getTodayDateId,
+  saveRound,
+  saveCoordinateHistory,
+  getRounds,
+};

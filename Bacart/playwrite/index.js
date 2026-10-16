@@ -1,7 +1,11 @@
 import express from "express";
 import cors from "cors";
 import { chromium } from "playwright";
-import { getTodayDateId, saveRound } from "./gameservice.js";
+import {
+  getTodayDateId,
+  saveCoordinateHistory,
+  saveRound,
+} from "./gameservice.js";
 
 const app = express();
 app.use(cors({ origin: "http://localhost:3006" }));
@@ -467,15 +471,19 @@ app.get("/round-history", async (req, res) => {
           ...(history.matches('svg[data-type="coordinates"]') ? [history] : []),
           ...history.querySelectorAll('svg[data-type="coordinates"]'),
         ];
-        const coordinateResults = Array.from(
-          coordinateCells,
-        )
+        const coordinateResults = Array.from(coordinateCells)
           .map((cell) => {
             const item = cell.querySelector('svg[data-role="roadItem"][name]');
             if (!item) return null;
 
             const text = item.querySelector("text");
             const path = item.querySelector('[data-role="roadItemColor"] path');
+            const getCoordinate = (attribute) => {
+              const value = cell.getAttribute(attribute);
+              if (value === null || value.trim() === "") return null;
+              const number = Number(value);
+              return Number.isFinite(number) ? number : null;
+            };
             const markers = Array.from(item.querySelectorAll("circle")).map(
               (circle) => ({
                 fill: circle.getAttribute("fill"),
@@ -486,8 +494,8 @@ app.get("/round-history", async (req, res) => {
             );
 
             return {
-              x: Number(cell.getAttribute("data-x")),
-              y: Number(cell.getAttribute("data-y")),
+              x: getCoordinate("data-x"),
+              y: getCoordinate("data-y"),
               result: item.getAttribute("name"),
               value: text?.textContent?.trim() ?? null,
               color: path?.getAttribute("fill") ?? null,
@@ -496,9 +504,7 @@ app.get("/round-history", async (req, res) => {
           })
           .filter(Boolean);
         coordinateHistory = {
-          found:
-            history.matches('svg[data-type="coordinates"]') ||
-            coordinateCells.length > 0,
+          found: coordinateResults.length > 0,
           count: coordinateResults.length,
           results: coordinateResults,
         };
@@ -566,20 +572,32 @@ app.get("/round-history", async (req, res) => {
       `📝 /round-history SVG text nodes: ${svgData.extractedSvgText?.reduce((count, svg) => count + svg.texts.length, 0) || 0}`,
     );
 
+    const dateId = getTodayDateId();
+    const coordinateHistorySave = await saveCoordinateHistory(
+      dateId,
+      svgData.coordinateHistory,
+    );
+    console.log(
+      "💾 /round-history coordinate history save:",
+      JSON.stringify(coordinateHistorySave),
+    );
+
     const historyRounds =
       svgData && Array.isArray(svgData.rounds) ? svgData.rounds : [];
     if (historyRounds.length === 0) {
-      const dateId = getTodayDateId();
       const saveResult = await saveRound(dateId, []);
       lastHistorySvgRounds = [];
       return res.json({
         success: true,
         dateId,
+        ...svgData.coordinateHistory,
         frameUrl: svgData.frameUrl,
         history: roundHistory,
         parsedSvgRounds: [],
         extractedSvgText: svgData.extractedSvgText,
         coordinateHistory: svgData.coordinateHistory,
+        scrapedSvgRounds: svgData.coordinateHistory,
+        coordinateHistorySave,
         duplicate: true,
         saved: saveResult.savedCount > 0,
         saveResult,
@@ -590,7 +608,6 @@ app.get("/round-history", async (req, res) => {
     const newRounds = getNewRounds(historyRounds, lastHistorySvgRounds);
     const isDuplicate = !isInitialHistoryLoad && newRounds.length === 0;
 
-    const dateId = getTodayDateId();
     const roundsToSave = newRounds.length > 0 ? [newRounds[0]] : [];
     let saveResult = null;
     if (newRounds.length > 0) {
@@ -609,7 +626,7 @@ app.get("/round-history", async (req, res) => {
     lastHistorySvgRounds = historyRounds;
     console.log(
       "📚 /round-history new SVG rounds:",
-      JSON.stringify(newRounds),
+      JSON.stringify(svgData.coordinateHistory),
       "saving rounds:",
       JSON.stringify(roundsToSave),
     );
@@ -617,12 +634,14 @@ app.get("/round-history", async (req, res) => {
     res.json({
       success: true,
       dateId,
+      ...svgData.coordinateHistory,
       frameUrl: svgData.frameUrl,
       history: roundHistory,
       parsedSvgRounds: roundsToSave,
       extractedSvgText: svgData.extractedSvgText,
       coordinateHistory: svgData.coordinateHistory,
-      scrapedSvgRounds: newRounds,
+      coordinateHistorySave,
+      scrapedSvgRounds: svgData.coordinateHistory,
       duplicate: isDuplicate,
       saved: saveResult?.success === true,
       saveResult,
