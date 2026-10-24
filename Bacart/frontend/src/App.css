@@ -605,10 +605,6 @@
   border-color: var(--result-color);
   background: color-mix(in srgb, var(--result-color) 32%, #17201f);
 }
-.sequence-signal-value:nth-child(4),
-.sequence-signal-value:nth-child(5) {
-  border-color: #e8c75c;
-}
 .sequence-signal-value.target {
   border-color: var(--result-color, var(--signal-color));
   background: color-mix(

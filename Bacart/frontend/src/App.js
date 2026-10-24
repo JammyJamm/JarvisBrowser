@@ -453,9 +453,19 @@ export default function App() {
                           <Box className="sequence-signal-values">
                             {signal.precedingResults.map((result, index) => (
                               <Typography
-                                className="sequence-signal-value"
+                                className={`sequence-signal-value${result ? " result-colored" : ""}`}
                                 component="span"
                                 key={`before-${index}`}
+                                style={
+                                  result
+                                    ? {
+                                        "--result-color": getBaccaratColor(
+                                          result.result,
+                                          result.color,
+                                        ),
+                                      }
+                                    : undefined
+                                }
                                 title="Previous result"
                               >
                                 {result ? formatValue(result.value) : "-"}
@@ -463,19 +473,25 @@ export default function App() {
                             ))}
                             {signal.matchingResults.map((result, index) => (
                               <Typography
-                                className="sequence-signal-value matching"
+                                className="sequence-signal-value matching result-colored"
                                 component="span"
                                 key={`matching-${index}`}
+                                style={{
+                                  "--result-color": getBaccaratColor(
+                                    result.result,
+                                    result.color,
+                                  ),
+                                }}
                                 title="Consecutive matching result"
                               >
                                 {formatValue(result.value)}
                               </Typography>
                             ))}
                             <Typography
-                              className="sequence-signal-value target"
+                              className="sequence-signal-value result-colored target"
                               component="span"
                               style={{
-                                "--target-color": getBaccaratColor(
+                                "--result-color": getBaccaratColor(
                                   signal.targetResult.result,
                                   signal.targetResult.color,
                                 ),

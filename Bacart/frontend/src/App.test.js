@@ -253,15 +253,29 @@ test("shows the prior three values, matching pair, and Banker or Player target",
   expect(bankerSignal.style.getPropertyValue("--signal-color")).toBe("#b51e2b");
   expect(playerSignal.style.getPropertyValue("--signal-color")).toBe("#1768bd");
   expect(
-    bankerSignal
-      .querySelector(".sequence-signal-value.target")
-      .style.getPropertyValue("--target-color"),
-  ).toBe("#b51e2b");
+    Array.from(bankerSignal.querySelectorAll(".sequence-signal-value")).map(
+      (tile) => tile.style.getPropertyValue("--result-color"),
+    ),
+  ).toEqual([
+    "#2475d0",
+    "#ec2024",
+    "#2475d0",
+    "#2475d0",
+    "#ec2024",
+    "#b51e2b",
+  ]);
   expect(
-    playerSignal
-      .querySelector(".sequence-signal-value.target")
-      .style.getPropertyValue("--target-color"),
-  ).toBe("#1768bd");
+    Array.from(playerSignal.querySelectorAll(".sequence-signal-value")).map(
+      (tile) => tile.style.getPropertyValue("--result-color"),
+    ),
+  ).toEqual([
+    "#ec2024",
+    "#b51e2b",
+    "#2475d0",
+    "#2475d0",
+    "#ec2024",
+    "#1768bd",
+  ]);
 });
 
 test("shows placeholders when a matching pair has fewer than three prior results", async () => {
@@ -300,4 +314,11 @@ test("shows placeholders when a matching pair has fewer than three prior results
       ),
     ).map((tile) => tile.textContent),
   ).toEqual(["-", "-", "8", "5", "5", "9"]);
+  expect(
+    Array.from(
+      bankerSignal.parentElement.parentElement.querySelectorAll(
+        ".sequence-signal-value",
+      ),
+    ).map((tile) => tile.style.getPropertyValue("--result-color")),
+  ).toEqual(["", "", "#2475d0", "#ec2024", "#2475d0", "#ec2024"]);
 });
