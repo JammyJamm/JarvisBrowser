@@ -223,6 +223,7 @@ test("shows the prior three values, matching pair, and Banker or Player target",
           y: 0,
           result,
           value,
+          color: x === 5 ? "#b51e2b" : x === 9 ? "#1768bd" : null,
           markers: [],
         })),
       },
@@ -249,6 +250,18 @@ test("shows the prior three values, matching pair, and Banker or Player target",
       (tile) => tile.textContent,
     ),
   ).toEqual(["7", "9", "4", "3", "3", "2"]);
+  expect(bankerSignal.style.getPropertyValue("--signal-color")).toBe("#b51e2b");
+  expect(playerSignal.style.getPropertyValue("--signal-color")).toBe("#1768bd");
+  expect(
+    bankerSignal
+      .querySelector(".sequence-signal-value.target")
+      .style.getPropertyValue("--target-color"),
+  ).toBe("#b51e2b");
+  expect(
+    playerSignal
+      .querySelector(".sequence-signal-value.target")
+      .style.getPropertyValue("--target-color"),
+  ).toBe("#1768bd");
 });
 
 test("shows placeholders when a matching pair has fewer than three prior results", async () => {

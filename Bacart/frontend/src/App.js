@@ -435,6 +435,12 @@ export default function App() {
                         <Box
                           className={`sequence-signal ${signal.targetSide}`}
                           key={signal.id}
+                          style={{
+                            "--signal-color": getBaccaratColor(
+                              signal.targetResult.result,
+                              signal.targetResult.color,
+                            ),
+                          }}
                         >
                           <Typography
                             className="sequence-signal-heading"
@@ -468,6 +474,12 @@ export default function App() {
                             <Typography
                               className="sequence-signal-value target"
                               component="span"
+                              style={{
+                                "--target-color": getBaccaratColor(
+                                  signal.targetResult.result,
+                                  signal.targetResult.color,
+                                ),
+                              }}
                               title={`${signal.targetResult.result} target`}
                             >
                               {formatValue(signal.targetResult.value)}

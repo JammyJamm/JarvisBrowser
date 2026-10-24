@@ -102,7 +102,7 @@ async function getGameFrame() {
         }
 
         const targetEl = frame.locator(
-          ".i-1wnr, [class*='i-1wnr'], svg[data-role='recent-results'], [data-role='round-history']",
+          ".ZCkdxY, .i-1wnr, [class*='i-1wnr'], svg[data-role='recent-results'], [data-role='round-history']",
         );
         if (await targetEl.count()) {
           return frame;
@@ -122,6 +122,7 @@ async function getGameFrameWithSvg() {
   if (!page || page.isClosed()) return null;
 
   const historySelectors = [
+    ".ZCkdxY",
     "svg.i-1wnr",
     ".i-1wnr",
     "[class*='i-1wnr']",
@@ -396,6 +397,7 @@ app.get("/round-history", async (req, res) => {
       // Check whether element with class i-1wnr exists, or inspect fallback selectors
       const PRIMARY_CLASS = ".i-1wnr";
       const FALLBACK_SELECTORS = [
+        ".ZCkdxY",
         "svg.i-1wnr",
         ".i-1wnr",
         "[class*='i-1wnr']",
@@ -464,6 +466,8 @@ app.get("/round-history", async (req, res) => {
 
       if (targetExists) {
         const history =
+          targetElement.closest(".ZCkdxY") ||
+          document.querySelector(".ZCkdxY") ||
           document.querySelector("svg.i-1wnr") ||
           targetElement.querySelector("svg.i-1wnr") ||
           targetElement;
@@ -513,23 +517,45 @@ app.get("/round-history", async (req, res) => {
           JSON.stringify(coordinateHistory, null, 2),
         );
 
-        // Requirement 3: Find all SVG elements within the relevant round-history element
-        const svgs = [];
-        if (history.tagName.toLowerCase() === "svg") {
-          svgs.push(history);
-        } else {
-          svgs.push(...history.querySelectorAll("svg"));
-        }
+        // Requirement 3: Extract the first SVG within the relevant history element.
+        const firstSvg =
+          history.tagName.toLowerCase() === "svg"
+            ? history
+            : history.querySelector("svg");
+        const svgs = firstSvg ? [firstSvg] : [];
 
-        extractedSvgText = svgs.map((svg, index) => ({
-          index,
-          texts: Array.from(svg.querySelectorAll("text"))
-            .map((text) => text.innerHTML.trim())
-            .filter(Boolean),
-        }));
+        extractedSvgText = svgs.map((svg, index) => {
+          const textNodes = Array.from(svg.querySelectorAll("text"))
+            .map((text) => text.textContent.trim())
+            .filter(Boolean);
+          const resultNodes = Array.from(
+            svg.querySelectorAll(
+              '[data-role="roadItem"][name], [data-result], [data-outcome]',
+            ),
+          );
+          const resultValues = resultNodes
+            .map(
+              (node) =>
+                node.getAttribute("name") ||
+                node.getAttribute("data-result") ||
+                node.getAttribute("data-outcome") ||
+                node.textContent.trim(),
+            )
+            .filter(Boolean);
+
+          return {
+            index,
+            texts: textNodes.length > 0 ? textNodes : resultValues,
+          };
+        });
         rounds = extractedSvgText
           .map(({ texts }) => texts)
           .filter((texts) => texts.length > 0);
+        if (rounds.length === 0 && coordinateHistory.results.length > 0) {
+          rounds = coordinateHistory.results.map(({ result, value }) =>
+            [result, value].filter(Boolean),
+          );
+        }
         console.log(
           "[RoundHistory] Extracted SVG text:",
           JSON.stringify(extractedSvgText, null, 2),
