@@ -1,16 +1,19 @@
 import { render, screen } from "@testing-library/react";
 import App from "./App";
-import { getDoc, getDocs } from "firebase/firestore";
 
-jest.mock("./firebaseConfig", () => ({ __esModule: true, default: {} }));
+const mockFetch = jest.fn();
 
-jest.mock("firebase/firestore", () => ({
-  collection: jest.fn(() => ({})),
-  doc: jest.fn(() => ({})),
-  getDoc: jest.fn(),
-  getDocs: jest.fn(),
-  Timestamp: class Timestamp {},
-}));
+beforeEach(() => {
+  mockFetch.mockReset();
+  global.fetch = mockFetch;
+});
+
+function mockRoundHistory(data) {
+  mockFetch.mockResolvedValue({
+    ok: true,
+    json: async () => data,
+  });
+}
 
 test("renders every value from a nested result array", async () => {
   const values = [
@@ -63,10 +66,10 @@ test("renders every value from a nested result array", async () => {
     "8",
   ];
 
-  getDocs.mockResolvedValue({ docs: [{ id: "2026-10-16" }] });
-  getDoc.mockResolvedValue({
-    exists: () => true,
-    data: () => ({ "12:00": [values] }),
+  mockRoundHistory({
+    success: true,
+    dateId: "2026-10-16",
+    parsedSvgRounds: [values],
   });
 
   const { container } = render(<App />);
@@ -82,11 +85,10 @@ test("renders every value from a nested result array", async () => {
 });
 
 test("renders saved coordinate history on the Baccarat board", async () => {
-  getDocs.mockResolvedValue({ docs: [{ id: "2026-10-16" }] });
-  getDoc.mockResolvedValue({
-    exists: () => true,
-    data: () => ({
-      coordinateHistory: {
+  mockRoundHistory({
+    success: true,
+    dateId: "2026-10-16",
+    coordinateHistory: {
         found: true,
         count: 2,
         results: [
@@ -107,13 +109,16 @@ test("renders saved coordinate history on the Baccarat board", async () => {
             markers: [{ fill: "#EC2024", cx: "4", cy: "4", r: "2" }],
           },
         ],
-      },
-    }),
+    },
   });
 
   const { container } = render(<App />);
 
   expect(await screen.findByText("Baccarat road board")).toBeInTheDocument();
+  expect(mockFetch).toHaveBeenCalledWith(
+    "http://localhost:9000/round-history",
+    { cache: "no-store" },
+  );
   expect(screen.getByText("Banker · 1")).toBeInTheDocument();
   expect(screen.getByText("Player · 1")).toBeInTheDocument();
   expect(container.querySelectorAll(".baccarat-cell")).toHaveLength(2);
@@ -127,11 +132,10 @@ test("renders saved coordinate history on the Baccarat board", async () => {
 });
 
 test("highlights matching values without rendering the previous-results section", async () => {
-  getDocs.mockResolvedValue({ docs: [{ id: "2026-10-16" }] });
-  getDoc.mockResolvedValue({
-    exists: () => true,
-    data: () => ({
-      coordinateHistory: {
+  mockRoundHistory({
+    success: true,
+    dateId: "2026-10-16",
+    coordinateHistory: {
         found: true,
         count: 3,
         results: [
@@ -160,8 +164,7 @@ test("highlights matching values without rendering the previous-results section"
             markers: [],
           },
         ],
-      },
-    }),
+    },
   });
 
   const { container } = render(<App />);
@@ -174,11 +177,10 @@ test("highlights matching values without rendering the previous-results section"
 });
 
 test("does not pair equal values separated by a different result", async () => {
-  getDocs.mockResolvedValue({ docs: [{ id: "2026-10-16" }] });
-  getDoc.mockResolvedValue({
-    exists: () => true,
-    data: () => ({
-      coordinateHistory: {
+  mockRoundHistory({
+    success: true,
+    dateId: "2026-10-16",
+    coordinateHistory: {
         found: true,
         count: 3,
         results: [
@@ -186,8 +188,7 @@ test("does not pair equal values separated by a different result", async () => {
           { x: 1, y: 0, result: "Player", value: "7", markers: [] },
           { x: 2, y: 0, result: "Banker", value: "4", markers: [] },
         ],
-      },
-    }),
+    },
   });
 
   const { container } = render(<App />);
@@ -211,11 +212,10 @@ test("shows the prior three values, matching pair, and Banker or Player target",
     ["Player", "2"],
   ];
 
-  getDocs.mockResolvedValue({ docs: [{ id: "2026-10-16" }] });
-  getDoc.mockResolvedValue({
-    exists: () => true,
-    data: () => ({
-      coordinateHistory: {
+  mockRoundHistory({
+    success: true,
+    dateId: "2026-10-16",
+    coordinateHistory: {
         found: true,
         count: values.length,
         results: values.map(([result, value], x) => ({
@@ -226,8 +226,7 @@ test("shows the prior three values, matching pair, and Banker or Player target",
           color: x === 5 ? "#b51e2b" : x === 9 ? "#1768bd" : null,
           markers: [],
         })),
-      },
-    }),
+    },
   });
 
   const { container } = render(<App />);
@@ -276,6 +275,19 @@ test("shows the prior three values, matching pair, and Banker or Player target",
     "#ec2024",
     "#1768bd",
   ]);
+
+  const latestSignal = container.querySelector(".sequence-signal.pending");
+  expect(latestSignal).toHaveTextContent("Latest results · next");
+  expect(
+    Array.from(latestSignal.querySelectorAll(".sequence-signal-value")).map(
+      (tile) => tile.textContent,
+    ),
+  ).toEqual(["4", "3", "3", "2", "-"]);
+  expect(
+    Array.from(latestSignal.querySelectorAll(".sequence-signal-value")).map(
+      (tile) => tile.style.getPropertyValue("--result-color"),
+    ),
+  ).toEqual(["#2475d0", "#2475d0", "#ec2024", "#1768bd", ""]);
 });
 
 test("shows placeholders when a matching pair has fewer than three prior results", async () => {
@@ -286,11 +298,10 @@ test("shows placeholders when a matching pair has fewer than three prior results
     ["Banker", "9"],
   ];
 
-  getDocs.mockResolvedValue({ docs: [{ id: "2026-10-16" }] });
-  getDoc.mockResolvedValue({
-    exists: () => true,
-    data: () => ({
-      coordinateHistory: {
+  mockRoundHistory({
+    success: true,
+    dateId: "2026-10-16",
+    coordinateHistory: {
         found: true,
         count: values.length,
         results: values.map(([result, value], x) => ({
@@ -300,8 +311,7 @@ test("shows placeholders when a matching pair has fewer than three prior results
           value,
           markers: [],
         })),
-      },
-    }),
+    },
   });
 
   const { container } = render(<App />);
@@ -309,16 +319,32 @@ test("shows placeholders when a matching pair has fewer than three prior results
 
   expect(
     Array.from(
-      bankerSignal.parentElement.parentElement.querySelectorAll(
-        ".sequence-signal-value",
-      ),
+      bankerSignal.parentElement.querySelectorAll(".sequence-signal-value"),
     ).map((tile) => tile.textContent),
   ).toEqual(["-", "-", "8", "5", "5", "9"]);
   expect(
     Array.from(
-      bankerSignal.parentElement.parentElement.querySelectorAll(
-        ".sequence-signal-value",
-      ),
+      bankerSignal.parentElement.querySelectorAll(".sequence-signal-value"),
     ).map((tile) => tile.style.getPropertyValue("--result-color")),
   ).toEqual(["", "", "#2475d0", "#ec2024", "#2475d0", "#ec2024"]);
+});
+
+test("shows round-history API errors instead of reading Firebase data", async () => {
+  mockFetch.mockResolvedValue({
+    ok: false,
+    status: 503,
+    json: async () => ({
+      success: false,
+      error: "Game iframe is not ready. Open the game and try again.",
+    }),
+  });
+  jest.spyOn(console, "error").mockImplementation(() => {});
+
+  render(<App />);
+
+  expect(
+    await screen.findByText(
+      "Game iframe is not ready. Open the game and try again.",
+    ),
+  ).toBeInTheDocument();
 });

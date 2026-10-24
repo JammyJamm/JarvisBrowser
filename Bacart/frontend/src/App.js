@@ -1,12 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  Timestamp,
-} from "firebase/firestore";
-import db from "./firebaseConfig";
 
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
@@ -15,23 +7,14 @@ import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
 import Chip from "@mui/material/Chip";
 import CircularProgress from "@mui/material/CircularProgress";
-import FormControl from "@mui/material/FormControl";
-import InputLabel from "@mui/material/InputLabel";
-import MenuItem from "@mui/material/MenuItem";
 import RefreshIcon from "@mui/icons-material/Refresh";
-import Select from "@mui/material/Select";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import "./App.css";
 
-const COLLECTION_NAME = "Bacart";
-
-function formatDateId(date) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(
-    2,
-    "0",
-  )}-${String(date.getDate()).padStart(2, "0")}`;
-}
+const ROUND_HISTORY_API_URL = (
+  process.env.REACT_APP_ROUND_HISTORY_API_URL || "http://localhost:9000"
+).replace(/\/$/, "");
 
 function getRoundValues(round) {
   if (Array.isArray(round)) {
@@ -84,82 +67,85 @@ function getCoordinateIndex(value, fallback) {
   return Number.isInteger(number) && number >= 0 ? number : fallback;
 }
 
-function formatUpdatedAt(value) {
-  if (value instanceof Timestamp) return value.toDate().toLocaleString();
-  if (value?.toDate) return value.toDate().toLocaleString();
-  return "Not available";
-}
-
 export default function App() {
-  const [dateIds, setDateIds] = useState([]);
-  const [selectedDate, setSelectedDate] = useState(formatDateId(new Date()));
-  const [documentData, setDocumentData] = useState({});
+  const [historyData, setHistoryData] = useState({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
-
-  const loadDateIds = useCallback(async () => {
-    const snapshot = await getDocs(collection(db, COLLECTION_NAME));
-    const ids = snapshot.docs
-      .map((item) => item.id)
-      .filter((id) => id !== "updatedAt")
-      .sort((left, right) => right.localeCompare(left));
-    setDateIds(ids);
-    if (ids.length > 0 && !ids.includes(selectedDate)) {
-      setSelectedDate(ids[0]);
-    }
-  }, [selectedDate]);
+  const [lastFetchedAt, setLastFetchedAt] = useState("");
 
   const loadData = useCallback(async () => {
     setRefreshing(true);
     setError("");
     try {
-      const snapshot = await getDoc(doc(db, COLLECTION_NAME, selectedDate));
-      setDocumentData(snapshot.exists() ? snapshot.data() : {});
+      const response = await fetch(`${ROUND_HISTORY_API_URL}/round-history`, {
+        cache: "no-store",
+      });
+      const data = await response.json();
+      if (!response.ok || data?.success === false) {
+        throw new Error(
+          data?.error || `Round-history API returned HTTP ${response.status}.`,
+        );
+      }
+      if (!data || typeof data !== "object" || Array.isArray(data)) {
+        throw new Error("Round-history API returned invalid JSON data.");
+      }
+      setHistoryData(data);
+      setLastFetchedAt(new Date().toLocaleString());
     } catch (loadError) {
-      console.error("Unable to load Firestore history:", loadError);
-      setError("Unable to load this day's history. Please try again.");
-      setDocumentData({});
+      console.error("Unable to load round-history API data:", loadError);
+      setError(
+        loadError instanceof Error
+          ? loadError.message
+          : "Unable to load round-history API data.",
+      );
+      setHistoryData({});
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [selectedDate]);
+  }, []);
 
   useEffect(() => {
-    loadDateIds().catch((loadError) => {
-      console.error("Unable to load Firestore dates:", loadError);
-      setError("Unable to load available dates from Firestore.");
-      setLoading(false);
-    });
-  }, [loadDateIds]);
-
-  useEffect(() => {
-    loadData();
+    void loadData();
     const interval = setInterval(loadData, 15000);
     return () => clearInterval(interval);
   }, [loadData]);
 
+  const coordinateHistory =
+    historyData.coordinateHistory ||
+    (Array.isArray(historyData.results) ? historyData : null);
+  const coordinateResults = useMemo(
+    () =>
+      Array.isArray(coordinateHistory?.results)
+        ? coordinateHistory.results.filter(
+            (result) => result && typeof result === "object",
+          )
+        : [],
+    [coordinateHistory],
+  );
   const rows = useMemo(
     () =>
-      Object.entries(documentData)
-        .filter(([time, value]) => time !== "updatedAt" && Array.isArray(value))
-        .sort(([left], [right]) => right.localeCompare(left)),
-    [documentData],
+      Array.isArray(historyData.parsedSvgRounds)
+        ? historyData.parsedSvgRounds
+        : [],
+    [historyData],
   );
 
   const results = useMemo(
     () =>
-      rows
-        .slice()
-        .reverse()
-        .flatMap(([time, round]) =>
-          getRoundValues(round).map((value) => ({
-            time,
-            value,
-          })),
-        ),
-    [rows],
+      coordinateResults.length > 0
+        ? coordinateResults.map((result, index) => ({
+            time: historyData.dateId || `Result ${index + 1}`,
+            value: result.value,
+          }))
+        : rows.flatMap((round, index) =>
+            getRoundValues(round).map((value) => ({
+              time: `Round ${index + 1}`,
+              value,
+            })),
+          ),
+    [coordinateResults, historyData.dateId, rows],
   );
 
   const uniqueResultCount = useMemo(
@@ -190,16 +176,6 @@ export default function App() {
     [resultCounts],
   );
 
-  const coordinateHistory = documentData.coordinateHistory;
-  const coordinateResults = useMemo(
-    () =>
-      Array.isArray(coordinateHistory?.results)
-        ? coordinateHistory.results.filter(
-            (result) => result && typeof result === "object",
-          )
-        : [],
-    [coordinateHistory],
-  );
   const coordinateCounts = useMemo(
     () =>
       coordinateResults.reduce((counts, result) => {
@@ -251,6 +227,18 @@ export default function App() {
         targetSide,
       });
     }
+    if (coordinateResults.length > 0) {
+      signals.push({
+        id: "latest-results",
+        precedingResults: [
+          ...Array(Math.max(0, 5 - coordinateResults.length)).fill(null),
+          ...coordinateResults.slice(-5),
+        ],
+        matchingResults: [],
+        targetResult: null,
+        targetSide: "pending",
+      });
+    }
     return signals;
   }, [coordinateResults]);
   const baccaratRows = Math.max(
@@ -263,13 +251,8 @@ export default function App() {
       (result, index) => getCoordinateIndex(result.x, index) + 1,
     ),
   );
-  const displayCount = coordinateHistory
-    ? coordinateResults.length
-      ? coordinateHistory.count
-      : results.length || rows.length
-    : results.length || rows.length;
-
-  const updatedAt = formatUpdatedAt(documentData.updatedAt);
+  const displayCount = coordinateResults.length || results.length;
+  const updatedAt = historyData.time || lastFetchedAt || "Not available";
 
   return (
     <Box
@@ -293,34 +276,16 @@ export default function App() {
               variant="overline"
               sx={{ color: "primary.main", fontWeight: 800, letterSpacing: 2 }}
             >
-              Firestore dashboard
+              Round-history API
             </Typography>
             <Typography variant="h3" sx={{ fontWeight: 800, color: "#172033" }}>
               Baccarat results
             </Typography>
             <Typography color="text.secondary">
-              Live road board from the Bacart Firestore collection.
+              Live results from the round-history API JSON.
             </Typography>
           </Box>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-            <FormControl size="small" sx={{ minWidth: 180, bgcolor: "white" }}>
-              <InputLabel id="date-label">Game date</InputLabel>
-              <Select
-                labelId="date-label"
-                value={selectedDate}
-                label="Game date"
-                onChange={(event) => setSelectedDate(event.target.value)}
-              >
-                {dateIds.length === 0 && (
-                  <MenuItem value={selectedDate}>{selectedDate}</MenuItem>
-                )}
-                {dateIds.map((dateId) => (
-                  <MenuItem value={dateId} key={dateId}>
-                    {dateId}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
             <Button
               variant="contained"
               startIcon={
@@ -363,7 +328,7 @@ export default function App() {
             >
               <Box>
                 <Typography variant="h6" sx={{ fontWeight: 800 }}>
-                  {selectedDate}
+                  {historyData.dateId || "Live results"}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
                   {displayCount} results · Last update: {updatedAt}
@@ -394,7 +359,7 @@ export default function App() {
                       Baccarat road board
                     </Typography>
                     <Typography variant="body2" color="text.secondary">
-                      Results arranged by their SVG coordinates
+                      Results from round-history API JSON
                     </Typography>
                   </Box>
                   <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
@@ -436,19 +401,23 @@ export default function App() {
                           className={`sequence-signal ${signal.targetSide}`}
                           key={signal.id}
                           style={{
-                            "--signal-color": getBaccaratColor(
-                              signal.targetResult.result,
-                              signal.targetResult.color,
-                            ),
+                            "--signal-color": signal.targetResult
+                              ? getBaccaratColor(
+                                  signal.targetResult.result,
+                                  signal.targetResult.color,
+                                )
+                              : "#8491a5",
                           }}
                         >
                           <Typography
                             className="sequence-signal-heading"
                             component="span"
                           >
-                            {signal.targetSide === "banker"
-                              ? "Banker target"
-                              : "Player target"}
+                            {signal.targetSide === "pending"
+                              ? "Latest results · next"
+                              : signal.targetSide === "banker"
+                                ? "Banker target"
+                                : "Player target"}
                           </Typography>
                           <Box className="sequence-signal-values">
                             {signal.precedingResults.map((result, index) => (
@@ -487,19 +456,29 @@ export default function App() {
                                 {formatValue(result.value)}
                               </Typography>
                             ))}
-                            <Typography
-                              className="sequence-signal-value result-colored target"
-                              component="span"
-                              style={{
-                                "--result-color": getBaccaratColor(
-                                  signal.targetResult.result,
-                                  signal.targetResult.color,
-                                ),
-                              }}
-                              title={`${signal.targetResult.result} target`}
-                            >
-                              {formatValue(signal.targetResult.value)}
-                            </Typography>
+                            {signal.targetResult ? (
+                              <Typography
+                                className="sequence-signal-value result-colored target"
+                                component="span"
+                                style={{
+                                  "--result-color": getBaccaratColor(
+                                    signal.targetResult.result,
+                                    signal.targetResult.color,
+                                  ),
+                                }}
+                                title={`${signal.targetResult.result} target`}
+                              >
+                                {formatValue(signal.targetResult.value)}
+                              </Typography>
+                            ) : (
+                              <Typography
+                                className="sequence-signal-value target"
+                                component="span"
+                                title="Next result"
+                              >
+                                -
+                              </Typography>
+                            )}
                           </Box>
                         </Box>
                       ))}
@@ -577,9 +556,9 @@ export default function App() {
                   </Box>
                 </Box>
               </Box>
-            ) : rows.length === 0 ? (
+            ) : results.length === 0 ? (
               <Alert severity="info">
-                No Baccarat results exist for this date.
+                No Baccarat results are available from the round-history API.
               </Alert>
             ) : (
               <>
@@ -596,10 +575,15 @@ export default function App() {
                         Result sequence
                       </Typography>
                       <Typography variant="body2" color="text.secondary">
-                        All saved values in chronological order
+                        Values returned by the round-history API
                       </Typography>
                     </Box>
-                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                    <Stack
+                      direction="row"
+                      spacing={1}
+                      flexWrap="wrap"
+                      useFlexGap
+                    >
                       <Chip
                         className="result-summary-chip"
                         label={`${results.length} results`}

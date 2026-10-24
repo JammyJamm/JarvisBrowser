@@ -565,6 +565,10 @@
   --signal-color: #2475d0;
 }
 
+.sequence-signal.pending {
+  --signal-color: #8491a5;
+}
+
 .sequence-signal.tie {
   --signal-color: #27a36a;
 }
