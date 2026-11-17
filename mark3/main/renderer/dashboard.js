@@ -9,16 +9,17 @@
     events: "jarvis.calendar.events",
     water: "jarvis.health.water",
     reminders: "jarvis.calendar.reminders",
+    sidebarCollapsed: "jarvis.dashboard.sidebarCollapsed",
   };
 
-  const pageTitles = {
-    dashboard: ["YOUR WORKSPACE", "Overview"],
-    browser: ["BROWSE THE WEB", "Browser"],
-    finance: ["YOUR MONEY", "Finance"],
-    health: ["YOUR WELLNESS", "Wellness"],
-    calendar: ["YOUR TIME", "Calendar"],
-    assistant: ["YOUR JARVIS ASSISTANT", "Assistant"],
-  };
+  const pages = new Set([
+    "dashboard",
+    "browser",
+    "finance",
+    "health",
+    "calendar",
+    "assistant",
+  ]);
 
   const load = (key, fallback) => {
     try {
@@ -55,6 +56,22 @@
     const day = String(date.getDate()).padStart(2, "0");
     return `${year}-${month}-${day}`;
   };
+
+  function updateTopbarDateTime() {
+    const now = new Date();
+    const compact = window.matchMedia("(max-width: 760px)").matches;
+    const dateOptions = compact
+      ? { weekday: "short", month: "short", day: "numeric" }
+      : { weekday: "long", month: "long", day: "numeric", year: "numeric" };
+
+    document.getElementById("todayDate").textContent =
+      new Intl.DateTimeFormat(undefined, dateOptions).format(now);
+    document.getElementById("todayTime").textContent =
+      new Intl.DateTimeFormat(undefined, {
+        hour: "numeric",
+        minute: "2-digit",
+      }).format(now);
+  }
 
   const parseDateKey = (key) => {
     const [year, month, day] = key.split("-").map(Number);
@@ -131,7 +148,7 @@
   }
 
   function setPage(name) {
-    if (!pageTitles[name]) return;
+    if (!pages.has(name)) return;
 
     document.body.dataset.page = name;
     document.querySelectorAll("[data-page-view]").forEach((page) => {
@@ -145,10 +162,6 @@
         else button.removeAttribute("aria-current");
       }
     });
-
-    const [eyebrow, title] = pageTitles[name];
-    document.getElementById("pageEyebrow").textContent = eyebrow;
-    document.getElementById("pageTitle").textContent = title;
 
     if (name === "browser") {
       renderTabs();
@@ -758,7 +771,31 @@
   }
 
   function init() {
+    updateTopbarDateTime();
+    window.setInterval(updateTopbarDateTime, 1000);
+    window.addEventListener("resize", updateTopbarDateTime);
+
     updateTheme(load(keys.theme, "light") === "dark" ? "dark" : "light");
+    const sidebarToggle = document.getElementById("sidebarToggle");
+    const setSidebarCollapsed = (collapsed, persist = true) => {
+      document.body.classList.toggle("sidebar-collapsed", collapsed);
+      sidebarToggle.setAttribute("aria-expanded", String(!collapsed));
+      sidebarToggle.setAttribute(
+        "aria-label",
+        collapsed ? "Expand sidebar" : "Collapse sidebar",
+      );
+      sidebarToggle.title = collapsed ? "Expand sidebar" : "Collapse sidebar";
+      if (persist) save(keys.sidebarCollapsed, collapsed);
+      requestAnimationFrame(resizeBrowserHost);
+    };
+
+    setSidebarCollapsed(load(keys.sidebarCollapsed, false) === true, false);
+    sidebarToggle.addEventListener("click", () => {
+      setSidebarCollapsed(
+        !document.body.classList.contains("sidebar-collapsed"),
+      );
+    });
+
     document.querySelectorAll("[data-page]").forEach((button) => {
       button.addEventListener("click", () => setPage(button.dataset.page));
     });

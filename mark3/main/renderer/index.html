@@ -33,24 +33,29 @@
           <img src="./icon/logo.svg" alt="" />
           <span>jarvis<span class="brand-browser"> browser</span></span>
         </a>
-        <p class="nav-caption">WORKSPACE</p>
         <nav class="primary-nav" aria-label="Main navigation">
-          <button class="nav-link active" type="button" data-page="dashboard" aria-current="page"><span class="nav-icon">⌂</span><span>Overview</span></button>
-          <button class="nav-link" type="button" data-page="browser"><span class="nav-icon">◉</span><span>Browser</span></button>
-          <button class="nav-link" type="button" data-page="finance"><span class="nav-icon">$</span><span>Finance</span></button>
-          <button class="nav-link" type="button" data-page="health"><span class="nav-icon">♡</span><span>Health</span></button>
-          <button class="nav-link" type="button" data-page="calendar"><span class="nav-icon">▦</span><span>Calendar</span></button>
+          <button class="nav-link active" type="button" data-page="dashboard" aria-current="page" aria-label="Overview" title="Overview"><span class="nav-icon">⌂</span><span>Overview</span></button>
+          <button class="nav-link" type="button" data-page="browser" aria-label="Browser" title="Browser"><span class="nav-icon">◉</span><span>Browser</span></button>
+          <button class="nav-link" type="button" data-page="finance" aria-label="Finance" title="Finance"><span class="nav-icon">$</span><span>Finance</span></button>
+          <button class="nav-link" type="button" data-page="health" aria-label="Health" title="Health"><span class="nav-icon">♡</span><span>Health</span></button>
+          <button class="nav-link" type="button" data-page="calendar" aria-label="Calendar" title="Calendar"><span class="nav-icon">▦</span><span>Calendar</span></button>
         </nav>
         <div class="sidebar-footer">
           <div class="privacy-note"><span class="privacy-dot"></span><span>Your workspace<br />is stored locally</span></div>
-          <button class="nav-link assistant-link" type="button" data-page="assistant"><span class="nav-icon">✳</span><span>Jarvis assistant</span></button>
+          <button class="nav-link assistant-link" type="button" data-page="assistant" aria-label="Jarvis assistant" title="Jarvis assistant"><span class="nav-icon">✳</span><span>Jarvis assistant</span></button>
         </div>
+        <button class="sidebar-toggle" id="sidebarToggle" type="button" aria-label="Collapse sidebar" title="Collapse sidebar" aria-expanded="true">
+          <svg class="sidebar-toggle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3.5" y="4.5" width="17" height="15" rx="2.5"></rect>
+            <path d="M9 5v14M15 12l-2.5-2.5M15 12l-2.5 2.5"></path>
+          </svg>
+        </button>
       </aside>
 
       <main class="workspace">
         <header class="topbar">
           <div class="mobile-brand"><img src="./icon/logo.svg" alt="" /><span>Jarvis</span></div>
-          <div class="page-heading"><span id="pageEyebrow">YOUR WORKSPACE</span><h1 id="pageTitle">Overview</h1></div>
+          <div class="page-heading"><span id="todayDate"></span><h1 id="todayTime"></h1></div>
           <div class="topbar-actions">
             <button class="icon-button" type="button" data-action="toggle-theme" aria-label="Toggle color theme" title="Toggle color theme">◐</button>
             <button class="assistant-shortcut" type="button" data-page="assistant"><span class="assistant-spark">✳</span><span>Ask Jarvis</span></button>
