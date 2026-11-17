@@ -323,7 +323,7 @@
 
     createMessageBlock(cmd);
     startShimmer();
-    setStatus(`Processing: ${cmd}`);
+    setStatus("Analyzing...");
 
     try {
       const res = await fetch(`${BACKEND_URL}/run`, {
@@ -339,15 +339,17 @@
 
       if (!data.success) {
         logResp(`❌ ${data.error || "Action failed."}`);
-        setStatus(`Error: ${data.error || "Action failed."}`);
+        setStatus("Unable to complete that request");
         stopShimmer();
         return;
       }
 
+      setStatus("Working...");
+
       // CHAT MODE
       if (data.mode === "chat") {
         logResp(data.reply);
-        setStatus("Jarvis Browser is ready");
+        setStatus("Ready for your next request");
         stopShimmer();
         return;
       }
@@ -424,11 +426,11 @@
         for (const step of data.steps) {
           logResp(JSON.stringify(step.result || step, null, 2));
         }
-        setStatus("Action completed successfully");
+        setStatus("Ready for your next request");
       }
     } catch (err) {
       logResp(`❌ ${err.message}`);
-      setStatus(`Error: ${err.message}`);
+      setStatus("Unable to complete that request");
     } finally {
       stopShimmer();
     }
@@ -851,8 +853,8 @@
   // UI MESSAGE BLOCK
   // ==========================================================
   function createMessageBlock(payload) {
-    const logs = document.getElementById("logs");
-    if (!logs) return;
+    const conversation = document.getElementById("assistantConversation");
+    if (!conversation) return;
 
     const block = document.createElement("div");
     block.classList.add("msg-block");
@@ -871,7 +873,7 @@
     block.appendChild(user);
     block.appendChild(ai);
 
-    logs.appendChild(block);
+    conversation.appendChild(block);
     scrollLogsToBottom();
 
     currentTextNode = span;
@@ -894,6 +896,10 @@
     const statusEl = document.getElementById("statusText");
     if (statusEl) {
       statusEl.innerText = text;
+      statusEl.closest(".statusBlock").dataset.state =
+        /analyz/i.test(text) ? "analyzing" :
+        /working/i.test(text) ? "working" :
+        /unable|error|failed/i.test(text) ? "error" : "ready";
     }
   }
 
@@ -901,9 +907,9 @@
   // HELPERS
   // ==========================================================
   function scrollLogsToBottom() {
-    const logs = document.getElementById("logs");
-    if (logs) {
-      logs.scrollTop = logs.scrollHeight;
+    const conversation = document.getElementById("assistantConversation");
+    if (conversation) {
+      conversation.scrollTop = conversation.scrollHeight;
     }
   }
 

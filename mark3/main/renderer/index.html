@@ -13,21 +13,6 @@
 
   <body>
     <div class="app-shell">
-      <div class="window-chrome" id="windowChrome">
-        <div class="window-drag-region"></div>
-        <div class="window-controls">
-          <button class="window-control" type="button" data-window-action="minimize" aria-label="Minimize" title="Minimize">
-            <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6h8" /></svg>
-          </button>
-          <button class="window-control" type="button" data-window-action="maximize" aria-label="Maximize" title="Maximize">
-            <svg class="maximize-icon" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="2.5" width="7" height="7" /></svg>
-            <svg class="restore-icon" viewBox="0 0 12 12" aria-hidden="true"><path d="M4 3h5v5M3 5v5h5" /></svg>
-          </button>
-          <button class="window-control window-control-close" type="button" data-window-action="close" aria-label="Close" title="Close">
-            <svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 3 6 6M9 3 3 9" /></svg>
-          </button>
-        </div>
-      </div>
       <aside class="sidebar">
         <a class="brand" href="#" data-page-link="dashboard" aria-label="Jarvis home">
           <img src="./icon/logo.svg" alt="" />
@@ -39,6 +24,7 @@
           <button class="nav-link" type="button" data-page="finance" aria-label="Finance" title="Finance"><span class="nav-icon">$</span><span>Finance</span></button>
           <button class="nav-link" type="button" data-page="health" aria-label="Health" title="Health"><span class="nav-icon">♡</span><span>Health</span></button>
           <button class="nav-link" type="button" data-page="calendar" aria-label="Calendar" title="Calendar"><span class="nav-icon">▦</span><span>Calendar</span></button>
+          <button class="nav-link" type="button" data-page="food" aria-label="Food" title="Food"><span class="nav-icon">🥗</span><span>Food</span></button>
         </nav>
         <div class="sidebar-footer">
           <div class="privacy-note"><span class="privacy-dot"></span><span>Your workspace<br />is stored locally</span></div>
@@ -59,6 +45,18 @@
           <div class="topbar-actions">
             <button class="icon-button" type="button" data-action="toggle-theme" aria-label="Toggle color theme" title="Toggle color theme">◐</button>
             <button class="assistant-shortcut" type="button" data-page="assistant"><span class="assistant-spark">✳</span><span>Ask Jarvis</span></button>
+            <div class="window-controls" aria-label="Window controls">
+              <button class="window-control" type="button" data-window-action="minimize" aria-label="Minimize" title="Minimize">
+                <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6h8" /></svg>
+              </button>
+              <button class="window-control" type="button" data-window-action="maximize" aria-label="Maximize" title="Maximize">
+                <svg class="maximize-icon" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="2.5" width="7" height="7" /></svg>
+                <svg class="restore-icon" viewBox="0 0 12 12" aria-hidden="true"><path d="M4 3h5v5M3 5v5h5" /></svg>
+              </button>
+              <button class="window-control window-control-close" type="button" data-window-action="close" aria-label="Close" title="Close">
+                <svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 3 6 6M9 3 3 9" /></svg>
+              </button>
+            </div>
           </div>
         </header>
 
@@ -119,7 +117,6 @@
           </section>
 
           <section id="browserPage" class="app-page browser-page" data-page-view="browser" hidden>
-            <div class="section-intro browser-intro"><div><p class="eyebrow">THE WEB, IN YOUR FLOW</p><h2>Browser</h2><p class="muted">Your Jarvis browser, right where you left it.</p></div><button id="newTabButton" class="primary-button" type="button"><span aria-hidden="true">＋</span> New tab</button></div>
             <div id="nav" class="browser-toolbar">
               <button id="browserHomeButton" class="toolbar-button" type="button" title="Dashboard" aria-label="Dashboard" data-page="dashboard">⌂</button>
               <button id="backButton" class="toolbar-button" type="button" title="Back" aria-label="Back" onclick="goBack()"><img class="icon" src="./icon/chevron-left.svg" alt="" /></button>
@@ -127,18 +124,72 @@
               <button id="reloadButton" class="toolbar-button" type="button" title="Reload" aria-label="Reload" onclick="reloadPage()"><img class="icon" src="./icon/refresh-cw.svg" alt="" /></button>
               <div class="urlBlock"><img src="./icon/logo.svg" alt="" /><input id="url" type="text" value="https://example.com" autocomplete="off" spellcheck="false" aria-label="Address and search" /></div>
               <button id="navigateButton" class="toolbar-button navigate-button" type="button" title="Go" aria-label="Go" onclick="navigate()"><img class="icon" src="./icon/send.svg" alt="" /></button>
+              <button id="browserAssistantButton" class="toolbar-button browser-assistant-button" type="button" aria-label="Ask Jarvis" title="Ask Jarvis" aria-expanded="false">
+                <img class="icon" src="./icon/message-circle.svg" alt="" />
+              </button>
+              <button class="toolbar-button browser-tool-button" type="button" data-browser-tool="bookmark" aria-label="Save page" title="Save page" aria-pressed="false">
+                <svg class="icon bookmark-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="m12 3 2.75 5.57 6.15.9-4.45 4.34 1.05 6.13L12 17.05l-5.5 2.89 1.05-6.13L3.1 9.47l6.15-.9L12 3Z" />
+                </svg>
+              </button>
+              <button class="toolbar-button browser-tool-button" type="button" data-browser-tool="history" aria-label="Browsing history" title="Browsing history">
+                <img class="icon" src="./icon/clock.svg" alt="" />
+              </button>
+              <button class="toolbar-button browser-tool-button" type="button" data-browser-tool="downloads" aria-label="Downloads" title="Downloads">
+                <img class="icon" src="./icon/download.svg" alt="" />
+              </button>
+              <button class="toolbar-button browser-tool-button" type="button" data-browser-tool="private" aria-label="Private browsing unavailable" aria-disabled="true" title="Private browsing unavailable">
+                <img class="icon" src="./icon/eye-off.svg" alt="" />
+              </button>
+              <button id="newTabButton" class="toolbar-button new-tab-button" type="button" aria-label="New tab" title="New tab"><span aria-hidden="true">＋</span></button>
             </div>
             <div id="tabs" class="browser-tabs" role="tablist" aria-label="Browser tabs"></div>
             <div class="browser-utilities">
-              <div class="utility-actions">
-                <button class="utility-button" type="button" data-browser-tool="bookmark" aria-label="Bookmark this page">☆ <span>Bookmark</span></button>
-                <button class="utility-button" type="button" data-browser-tool="history" aria-label="Open browsing history">◷ <span>History</span></button>
-                <button class="utility-button" type="button" data-browser-tool="downloads" aria-label="Open downloads">↓ <span>Downloads</span></button>
-                <button class="utility-button" type="button" data-browser-tool="private" aria-label="Private browsing unavailable" aria-disabled="true" title="Private sessions are not configured">◉ <span>Private</span></button>
-              </div>
               <div id="browserUtilityPanel" class="utility-panel" hidden><div class="card-heading"><h3 id="utilityPanelTitle"></h3><button class="icon-button" type="button" data-action="close-utility" aria-label="Close panel">×</button></div><div id="browserUtilityContent"></div></div>
             </div>
-            <div id="layout"><div id="browser" aria-label="Browser content"></div></div>
+            <div id="layout" class="browser-layout">
+              <div id="browser" aria-label="Browser content"></div>
+              <aside id="browserAssistantPanel" class="browser-assistant-panel" aria-label="Ask Jarvis" aria-hidden="true" inert>
+                <div class="browser-assistant-heading">
+                  <div><span class="assistant-spark">✳</span><strong>Ask Jarvis</strong></div>
+                  <div class="assistant-tabs" role="tablist" aria-label="Jarvis panel views">
+                    <button id="assistantLiveTab" class="assistant-tab active" type="button" role="tab" aria-selected="true" aria-controls="assistantLiveView" tabindex="0">Live</button>
+                    <button id="assistantLogsTab" class="assistant-tab" type="button" role="tab" aria-selected="false" aria-controls="assistantLogsView" tabindex="-1">Jarvis Logs</button>
+                  </div>
+                  <button id="closeBrowserAssistant" class="icon-button" type="button" aria-label="Close Ask Jarvis" title="Close">×</button>
+                </div>
+                <section id="assistantLiveView" class="assistant-panel-view" role="tabpanel" aria-labelledby="assistantLiveTab">
+                  <div id="aiForm">
+                    <div id="assistantConversation" class="assistant-conversation" role="log" aria-label="Conversation with Jarvis" aria-live="polite"></div>
+                    <form id="ai-form" autocomplete="off" onsubmit="event.preventDefault(); return false;">
+                      <div class="statusBlock" role="status" aria-live="polite">
+                        <img src="./icon/logo.svg" alt="" />
+                        <p id="statusText">Ready when you are</p>
+                      </div>
+                      <div class="cmd-box">
+                        <textarea
+                          id="cmd"
+                          placeholder="Ask Jarvis to browse, search, or interact with this page..."
+                          rows="3"
+                          autocomplete="off"
+                          spellcheck="false"
+                        ></textarea>
+                        <button id="submitCmdBtn" type="button" class="cmd-send-btn" title="Send Command" aria-label="Send command">
+                          <img src="./icon/send.svg" alt="" />
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                </section>
+                <section id="assistantLogsView" class="assistant-panel-view assistant-logs-view" role="tabpanel" aria-labelledby="assistantLogsTab" hidden inert>
+                  <div class="assistant-panel-toolbar">
+                    <button id="assistantDismissPopupBtn" class="subtle-button" type="button">🛡 Dismiss popup</button>
+                  </div>
+                  <div id="inactivityStatus" class="inactivity-status" role="status">Inactivity guard ready</div>
+                  <div id="logs" class="panel-view active" role="log" aria-label="Jarvis activity logs" aria-live="polite"></div>
+                </section>
+              </aside>
+            </div>
           </section>
 
           <section id="financePage" class="app-page section-page" data-page-view="finance" hidden>
@@ -179,75 +230,56 @@
             <section class="dashboard-card upcoming-card"><div class="card-heading"><div><p class="eyebrow">ON THE HORIZON</p><h3>Upcoming events</h3></div></div><div id="upcomingEvents" class="event-list"></div></section>
           </section>
 
-    <section id="assistantPage" class="app-page assistant-page" data-page-view="assistant" hidden>
-    <div id="assistantLayout">
-      <!-- ========================================================
-           BROWSER
-           ======================================================== -->
+          <section id="foodPage" class="app-page section-page food-page" data-page-view="food" hidden>
+            <div class="section-intro">
+              <div><p class="eyebrow">PLAN A NOURISHING DAY</p><h2>Food</h2><p class="muted">Plan breakfast and dinner around protein and the produce you have.</p></div>
+              <span class="sample-badge">SAVED ON THIS DEVICE</span>
+            </div>
+            <section class="food-section">
+              <div class="food-section-heading"><div><p class="eyebrow">TODAY'S MEALS</p><h3>Meal today</h3></div><span id="foodTodayDate" class="muted"></span></div>
+              <div class="food-meals-grid">
+                <form class="dashboard-card food-meal-card" data-meal-form="breakfast">
+                  <div class="food-meal-heading"><div><span class="food-meal-icon">☀</span><div><p class="eyebrow">MORNING</p><h3>Breakfast</h3></div></div><span class="food-protein-value"><span id="breakfastProteinLabel">0</span> g protein</span></div>
+                  <label class="food-field">Meal plan<textarea id="breakfastFoods" name="foods" rows="2" maxlength="240" placeholder="Add your breakfast foods"></textarea></label>
+                  <div class="food-meal-actions"><label class="food-protein-input">Protein estimate <span><input id="breakfastProtein" name="protein" type="number" min="0" max="300" step="1" value="0" inputmode="numeric" /> g</span></label><button class="subtle-button" type="submit">Save breakfast</button></div>
+                </form>
+                <form class="dashboard-card food-meal-card" data-meal-form="dinner">
+                  <div class="food-meal-heading"><div><span class="food-meal-icon dinner-icon">☾</span><div><p class="eyebrow">EVENING</p><h3>Dinner</h3></div></div><span class="food-protein-value"><span id="dinnerProteinLabel">0</span> g protein</span></div>
+                  <label class="food-field">Meal plan<textarea id="dinnerFoods" name="foods" rows="2" maxlength="240" placeholder="Add your dinner foods"></textarea></label>
+                  <div class="food-meal-actions"><label class="food-protein-input">Protein estimate <span><input id="dinnerProtein" name="protein" type="number" min="0" max="300" step="1" value="0" inputmode="numeric" /> g</span></label><button class="subtle-button" type="submit">Save dinner</button></div>
+                </form>
+              </div>
+            </section>
+            <div class="food-content-grid">
+              <section class="dashboard-card food-protein-card">
+                <div class="card-heading"><div><p class="eyebrow">PROTEIN PLAN</p><h3>Protein by meal</h3></div><span class="sample-badge">YOUR ESTIMATES</span></div>
+                <div class="food-protein-chart-wrap">
+                  <div id="proteinPieChart" class="food-protein-pie" role="img" aria-label="No protein planned yet"></div>
+                  <div class="food-protein-legend">
+                    <div><span class="food-legend-dot breakfast-dot"></span><span>Breakfast</span><strong><span id="breakfastChartProtein">0</span> g</strong></div>
+                    <div><span class="food-legend-dot dinner-dot"></span><span>Dinner</span><strong><span id="dinnerChartProtein">0</span> g</strong></div>
+                    <div class="food-protein-total"><span>Planned total</span><strong><span id="totalChartProtein">0</span> g</strong></div>
+                  </div>
+                </div>
+                <p class="chart-footnote">Enter your estimated protein for each meal. This is a planning aid, not nutrition advice.</p>
+              </section>
+              <section class="dashboard-card food-produce-card">
+                <div class="card-heading"><div><p class="eyebrow">WHAT YOU HAVE</p><h3>Available fruits &amp; vegetables</h3></div></div>
+                <form id="produceForm" class="produce-form">
+                  <label class="visually-hidden" for="produceName">Fruit or vegetable</label>
+                  <input id="produceName" name="name" maxlength="48" placeholder="Add produce you have" required />
+                  <label class="visually-hidden" for="produceType">Produce type</label>
+                  <select id="produceType" name="type" aria-label="Produce type"><option value="fruit">Fruit</option><option value="vegetable">Vegetable</option></select>
+                  <button class="primary-button" type="submit" aria-label="Add produce">＋</button>
+                </form>
+                <div class="produce-group"><h4>Fruits</h4><div id="availableFruits" class="produce-list"></div></div>
+                <div class="produce-group"><h4>Vegetables</h4><div id="availableVegetables" class="produce-list"></div></div>
+                <p class="chart-footnote">Your produce list is saved locally on this device.</p>
+              </section>
+            </div>
+            <p id="foodStatus" class="food-status" role="status" aria-live="polite"></p>
+          </section>
 
-      <div id="assistantBrowser"></div>
-
-      <!-- ========================================================
-           AI VISUAL AREA
-           ======================================================== -->
-
-      <div id="ai">
-        <div class="animation">
-          <div class="animationLayerColor"></div>
-
-          <div class="animationLayer"></div>
-        </div>
-      </div>
-
-      <!-- ========================================================
-           AI COMMAND PANEL
-           ======================================================== -->
-
-      <div id="aiForm">
-        <form
-          id="ai-form"
-          autocomplete="off"
-          onsubmit="
-            event.preventDefault();
-            return false;
-          "
-        >
-          <div class="statusBlock">
-            <img src="./icon/logo.svg" alt="Jarvis" />
-
-            <p id="statusText">
-              Limit your availability to create exclusivity...
-            </p>
-          </div>
-
-          <div class="cmd-box">
-            <textarea
-              id="cmd"
-              placeholder="Type command (e.g. 'get data from .tzQn0o' or 'watch data from .tzQn0o every 5s'). Press Enter or click Send..."
-              rows="3"
-              autocomplete="off"
-              spellcheck="false"
-            ></textarea>
-            <button
-              id="submitCmdBtn"
-              type="button"
-              class="cmd-send-btn"
-              title="Send Command"
-            >
-              <img src="./icon/send.svg" alt="Send" />
-            </button>
-          </div>
-        </form>
-
-        <div class="assistant-panel-toolbar">
-          <span class="assistant-panel-label">Jarvis Logs</span>
-          <button id="assistantDismissPopupBtn" class="subtle-button" type="button">🛡 Dismiss popup</button>
-        </div>
-        <div id="inactivityStatus" class="inactivity-status" role="status">Inactivity guard ready</div>
-        <div id="logs" class="panel-view active"></div>
-      </div>
-    </div>
-    </section>
     <dialog id="eventDialog" class="event-dialog">
       <form id="eventForm" class="event-form">
         <div class="event-form-header">
@@ -343,6 +375,7 @@
         }
 
         const div = document.createElement("div");
+        div.className = "jarvis-log-entry";
 
         div.innerText = text;
 
@@ -359,7 +392,12 @@
         const status = $("statusText");
 
         if (status) {
-          status.innerText = String(message || "");
+          const text = String(message || "");
+          status.innerText = text;
+          status.closest(".statusBlock").dataset.state =
+            /analyz/i.test(text) ? "analyzing" :
+            /working/i.test(text) ? "working" :
+            /unable|error|failed/i.test(text) ? "error" : "ready";
         }
       }
 
@@ -678,7 +716,7 @@
           // Success
           //------------------------------------------------------
 
-          setStatus("Jarvis Browser is ready");
+          setStatus("Ready when you are");
 
           log(`✅ Navigation completed: ${url}`);
 
@@ -989,7 +1027,7 @@
           // Final status
           //------------------------------------------------------
 
-          setStatus("Jarvis Browser is ready");
+          setStatus("Ready when you are");
 
           log("✅ Jarvis Browser is ready");
 

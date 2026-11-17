@@ -9,6 +9,8 @@
     events: "jarvis.calendar.events",
     water: "jarvis.health.water",
     reminders: "jarvis.calendar.reminders",
+    foodPlans: "jarvis.food.meals",
+    produce: "jarvis.food.produce",
     sidebarCollapsed: "jarvis.dashboard.sidebarCollapsed",
   };
 
@@ -18,7 +20,7 @@
     "finance",
     "health",
     "calendar",
-    "assistant",
+    "food",
   ]);
 
   const load = (key, fallback) => {
@@ -100,6 +102,8 @@
     calendarView: "month",
     remindersEnabled: load(keys.reminders, false) === true,
     water: load(keys.water, {}),
+    foodPlans: load(keys.foodPlans, {}),
+    produce: load(keys.produce, []),
   };
 
   if (!Array.isArray(store.bookmarks)) store.bookmarks = [];
@@ -125,6 +129,17 @@
       /^\d{4}-\d{2}-\d{2}$/.test(event.date),
   );
   if (!store.water || typeof store.water !== "object") store.water = {};
+  if (!store.foodPlans || typeof store.foodPlans !== "object" || Array.isArray(store.foodPlans)) {
+    store.foodPlans = {};
+  }
+  if (!Array.isArray(store.produce)) store.produce = [];
+  store.produce = store.produce.filter(
+    (item) =>
+      item &&
+      typeof item.id === "string" &&
+      typeof item.name === "string" &&
+      ["fruit", "vegetable"].includes(item.type),
+  );
 
   store.tabs = store.tabs.filter(
     (tab) => tab && typeof tab.id === "string" && validWebUrl(tab.url),
@@ -147,7 +162,51 @@
     save(keys.activeTab, store.activeTab);
   }
 
+  function setBrowserAssistantOpen(isOpen, focusInput = false) {
+    const panel = document.getElementById("browserAssistantPanel");
+    const button = document.getElementById("browserAssistantButton");
+    panel.hidden = !isOpen;
+    panel.inert = !isOpen;
+    panel.setAttribute("aria-hidden", String(!isOpen));
+    button.setAttribute("aria-expanded", String(isOpen));
+    document.body.classList.toggle("browser-assistant-open", isOpen);
+    requestAnimationFrame(resizeBrowserHost);
+    if (isOpen && focusInput) {
+      requestAnimationFrame(() => document.getElementById("cmd").focus());
+    } else if (!isOpen) {
+      button.focus();
+    }
+  }
+
+  function setAssistantTab(tabName, focusTab = false) {
+    const tabs = [
+      document.getElementById("assistantLiveTab"),
+      document.getElementById("assistantLogsTab"),
+    ];
+    const views = [
+      document.getElementById("assistantLiveView"),
+      document.getElementById("assistantLogsView"),
+    ];
+    const selectedIndex = tabName === "logs" ? 1 : 0;
+
+    tabs.forEach((tab, index) => {
+      const selected = index === selectedIndex;
+      tab.classList.toggle("active", selected);
+      tab.setAttribute("aria-selected", String(selected));
+      tab.tabIndex = selected ? 0 : -1;
+      views[index].hidden = !selected;
+      views[index].inert = !selected;
+    });
+
+    if (focusTab) tabs[selectedIndex].focus();
+  }
+
   function setPage(name) {
+    if (name === "assistant") {
+      setPage("browser");
+      setBrowserAssistantOpen(true, true);
+      return;
+    }
     if (!pages.has(name)) return;
 
     document.body.dataset.page = name;
@@ -172,7 +231,98 @@
 
     if (name === "dashboard") renderHome();
     if (name === "calendar") renderCalendar();
+    if (name === "food") renderFoodPage();
     requestAnimationFrame(resizeBrowserHost);
+  }
+
+  function getFoodPlan(dateKey) {
+    const saved = store.foodPlans[dateKey] || {};
+    return ["breakfast", "dinner"].reduce((plan, meal) => {
+      const savedMeal = saved[meal] || {};
+      const protein = Number(savedMeal.protein);
+      plan[meal] = {
+        foods: typeof savedMeal.foods === "string" ? savedMeal.foods : "",
+        protein: Number.isFinite(protein)
+          ? Math.max(0, Math.min(300, Math.round(protein)))
+          : 0,
+      };
+      return plan;
+    }, {});
+  }
+
+  function renderFoodPage() {
+    const today = new Date();
+    const dateKey = formatDateKey(today);
+    const plan = getFoodPlan(dateKey);
+    document.getElementById("foodTodayDate").textContent =
+      new Intl.DateTimeFormat(undefined, {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+      }).format(today);
+
+    ["breakfast", "dinner"].forEach((meal) => {
+      document.getElementById(`${meal}Foods`).value = plan[meal].foods;
+      document.getElementById(`${meal}Protein`).value = String(plan[meal].protein);
+      document.getElementById(`${meal}ProteinLabel`).textContent =
+        String(plan[meal].protein);
+      document.getElementById(`${meal}ChartProtein`).textContent =
+        String(plan[meal].protein);
+    });
+
+    const breakfastProtein = plan.breakfast.protein;
+    const dinnerProtein = plan.dinner.protein;
+    const totalProtein = breakfastProtein + dinnerProtein;
+    const breakfastPercent = totalProtein
+      ? (breakfastProtein / totalProtein) * 100
+      : 0;
+    const chart = document.getElementById("proteinPieChart");
+    chart.style.background = totalProtein
+      ? `conic-gradient(var(--color-primary) 0% ${breakfastPercent}%, var(--color-secondary) ${breakfastPercent}% 100%)`
+      : "conic-gradient(var(--color-border) 0% 100%)";
+    chart.setAttribute(
+      "aria-label",
+      totalProtein
+        ? `Estimated protein: ${breakfastProtein} grams at breakfast and ${dinnerProtein} grams at dinner`
+        : "No protein planned yet",
+    );
+    chart.dataset.total = String(totalProtein);
+    document.getElementById("totalChartProtein").textContent =
+      String(totalProtein);
+    renderProduce();
+  }
+
+  function renderProduceGroup(type, containerId) {
+    const container = document.getElementById(containerId);
+    const items = store.produce.filter((item) => item.type === type);
+    if (!items.length) {
+      container.replaceChildren(
+        makeElement(
+          "span",
+          "produce-empty",
+          `No ${type === "fruit" ? "fruits" : "vegetables"} added yet`,
+        ),
+      );
+      return;
+    }
+
+    container.replaceChildren(
+      ...items.map((item) => {
+        const chip = makeElement("span", "produce-chip");
+        chip.append(makeElement("span", "", item.name));
+        const remove = makeElement("button", "produce-remove", "×");
+        remove.type = "button";
+        remove.dataset.removeProduce = item.id;
+        remove.setAttribute("aria-label", `Remove ${item.name}`);
+        chip.append(remove);
+        return chip;
+      }),
+    );
+  }
+
+  function renderProduce() {
+    renderProduceGroup("fruit", "availableFruits");
+    renderProduceGroup("vegetable", "availableVegetables");
   }
 
   function resizeBrowserHost() {
@@ -681,10 +831,9 @@
     const isSaved = store.bookmarks.some(
       (item) => item.url === document.getElementById("url").value,
     );
-    button.replaceChildren(
-      document.createTextNode(isSaved ? "★ " : "☆ "),
-      makeElement("span", "", isSaved ? "Saved" : "Bookmark"),
-    );
+    button.setAttribute("aria-pressed", String(isSaved));
+    button.setAttribute("aria-label", isSaved ? "Remove saved page" : "Save page");
+    button.title = isSaved ? "Remove saved page" : "Save page";
   }
 
   function updateTheme(theme) {
@@ -796,6 +945,42 @@
       );
     });
 
+    document
+      .getElementById("browserAssistantButton")
+      .addEventListener("click", () => {
+        setBrowserAssistantOpen(
+          document.getElementById("browserAssistantPanel").hidden,
+          true,
+        );
+      });
+    document
+      .getElementById("closeBrowserAssistant")
+      .addEventListener("click", () => setBrowserAssistantOpen(false));
+
+    setAssistantTab("live");
+    const assistantTabs = [
+      document.getElementById("assistantLiveTab"),
+      document.getElementById("assistantLogsTab"),
+    ];
+    assistantTabs.forEach((tab, index) => {
+      tab.addEventListener("click", () =>
+        setAssistantTab(index === 0 ? "live" : "logs"),
+      );
+      tab.addEventListener("keydown", (event) => {
+        if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
+          return;
+        }
+        event.preventDefault();
+        const nextIndex =
+          event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? 1
+              : (index + (event.key === "ArrowRight" ? 1 : -1) + 2) % 2;
+        setAssistantTab(nextIndex === 0 ? "live" : "logs", true);
+      });
+    });
+
     document.querySelectorAll("[data-page]").forEach((button) => {
       button.addEventListener("click", () => setPage(button.dataset.page));
     });
@@ -808,6 +993,62 @@
       button.addEventListener("click", () => {
         updateTheme(document.body.dataset.theme === "dark" ? "light" : "dark");
       });
+    });
+
+    document.querySelectorAll("[data-meal-form]").forEach((form) => {
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const formData = new FormData(form);
+        const meal = form.dataset.mealForm;
+        const dateKey = formatDateKey(new Date());
+        const protein = Number(formData.get("protein"));
+        const plan = getFoodPlan(dateKey);
+        plan[meal] = {
+          foods: String(formData.get("foods") || "").trim(),
+          protein: Number.isFinite(protein)
+            ? Math.max(0, Math.min(300, Math.round(protein)))
+            : 0,
+        };
+        store.foodPlans[dateKey] = plan;
+        const saved = save(keys.foodPlans, store.foodPlans);
+        document.getElementById("foodStatus").textContent = saved
+          ? "Meal plan saved on this device."
+          : "Meal plan could not be saved. Check available device storage.";
+        renderFoodPage();
+      });
+    });
+
+    document.getElementById("produceForm").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      const formData = new FormData(form);
+      const name = String(formData.get("name") || "").trim();
+      if (!name) return;
+      store.produce.push({
+        id: crypto.randomUUID(),
+        name,
+        type: String(formData.get("type")),
+      });
+      const saved = save(keys.produce, store.produce);
+      document.getElementById("foodStatus").textContent = saved
+        ? "Produce list saved on this device."
+        : "Produce list could not be saved. Check available device storage.";
+      form.reset();
+      renderProduce();
+      document.getElementById("produceName").focus();
+    });
+
+    document.querySelector(".food-page").addEventListener("click", (event) => {
+      const removeButton = event.target.closest("[data-remove-produce]");
+      if (!removeButton) return;
+      store.produce = store.produce.filter(
+        (item) => item.id !== removeButton.dataset.removeProduce,
+      );
+      const saved = save(keys.produce, store.produce);
+      document.getElementById("foodStatus").textContent = saved
+        ? "Produce removed from your local list."
+        : "Produce list could not be saved. Check available device storage.";
+      renderProduce();
     });
 
     document
@@ -950,6 +1191,14 @@
     });
 
     document.addEventListener("keydown", (event) => {
+      if (
+        event.key === "Escape" &&
+        !document.getElementById("browserAssistantPanel").hidden
+      ) {
+        setBrowserAssistantOpen(false);
+        return;
+      }
+
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "l") {
         event.preventDefault();
         if (document.body.dataset.page === "browser") {
@@ -1019,8 +1268,8 @@
       });
     });
 
-    document.getElementById("windowChrome")?.addEventListener("dblclick", (event) => {
-      if (event.target.closest("[data-window-action]")) return;
+    document.querySelector(".topbar")?.addEventListener("dblclick", (event) => {
+      if (event.target.closest("button, a, input, textarea, select")) return;
       windowApi?.toggleMaximizeWindow?.().then(setMaximizedState).catch((error) => {
         console.error("Unable to toggle window maximization:", error);
       });
