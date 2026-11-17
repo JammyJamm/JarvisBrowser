@@ -33,7 +33,7 @@
 // ✔ Single /run execution lock
 // ✔ Duplicate request protection
 // ✔ No networkidle waits
-// ✔ No snapshot before deterministic fast path
+// ✔ LLM-planned browser actions
 // ✔ Browser connection is lazy
 // ✔ Browser connection is not required for chat
 // ✔ Sequential action execution
@@ -57,7 +57,6 @@ import Resolver from "./resolver.js";
 import ToolMap from "./tool-map.js";
 
 import CommandRouter from "./command-router.js";
-import { fastPath } from "./planner/fast-path.js";
 
 import aiEngine from "./aiEngine.js";
 import {
@@ -105,8 +104,6 @@ const PORT = Number(process.env.PORT || 9000);
 
 const CONFIG = {
   model: process.env.AI_MODEL || "qwen3:8b",
-
-  fastPath: process.env.FAST_PATH !== "false",
 
   endpoint:
     process.env.OLLAMA_ENDPOINT || "http://localhost:11434/api/generate",
@@ -325,8 +322,6 @@ const stats = {
 
   plannerCalls: 0,
 
-  fastPathCalls: 0,
-
   resolverCalls: 0,
 
   toolExecutions: 0,
@@ -466,7 +461,7 @@ function validateAutomationPage(page) {
 
   const url = typeof page.url === "function" ? page.url() : "";
 
-  if (isDevToolsURL(url)) {
+  if (isDevToolsURL(url) || !/^https?:\/\//i.test(url)) {
     throw new Error(`Invalid automation page selected: ${url}`);
   }
 
@@ -923,41 +918,6 @@ function normalizePlan(plan) {
 
     steps,
   };
-}
-
-//==========================================================
-// FAST PATH
-//==========================================================
-//
-// IMPORTANT
-//
-// fastPath() gets the first chance.
-//
-// Snapshot + Qwen only happens when fastPath cannot
-// understand the command.
-//
-//==========================================================
-
-function getFastPlan(command) {
-  if (!CONFIG.fastPath || typeof fastPath !== "function") {
-    return null;
-  }
-
-  try {
-    const plan = fastPath(command);
-
-    if (plan && Array.isArray(plan.steps) && plan.steps.length) {
-      stats.fastPathCalls++;
-
-      return normalizePlan(plan);
-    }
-  } catch (err) {
-    if (CONFIG.debug) {
-      warn("[FAST PATH] Failed:", err.message);
-    }
-  }
-
-  return null;
 }
 
 //==========================================================
@@ -1487,83 +1447,72 @@ app.post("/run", async (req, res) => {
 
     validateAutomationPage(page);
 
-    //----------------------------------------------------
-    // FAST PATH FIRST
-    //
-    // This is BEFORE snapshot.
-    //
-    // Therefore simple commands don't wait for Qwen.
-    //----------------------------------------------------
+    let pageText = "";
 
-    let plan = getFastPlan(command);
+    try {
+      const snapshot = await captureSnapshot();
+      pageText = String(snapshot?.text || "");
 
-    let plannerSource = plan ? "fast-path" : null;
-
-    //----------------------------------------------------
-    // FALLBACK TO LLM PLANNER
-    //----------------------------------------------------
-
-    if (!plan) {
-      let pageText = "";
-
-      //--------------------------------------------------
-      // Snapshot only when planner is actually needed.
-      //--------------------------------------------------
-
-      try {
-        const snapshot = await captureSnapshot();
-
-        pageText = String(snapshot?.text || "");
-
-        if (CONFIG.debug) {
-          console.log("[RUN] Snapshot:", pageText.length, "characters");
-        }
-      } catch (err) {
-        warn("[RUN] Snapshot unavailable:", err.message);
+      if (CONFIG.debug) {
+        console.log("[RUN] Snapshot:", pageText.length, "characters");
       }
+    } catch (err) {
+      warn("[RUN] Snapshot unavailable:", err.message);
+    }
 
-      //--------------------------------------------------
-      // Qwen
-      //--------------------------------------------------
+    stats.plannerCalls++;
+    let plannerResult;
+    let plannerSource = "qwen";
 
-      stats.plannerCalls++;
+    try {
+      plannerResult = await planner.plan(command, pageText);
+      plannerSource = plannerResult?.source || plannerSource;
+    } catch (err) {
+      error("[RUN] Planner Error:", err.message);
 
-      try {
-        plan = await planner.plan(command, pageText);
+      stopTimer(started);
 
-        plannerSource = "qwen";
-      } catch (err) {
-        error("[RUN] Planner Error:", err.message);
+      return res.status(500).json({
+        success: false,
 
-        stopTimer(started);
+        mode: "action",
 
-        return res.status(500).json({
-          success: false,
+        command,
 
-          mode: "action",
+        route,
 
+        error: `Planner failed: ${err.message}`,
+
+        statistics: {
+          plannerCalls: stats.plannerCalls,
+
+          duration: stats.lastRequestTime,
+        },
+      });
+    }
+
+    if (plannerResult?.mode === "chat") {
+      stats.chatCalls++;
+      stopTimer(started);
+      return res.json(
+        success({
+          mode: "chat",
           command,
-
+          reply: plannerResult.reply || "I couldn't turn that into a browser action.",
           route,
-
-          error: `Planner failed: ${err.message}`,
-
-          statistics: {
-            plannerCalls: stats.plannerCalls,
-
-            duration: stats.lastRequestTime,
-          },
-        });
-      }
+          plan: plannerResult,
+          plannerSource,
+        }),
+      );
     }
 
     //----------------------------------------------------
     // NORMALIZE PLAN
     //----------------------------------------------------
 
-    plan = normalizePlan(plan);
+    const plan = normalizePlan(plannerResult);
 
-    serverState.lastPlan = plan;
+    serverState.lastPlan = plan || plannerResult;
 
     //----------------------------------------------------
     // VALIDATE PLAN
@@ -1581,7 +1530,7 @@ app.post("/run", async (req, res) => {
 
         route,
 
-        plan,
+        plan: plannerResult,
 
         error: "Planner returned an empty or invalid execution plan.",
 
@@ -1668,8 +1617,6 @@ app.post("/run", async (req, res) => {
 
           plannerCalls: stats.plannerCalls,
 
-          fastPathCalls: stats.fastPathCalls,
-
           toolExecutions: stats.toolExecutions,
 
           duration: stats.lastRequestTime,
@@ -1704,8 +1651,6 @@ app.post("/run", async (req, res) => {
 
           plannerCalls: stats.plannerCalls,
 
-          fastPathCalls: stats.fastPathCalls,
-
           resolverCalls: stats.resolverCalls,
 
           toolExecutions: stats.toolExecutions,
@@ -1734,8 +1679,6 @@ app.post("/run", async (req, res) => {
         routerCalls: stats.routerCalls,
 
         plannerCalls: stats.plannerCalls,
-
-        fastPathCalls: stats.fastPathCalls,
 
         toolExecutions: stats.toolExecutions,
 
@@ -2733,7 +2676,7 @@ try {
       `💬 Chat AI: ${serverState.chatAIReady ? "READY" : "NOT READY"}`,
     );
 
-    console.log(`⚡ Fast Path: ${CONFIG.fastPath ? "ENABLED" : "DISABLED"}`);
+    console.log("🧠 Browser commands: LLM planner → Playwright");
 
     console.log("==========================================");
 

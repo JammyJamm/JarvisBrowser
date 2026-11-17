@@ -217,9 +217,24 @@ export default class Planner {
         //==================================================
 
         if (llmResult?.mode === "action") {
-          this.stats.actionResponses++;
+          const normalized = this.normalizeAdvanced(llmResult, command);
+          const validation = this.validatePlan(normalized, command);
 
-          return llmResult;
+          if (validation.valid) {
+            this.stats.actionResponses++;
+            return normalized;
+          }
+
+          this.warn("LLM planner returned an invalid action plan:", validation.errors);
+          const recovered = this.recoverSimpleCommand(command);
+          if (recovered) {
+            const recoveredValidation = this.validatePlan(recovered, command);
+            if (recoveredValidation.valid) {
+              this.stats.recoveryHits++;
+              this.warn("Recovered invalid LLM plan:", recovered);
+              return recovered;
+            }
+          }
         }
 
         //==================================================
@@ -227,9 +242,28 @@ export default class Planner {
         //==================================================
 
         if (llmResult?.mode === "chat") {
-          this.stats.chatResponses++;
+          const recovered = this.recoverSimpleCommand(command);
+          if (recovered) {
+            const validation = this.validatePlan(recovered, command);
+            if (validation.valid) {
+              this.stats.recoveryHits++;
+              this.warn("Recovered browser action returned as chat:", recovered);
+              return recovered;
+            }
+          }
 
+          this.stats.chatResponses++;
           return llmResult;
+        }
+
+        const recovered = this.recoverSimpleCommand(command);
+        if (recovered) {
+          const validation = this.validatePlan(recovered, command);
+          if (validation.valid) {
+            this.stats.recoveryHits++;
+            this.warn("Recovered command after the LLM returned no usable plan:", recovered);
+            return recovered;
+          }
         }
       }
 
@@ -1725,6 +1759,58 @@ FINAL RULES
     let match;
 
     //======================================================
+    // NAVIGATION
+    //======================================================
+
+    match = text.match(
+      /^(?:(?:please|jarvis)[,\s]+)?(?:go(?:\s+to)?|navigate(?:\s+to)?|move(?:\s+to)?|visit|browse|open)\s+(.+?)\s*$/i,
+    );
+
+    if (match) {
+      let destination = match[1].trim().replace(/^["']|["']$/g, "");
+      destination = destination.replace(/[.,!?]+$/, "").trim();
+      destination = destination.replace(/\s+(?:now|please)$/i, "").trim();
+
+      if (!destination || /\s/.test(destination)) {
+        destination = "";
+      }
+
+      let url;
+      try {
+        const parsed = new URL(
+          /^[a-z][a-z\d+.-]*:\/\//i.test(destination)
+            ? destination
+            : `https://${destination}`,
+        );
+        if (
+          ["http:", "https:"].includes(parsed.protocol) &&
+          parsed.hostname.includes(".") &&
+          !parsed.username &&
+          !parsed.password
+        ) {
+          url = parsed.href;
+        }
+      } catch {
+        url = null;
+      }
+
+      if (url) {
+        return {
+          mode: "action",
+          source: "deterministic-recovery",
+          steps: [
+            {
+              tool: "navigate",
+              args: { url },
+            },
+          ],
+        };
+      }
+
+      if (!/^open\s+/i.test(text)) return null;
+    }
+
+    //======================================================
     // CLICK
     //======================================================
 
@@ -1733,53 +1819,20 @@ FINAL RULES
     );
 
     if (match) {
-      let target = match[1].trim();
-
-      target = this.cleanTarget(target);
+      const target = this.cleanTarget(match[1].trim());
 
       if (target) {
         return {
           mode: "action",
-
           source: "deterministic-recovery",
-
           steps: [
             {
               tool: "click",
-
-              args: {
-                target,
-              },
+              args: { target },
             },
           ],
         };
       }
-    }
-
-    //======================================================
-    // NAVIGATION
-    //======================================================
-
-    match = text.match(
-      /^(?:go\s+to|navigate\s+to|visit|browse|open)\s+(https?:\/\/\S+)$/i,
-    );
-
-    if (match) {
-      return {
-        mode: "action",
-
-        source: "deterministic-recovery",
-
-        steps: [
-          {
-            tool: "navigate",
-
-            args: {
-              url: match[1],
-            },
-          },
-        ],
-      };
     }
 
     //======================================================

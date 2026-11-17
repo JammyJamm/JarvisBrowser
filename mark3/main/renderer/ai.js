@@ -9,6 +9,13 @@
   let currentMsgContainer = null;
   let activeIntervalWatcher = null;
 
+  function logPlannerEvent(message, details) {
+    if (typeof window.jarvisLog !== "function") return;
+    const detailText =
+      details === undefined ? "" : `\n${JSON.stringify(details, null, 2)}`;
+    window.jarvisLog(`[Planner] ${message}${detailText}`);
+  }
+
   // ==========================================================
   // TIME KEY FORMATTER: "04:20pm", "09:05am", etc.
   // ==========================================================
@@ -212,7 +219,12 @@
         method: "POST",
       });
       if (res.ok) {
-        const data = await res.json();
+        let data;
+        try {
+          data = await res.json();
+        } catch {
+          throw new Error(`/run returned an unreadable response (HTTP ${res.status}).`);
+        }
         if (data.dismissed) {
           dismissed = true;
           count += data.count || 1;
@@ -301,20 +313,6 @@
   async function handleUserCommand(cmd) {
     if (!cmd) return;
 
-    // Handle stop commands directly
-    if (
-      /^(?:stop|stop\s+interval|stop\s+watch|cancel\s+interval)$/i.test(cmd)
-    ) {
-      if (activeIntervalWatcher) {
-        activeIntervalWatcher.stop();
-        activeIntervalWatcher = null;
-      }
-      createMessageBlock(cmd);
-      logResp("⏹ Active interval tracking stopped.");
-      setStatus("Interval tracking stopped");
-      return;
-    }
-
     // Stop previous watcher if running
     if (activeIntervalWatcher) {
       activeIntervalWatcher.stop();
@@ -324,6 +322,7 @@
     createMessageBlock(cmd);
     startShimmer();
     setStatus("Analyzing...");
+    logPlannerEvent(`Submitting command to /run: ${cmd}`);
 
     try {
       const res = await fetch(`${BACKEND_URL}/run`, {
@@ -337,7 +336,18 @@
       });
       const data = await res.json();
 
-      if (!data.success) {
+      logPlannerEvent(
+        `/run returned HTTP ${res.status} · ${data.mode || "unknown"} · ${data.plannerSource || "planner source unavailable"}`,
+      );
+      if (data.plan !== undefined) {
+        logPlannerEvent("Planner output", data.plan);
+      }
+      if (data.steps !== undefined) {
+        logPlannerEvent("Playwright execution steps", data.steps);
+      }
+
+      if (!res.ok || !data.success) {
+        logPlannerEvent(`Command failed: ${data.error || "Action failed."}`);
         logResp(`❌ ${data.error || "Action failed."}`);
         setStatus("Unable to complete that request");
         stopShimmer();
@@ -352,6 +362,10 @@
         setStatus("Ready for your next request");
         stopShimmer();
         return;
+      }
+
+      if (!Array.isArray(data.steps)) {
+        throw new Error("The planner response did not include executable Playwright steps.");
       }
 
       // ACTION MODE
@@ -429,6 +443,7 @@
         setStatus("Ready for your next request");
       }
     } catch (err) {
+      logPlannerEvent(`Request failed: ${err.message}`);
       logResp(`❌ ${err.message}`);
       setStatus("Unable to complete that request");
     } finally {

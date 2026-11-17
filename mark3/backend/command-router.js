@@ -183,7 +183,7 @@ export default class CommandRouter {
 
     if (lines.length > 1) {
       const allActions = lines.every((line) =>
-        /^(click|press|tap|type|enter|fill|write|go\s+to|goto|navigate\s+to|open|select|choose|check|uncheck|scroll|upload|refresh|reload|back|go\s+back|forward|go\s+forward|wait|close|switch|download|submit|login|log\s+in|sign\s+in|logout|log\s+out|sign\s+out|search|find)\b/i.test(line)
+        /^(click|press|tap|type|enter|fill|write|go(?:\s+to)?|goto|navigate|move|open|visit|browse|select|choose|check|uncheck|scroll|upload|refresh|reload|back|go\s+back|forward|go\s+forward|wait|close|switch|download|submit|login|log\s+in|sign\s+in|logout|log\s+out|sign\s+out|search|find)\b/i.test(line)
       );
 
       if (allActions) {
@@ -204,7 +204,7 @@ export default class CommandRouter {
 
       /^(type|enter|write|fill)\b/,
 
-      /^(open|go to|navigate|visit)\b/,
+      /^(open|go|navigate|move|visit|browse)\b/,
 
       /^(select|choose)\b/,
 

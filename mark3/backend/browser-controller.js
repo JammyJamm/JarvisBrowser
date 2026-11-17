@@ -127,15 +127,8 @@ class BrowserController {
   }
 
   //==========================================================
-  // PAGE FILTER
-  //
-  // VERY IMPORTANT
-  //
-  // Electron DevTools creates pages such as:
-  //
-  // devtools://devtools/bundled/...
-  //
-  // Those pages must NEVER become the automation target.
+  // Only HTTP(S) pages belong to the embedded browser; the dashboard renderer
+  // is a local file page and must never become the automation target.
   //==========================================================
 
   isAutomationPage(page) {
@@ -151,20 +144,7 @@ class BrowserController {
       return false;
     }
 
-    const blockedProtocols = [
-      "devtools:",
-      "chrome:",
-      "chrome-extension:",
-      "edge:",
-      "about:",
-      "view-source:",
-    ];
-
-    if (blockedProtocols.some((protocol) => url.startsWith(protocol))) {
-      return false;
-    }
-
-    return true;
+    return url.startsWith("http://") || url.startsWith("https://");
   }
 
   //==========================================================
