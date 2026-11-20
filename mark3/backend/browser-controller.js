@@ -78,6 +78,7 @@ class BrowserController {
 
     this.lastConnected = 0;
     this.lastURL = "";
+    this.preferredActiveURL = "";
 
     //--------------------------------------------------
     // EVENTS
@@ -127,8 +128,10 @@ class BrowserController {
   }
 
   //==========================================================
-  // Only HTTP(S) pages belong to the embedded browser; the dashboard renderer
-  // is a local file page and must never become the automation target.
+  // AUTOMATION PAGE FILTER
+  //
+  // Protects against selecting DevTools, extensions, or the Electron
+  // app's own UI shell (index.html).
   //==========================================================
 
   isAutomationPage(page) {
@@ -140,11 +143,20 @@ class BrowserController {
       .trim()
       .toLowerCase();
 
-    if (!url) {
+    // Never target DevTools, chrome extensions, or the Electron main renderer UI
+    if (url.startsWith("devtools://") || url.startsWith("chrome-extension://")) {
       return false;
     }
 
-    return url.startsWith("http://") || url.startsWith("https://");
+    if (
+      url.includes("/renderer/index.html") ||
+      url.includes("\\renderer\\index.html") ||
+      url.endsWith("renderer/index.html")
+    ) {
+      return false;
+    }
+
+    return true;
   }
 
   //==========================================================
@@ -377,7 +389,11 @@ class BrowserController {
       } catch (error) {
         lastError = error;
 
-        this.warn(`Reconnect ${attempt} failed:`, error.message);
+        if (error.message.includes("ECONNREFUSED")) {
+          this.log(`Electron CDP on port 9222 not ready yet (Attempt ${attempt}/${this.options.maxReconnectAttempts})...`);
+        } else {
+          this.warn(`Reconnect ${attempt} failed:`, error.message);
+        }
 
         if (attempt < this.options.maxReconnectAttempts) {
           await this.sleep(this.options.reconnectInterval);
@@ -390,6 +406,23 @@ class BrowserController {
         `${this.options.maxReconnectAttempts} attempts. ` +
         `${lastError?.message || ""}`,
     );
+  }
+
+  setActiveTabInfo(tabId, url = "", title = "") {
+    if (tabId) {
+      this.activeTabId = String(tabId).trim();
+    }
+    if (url && typeof url === "string") {
+      this.preferredActiveURL = url.trim();
+    }
+    if (title && typeof title === "string") {
+      this.preferredActiveTitle = title.trim();
+    }
+    this.log("Active tab info updated:", { tabId: this.activeTabId, url: this.preferredActiveURL });
+  }
+
+  setActiveTargetURL(url) {
+    this.setActiveTabInfo(null, url);
   }
 
   //==========================================================
@@ -431,32 +464,42 @@ class BrowserController {
       );
     }
 
-    //--------------------------------------------------------
-    // KEEP CURRENT PAGE
-    //--------------------------------------------------------
+    let active = null;
 
-    if (this.page && !this.page.isClosed() && pages.includes(this.page)) {
+    // 1. Check if any page matches the Electron active tab ID
+    if (this.activeTabId) {
+      for (const p of pages) {
+        try {
+          const tabId = await p.evaluate(() => window.__JARVIS_TAB_ID__).catch(() => null);
+          if (tabId && tabId === this.activeTabId) {
+            active = p;
+            break;
+          }
+        } catch (e) {}
+      }
+    }
+
+    // 2. Check if preferred active URL matches any automation page
+    if (!active && this.preferredActiveURL) {
+      const target = this.preferredActiveURL.toLowerCase().replace(/\/$/, "");
+      active = pages.find((p) => {
+        const u = (p.url() || "").toLowerCase().replace(/\/$/, "");
+        return u === target || u.startsWith(target) || target.startsWith(u);
+      });
+    }
+
+    // 3. Keep current live page if no preferred target or already matching
+    if (!active && this.page && !this.page.isClosed() && pages.includes(this.page)) {
       this.lastURL = this.page.url();
-
       return this.page;
     }
 
-    //--------------------------------------------------------
-    // PREFER CURRENT NON-DEVTOOLS PAGE
-    //--------------------------------------------------------
-
-    const previousURL = this.lastURL;
-
-    let active = null;
-
-    if (previousURL) {
-      active = pages.find((page) => page.url() === previousURL);
+    // 4. Otherwise try previous URL
+    if (!active && this.lastURL) {
+      active = pages.find((page) => page.url() === this.lastURL);
     }
 
-    //--------------------------------------------------------
-    // OTHERWISE USE LAST REAL PAGE
-    //--------------------------------------------------------
-
+    // 5. Otherwise use the last automation page
     if (!active) {
       active = pages[pages.length - 1];
     }
@@ -1202,6 +1245,437 @@ class BrowserController {
       containerSelectorOrClass,
       options,
     );
+  }
+
+  //==========================================================
+  // PAGE-ONLY AGENT PRIMITIVES & VERIFICATION
+  //==========================================================
+
+  async getInteractiveElements() {
+    const page = await this.getPage();
+    if (!page || page.isClosed()) return [];
+
+    try {
+      return await page.evaluate(() => {
+        const elements = [];
+        const selector = "button, a[href], input, textarea, select, [role='button'], [role='tab'], [role='link'], [role='menuitem'], [onclick]";
+        const nodes = Array.from(document.querySelectorAll(selector));
+
+        nodes.forEach((el, index) => {
+          if (elements.length >= 100) return;
+          const rect = el.getBoundingClientRect();
+          const style = window.getComputedStyle(el);
+
+          const isVisible =
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style.visibility !== "hidden" &&
+            style.display !== "none" &&
+            style.opacity !== "0";
+
+          if (!isVisible) return;
+
+          const text = (el.innerText || el.textContent || "").trim().slice(0, 80);
+          const ariaLabel = (el.getAttribute("aria-label") || "").trim();
+          const placeholder = (el.getAttribute("placeholder") || "").trim();
+          const role = (el.getAttribute("role") || el.tagName.toLowerCase()).trim();
+          const type = (el.getAttribute("type") || "").trim();
+          const name = (el.getAttribute("name") || "").trim();
+          const id = (el.id || "").trim();
+          const href = (el.getAttribute("href") || "").trim();
+
+          elements.push({
+            index,
+            tagName: el.tagName.toLowerCase(),
+            role,
+            type: type || undefined,
+            id: id || undefined,
+            name: name || undefined,
+            text: text || ariaLabel || placeholder || name || id || undefined,
+            placeholder: placeholder || undefined,
+            ariaLabel: ariaLabel || undefined,
+            href: href && !href.startsWith("javascript:") ? href.slice(0, 100) : undefined,
+            value: el.value ? String(el.value).slice(0, 50) : undefined,
+            box: {
+              x: Math.round(rect.x),
+              y: Math.round(rect.y),
+              width: Math.round(rect.width),
+              height: Math.round(rect.height),
+            },
+          });
+        });
+
+        return elements;
+      });
+    } catch (err) {
+      this.warn("getInteractiveElements error:", err.message);
+      return [];
+    }
+  }
+
+  async readContent() {
+    const page = await this.getPage();
+    if (!page || page.isClosed()) return "";
+
+    try {
+      return await page.evaluate(() => {
+        const clone = document.body.cloneNode(true);
+        const removeTags = ["script", "style", "noscript", "svg", "iframe"];
+        removeTags.forEach((tag) => {
+          clone.querySelectorAll(tag).forEach((n) => n.remove());
+        });
+        return (clone.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 15000);
+      });
+    } catch (err) {
+      this.warn("readContent error:", err.message);
+      return "";
+    }
+  }
+
+  async clickSmart(target, options = {}) {
+    const page = await this.getPage();
+    if (!page || page.isClosed()) throw new Error("Active page is not available");
+
+    const query = String(target || "").trim();
+    if (!query) throw new Error("Click target is required");
+
+    const previousUrl = page.url();
+    this.log(`Clicking target: "${query}"`);
+
+    let clicked = false;
+    let locatorUsed = "";
+
+    const tryClickLocator = async (loc, name) => {
+      try {
+        if ((await loc.count()) > 0) {
+          const first = loc.first();
+          await first.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => {});
+          try {
+            await first.click({ timeout: 4000 });
+          } catch (clickErr) {
+            if (clickErr.message.includes("context was destroyed") || clickErr.message.includes("navigating")) {
+              return { clicked: true, locatorUsed: `${name} (navigated)` };
+            }
+            throw clickErr;
+          }
+          return { clicked: true, locatorUsed: name };
+        }
+      } catch (e) {}
+      return { clicked: false };
+    };
+
+    // 1. CSS / XPath selector
+    if (/^[.#\[]/.test(query) || query.includes(">") || query.includes("=")) {
+      const res = await tryClickLocator(page.locator(query), `selector: ${query}`);
+      if (res.clicked) {
+        clicked = true;
+        locatorUsed = res.locatorUsed;
+      }
+    }
+
+    // 2. Roles: button, link, tab, menuitem, checkbox, radio
+    if (!clicked) {
+      const roles = ["button", "link", "tab", "menuitem", "checkbox", "radio"];
+      for (const r of roles) {
+        const res = await tryClickLocator(page.getByRole(r, { name: query, exact: false }), `getByRole("${r}", "${query}")`);
+        if (res.clicked) {
+          clicked = true;
+          locatorUsed = res.locatorUsed;
+          break;
+        }
+      }
+    }
+
+    // 3. Text locator
+    if (!clicked) {
+      const res = await tryClickLocator(page.getByText(query, { exact: false }), `getByText("${query}")`);
+      if (res.clicked) {
+        clicked = true;
+        locatorUsed = res.locatorUsed;
+      }
+    }
+
+    // 4. Aria-label / title / placeholder
+    if (!clicked) {
+      const res = await tryClickLocator(page.getByLabel(query, { exact: false }), `getByLabel("${query}")`);
+      if (res.clicked) {
+        clicked = true;
+        locatorUsed = res.locatorUsed;
+      }
+    }
+
+    // 5. JavaScript element scan
+    if (!clicked) {
+      const jsClicked = await page.evaluate((text) => {
+        const lower = text.toLowerCase();
+        const candidates = Array.from(
+          document.querySelectorAll("button, a, [role='button'], [role='tab'], input[type='submit'], input[type='button'], span, div, li")
+        );
+        for (const el of candidates) {
+          const t = (el.innerText || el.textContent || "").trim().toLowerCase();
+          const aria = (el.getAttribute("aria-label") || el.getAttribute("title") || "").toLowerCase();
+          const val = (el.value || "").toLowerCase();
+          if (
+            t === lower ||
+            aria === lower ||
+            val === lower ||
+            (lower.length > 2 && (t.includes(lower) || aria.includes(lower) || val.includes(lower)))
+          ) {
+            el.click();
+            return true;
+          }
+        }
+        return false;
+      }, query);
+
+      if (jsClicked) {
+        clicked = true;
+        locatorUsed = `JS evaluation match: "${query}"`;
+      }
+    }
+
+    if (!clicked) {
+      throw new Error(`Could not find clickable element matching "${query}" on active page.`);
+    }
+
+    await this.sleep(300);
+    const currentUrl = page.url();
+    const navigated = currentUrl !== previousUrl;
+
+    return {
+      success: true,
+      action: "click",
+      target: query,
+      locator: locatorUsed,
+      navigated,
+      url: currentUrl,
+      verification: {
+        verified: true,
+        message: navigated ? `Clicked "${query}" and navigated to ${currentUrl}` : `Clicked "${query}" successfully`,
+      },
+    };
+  }
+
+  async typeText(field, value, options = {}) {
+    const page = await this.getPage();
+    if (!page || page.isClosed()) throw new Error("Active page is not available");
+
+    const query = String(field || "").trim();
+    const val = String(value ?? "");
+
+    this.log(`Typing into "${query}": "${val}"`);
+
+    let typed = false;
+    let locatorUsed = "";
+    let loc = null;
+
+    // 1. Selector check
+    if (/^[.#\[]/.test(query) || query.includes("=")) {
+      try {
+        const candidate = page.locator(query).first();
+        if ((await candidate.count()) > 0) {
+          loc = candidate;
+          locatorUsed = `selector: ${query}`;
+        }
+      } catch (e) {}
+    }
+
+    // 2. Placeholder
+    if (!loc) {
+      try {
+        const candidate = page.getByPlaceholder(query, { exact: false }).first();
+        if ((await candidate.count()) > 0) {
+          loc = candidate;
+          locatorUsed = `getByPlaceholder("${query}")`;
+        }
+      } catch (e) {}
+    }
+
+    // 3. Label
+    if (!loc) {
+      try {
+        const candidate = page.getByLabel(query, { exact: false }).first();
+        if ((await candidate.count()) > 0) {
+          loc = candidate;
+          locatorUsed = `getByLabel("${query}")`;
+        }
+      } catch (e) {}
+    }
+
+    // 4. Name or id
+    if (!loc) {
+      try {
+        const inputSelector = `input[name="${query}" i], textarea[name="${query}" i], input[id="${query}" i], textarea[id="${query}" i]`;
+        const candidate = page.locator(inputSelector).first();
+        if ((await candidate.count()) > 0) {
+          loc = candidate;
+          locatorUsed = `locator("${inputSelector}")`;
+        }
+      } catch (e) {}
+    }
+
+    // 5. Fallback for search/input
+    if (!loc && /search|input|query|box/i.test(query)) {
+      try {
+        const candidate = page.locator("input[type='search'], input[type='text'], textarea").first();
+        if ((await candidate.count()) > 0) {
+          loc = candidate;
+          locatorUsed = "generic visible input";
+        }
+      } catch (e) {}
+    }
+
+    if (loc) {
+      try {
+        await loc.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => {});
+        if (options.clear !== false) {
+          await loc.fill("").catch(() => {});
+        }
+        await loc.fill(val, { timeout: 4000 });
+        typed = true;
+      } catch (fillErr) {
+        try {
+          await loc.click({ timeout: 2000 });
+          await page.keyboard.press("Control+A").catch(() => {});
+          await page.keyboard.press("Backspace").catch(() => {});
+          await page.keyboard.type(val, { delay: 10 });
+          typed = true;
+        } catch (e) {}
+      }
+    }
+
+    // 6. JS evaluate fallback
+    if (!typed) {
+      const jsFilled = await page.evaluate(
+        ({ f, v }) => {
+          const lower = f.toLowerCase();
+          const inputs = Array.from(document.querySelectorAll("input, textarea"));
+          for (const inp of inputs) {
+            const name = (inp.getAttribute("name") || "").toLowerCase();
+            const id = (inp.id || "").toLowerCase();
+            const ph = (inp.getAttribute("placeholder") || "").toLowerCase();
+            const aria = (inp.getAttribute("aria-label") || "").toLowerCase();
+            if (name.includes(lower) || id.includes(lower) || ph.includes(lower) || aria.includes(lower)) {
+              inp.value = v;
+              inp.dispatchEvent(new Event("input", { bubbles: true }));
+              inp.dispatchEvent(new Event("change", { bubbles: true }));
+              return true;
+            }
+          }
+          if (inputs.length > 0) {
+            inputs[0].value = v;
+            inputs[0].dispatchEvent(new Event("input", { bubbles: true }));
+            inputs[0].dispatchEvent(new Event("change", { bubbles: true }));
+            return true;
+          }
+          return false;
+        },
+        { f: query, v: val },
+      );
+
+      if (jsFilled) {
+        typed = true;
+        locatorUsed = `JS evaluation fill: "${query}"`;
+      }
+    }
+
+    if (!typed) {
+      throw new Error(`Could not find input field matching "${query}" on active page.`);
+    }
+
+    if (options.pressEnter) {
+      await page.keyboard.press("Enter").catch(() => {});
+      await this.sleep(300);
+    }
+
+    return {
+      success: true,
+      action: "type",
+      field: query,
+      value: val,
+      locator: locatorUsed,
+      verification: {
+        verified: true,
+        message: `Filled field "${query}" with "${val}"`,
+      },
+    };
+  }
+
+  async selectOption(field, value) {
+    const page = await this.getPage();
+    if (!page || page.isClosed()) throw new Error("Active page is not available");
+
+    const query = String(field || "").trim();
+    const val = String(value ?? "");
+
+    let selected = false;
+    try {
+      const loc = page.locator(`select[name="${query}" i], select[id="${query}" i], select`).first();
+      if ((await loc.count()) > 0) {
+        await loc.selectOption({ label: val }).catch(async () => {
+          await loc.selectOption({ value: val });
+        });
+        selected = true;
+      }
+    } catch (e) {}
+
+    if (!selected) {
+      throw new Error(`Could not find dropdown matching "${query}" to select "${val}".`);
+    }
+
+    return {
+      success: true,
+      action: "select",
+      field: query,
+      value: val,
+      verification: {
+        verified: true,
+        message: `Selected "${val}" in dropdown "${query}"`,
+      },
+    };
+  }
+
+  async scrollPage(direction = "down", amount = 500) {
+    const page = await this.getPage();
+    if (!page || page.isClosed()) throw new Error("Active page is not available");
+
+    const dir = String(direction).toLowerCase() === "up" ? -1 : 1;
+    const px = (Number(amount) || 500) * dir;
+
+    await page.evaluate((scrollAmount) => {
+      window.scrollBy({ top: scrollAmount, behavior: "smooth" });
+    }, px);
+
+    await this.sleep(300);
+
+    return {
+      success: true,
+      action: "scroll",
+      direction,
+      amount: Math.abs(px),
+      verification: {
+        verified: true,
+        message: `Scrolled ${direction} by ${Math.abs(px)}px`,
+      },
+    };
+  }
+
+  async pressKey(key = "Enter") {
+    const page = await this.getPage();
+    if (!page || page.isClosed()) throw new Error("Active page is not available");
+
+    await page.keyboard.press(key);
+    await this.sleep(300);
+
+    return {
+      success: true,
+      action: "press",
+      key,
+      verification: {
+        verified: true,
+        message: `Pressed key "${key}"`,
+      },
+    };
   }
 
   //==========================================================

@@ -1,20 +1,34 @@
-const { app, BrowserWindow, WebContentsView, ipcMain, Menu } = require("electron");
+//==========================================================
+//
+// main/main.js
+//
+// Electron Main Process for Chrome-like Agentic Browser
+//
+// Features:
+// ✔ Multi-tab architecture with WebContentsView
+// ✔ Independent browser navigation and tab lifecycle
+// ✔ Chrome DevTools Protocol enabled for Playwright
+// ✔ Page-only sandboxed interaction APIs
+// ✔ Window controls & bounds synchronization
+//
+//==========================================================
+
+const { app, BrowserWindow, ipcMain, Menu } = require("electron");
 const path = require("path");
+const TabManager = require("./tab-manager.js");
 
 let win;
-let browserView;
-let htmlLoggerStarted = false;
+let tabManager;
+
 // Enable Chrome DevTools Protocol
 app.commandLine.appendSwitch("remote-debugging-port", "9222");
 
-let htmlLogger = null;
-
 /* ---------------------------------------------------- */
-/* Resize BrowserView                                   */
+/* Resize Browser Views                                 */
 /* ---------------------------------------------------- */
 
 async function updateBounds() {
-  if (!win || !browserView) return;
+  if (!win || win.isDestroyed() || !tabManager) return;
 
   try {
     const bounds = await win.webContents.executeJavaScript(`
@@ -41,51 +55,30 @@ async function updateBounds() {
       })();
     `);
 
-    browserView.setBounds(bounds);
+    tabManager.setBounds(bounds);
   } catch (err) {
-    console.error("updateBounds:", err);
+    console.error("updateBounds error:", err);
   }
 }
-function startHtmlLogger() {
-  if (htmlLoggerStarted) {
-    return;
-  }
 
-  htmlLoggerStarted = true;
-
-  // setInterval(async () => {
-  //   try {
-  //     const html = await browserView.webContents.executeJavaScript(
-  //       "document.documentElement.outerHTML",
-  //     );
-
-  //     console.log("========== ELECTRON HTML ==========");
-  //     console.log(html.substring(0, 2000));
-  //     console.log("===================================");
-  //   } catch (err) {
-  //     console.error(err);
-  //   }
-  // }, 5000);
-}
 /* ---------------------------------------------------- */
-/* Get Current HTML                                     */
+/* Get Current HTML from active tab                     */
 /* ---------------------------------------------------- */
 
 async function getCurrentHTML() {
-  if (!browserView) return "";
+  const contents = tabManager?.getActiveWebContents();
+  if (!contents) return "";
 
   try {
-    return await browserView.webContents.executeJavaScript(`
-      document.documentElement.outerHTML
-    `);
+    return await contents.executeJavaScript("document.documentElement.outerHTML");
   } catch (e) {
-    console.error(e);
+    console.error("getCurrentHTML error:", e);
     return "";
   }
 }
 
 /* ---------------------------------------------------- */
-/* Window                                               */
+/* Window Creation                                      */
 /* ---------------------------------------------------- */
 
 async function createWindow() {
@@ -112,91 +105,101 @@ async function createWindow() {
   win.on("maximize", sendWindowState);
   win.on("unmaximize", sendWindowState);
 
-  browserView = new WebContentsView({
-    webPreferences: {
-      contextIsolation: true,
-    },
+  // Initialize Tab Manager
+  tabManager = new TabManager(win, {
+    defaultUrl: "https://example.com",
   });
 
-  win.contentView.addChildView(browserView);
+  // Create initial tab
+  tabManager.createTab("https://example.com", true);
 
-  await browserView.webContents.loadURL("https://example.com");
-
+  // Load browser UI shell
   await win.loadFile(path.join(__dirname, "renderer", "index.html"));
-
-  startHtmlLogger();
 
   win.maximize();
 
-  win.webContents.openDevTools();
-
-  browserView.webContents.on("did-navigate", (_, url) => {
-    win.webContents.send("url-changed", url);
-  });
-
-  browserView.webContents.on("did-navigate-in-page", (_, url) => {
-    win.webContents.send("url-changed", url);
-  });
-  browserView.webContents.on("did-finish-load", () => {
-    console.log("WEBVIEW URL:", browserView.webContents.getURL());
-  });
   win.webContents.on("did-finish-load", () => {
     setTimeout(updateBounds, 300);
+    tabManager.notifyTabsUpdated();
   });
 
   win.on("resize", updateBounds);
 
-  console.log("Electron Ready");
-
-  // -----------------------------
-  // Single HTML logger
-  // -----------------------------
-
-  // htmlLogger = setInterval(async () => {
-  //   try {
-  //     const html = await getCurrentHTML();
-
-  //     console.log("\n========== ELECTRON HTML ==========");
-  //     console.log(html.substring(0, 5000));
-  //     console.log("===================================\n");
-  //   } catch (e) {
-  //     console.error(e);
-  //   }
-  // }, 5000);
+  console.log("Jarvis Browser Electron Ready");
 }
 
 /* ---------------------------------------------------- */
-/* Navigation                                           */
+/* Tab Management IPC                                   */
+/* ---------------------------------------------------- */
+
+ipcMain.handle("tab-create", async (_, url) => {
+  if (!tabManager) return null;
+  const tab = tabManager.createTab(url, true);
+  await updateBounds();
+  return tab;
+});
+
+ipcMain.handle("tab-close", async (_, tabId) => {
+  if (!tabManager) return false;
+  const success = tabManager.closeTab(tabId);
+  await updateBounds();
+  return success;
+});
+
+ipcMain.handle("tab-switch", async (_, tabId) => {
+  if (!tabManager) return null;
+  const tab = tabManager.switchTab(tabId);
+  await updateBounds();
+  return tab;
+});
+
+ipcMain.handle("tab-list", async () => {
+  if (!tabManager) return [];
+  return tabManager.getAllTabs();
+});
+
+ipcMain.handle("tab-active", async () => {
+  if (!tabManager) return null;
+  return tabManager.getActiveTab();
+});
+
+ipcMain.handle("tab-stop", async () => {
+  if (!tabManager) return false;
+  return tabManager.stopActive();
+});
+
+/* ---------------------------------------------------- */
+/* Navigation IPC                                       */
 /* ---------------------------------------------------- */
 
 ipcMain.handle("navigate", async (_, url) => {
-  await browserView.webContents.loadURL(url);
-  return true;
+  if (!tabManager) return false;
+  return await tabManager.navigateActive(url);
 });
 
 ipcMain.handle("back", async () => {
-  if (browserView.webContents.canGoBack()) {
-    browserView.webContents.goBack();
-  }
-  return true;
+  if (!tabManager) return false;
+  return tabManager.backActive();
 });
 
 ipcMain.handle("forward", async () => {
-  if (browserView.webContents.canGoForward()) {
-    browserView.webContents.goForward();
-  }
-  return true;
+  if (!tabManager) return false;
+  return tabManager.forwardActive();
 });
 
 ipcMain.handle("reload", async () => {
-  browserView.webContents.reload();
-  return true;
+  if (!tabManager) return false;
+  return tabManager.reloadActive();
 });
 
 ipcMain.handle("resize-browser", async () => {
   await updateBounds();
   return true;
 });
+
+/* ---------------------------------------------------- */
+/* Window Controls IPC                                  */
+/* ---------------------------------------------------- */
 
 ipcMain.handle("window-minimize", (event) => {
   if (!win || win.isDestroyed() || event.sender !== win.webContents) return false;
@@ -226,27 +229,27 @@ ipcMain.handle("window-is-maximized", (event) => {
 });
 
 /* ---------------------------------------------------- */
-/* NEW: Return live BrowserView HTML                    */
+/* Active Page Content & Inspection IPC                 */
 /* ---------------------------------------------------- */
 
 ipcMain.handle("browser-html", async () => {
   return await getCurrentHTML();
 });
 
-/* ---------------------------------------------------- */
-/* NEW: Return current URL                              */
-/* ---------------------------------------------------- */
-
 ipcMain.handle("browser-url", async () => {
-  return browserView.webContents.getURL();
+  const tab = tabManager?.getActiveTab();
+  return tab ? tab.url : "";
 });
 
-/* ---------------------------------------------------- */
-/* NEW: Return SVGs from BrowserView and IFrames        */
-/* ---------------------------------------------------- */
+ipcMain.handle("browser-execute", async (_, script) => {
+  const contents = tabManager?.getActiveWebContents();
+  if (!contents) return null;
+  return await contents.executeJavaScript(script);
+});
 
 ipcMain.handle("browser-svg", async (_, options = {}) => {
-  if (!browserView) return [];
+  const contents = tabManager?.getActiveWebContents();
+  if (!contents) return [];
   try {
     const script = `
       (() => {
@@ -301,27 +304,22 @@ ipcMain.handle("browser-svg", async (_, options = {}) => {
               });
               allResults.push(...iframeSVGs);
             }
-          } catch (e) {
-            // Handled via backend CDP for cross-origin iframes
-          }
+          } catch (e) {}
         });
 
         return allResults;
       })();
     `;
-    return await browserView.webContents.executeJavaScript(script);
+    return await contents.executeJavaScript(script);
   } catch (err) {
     console.error("browser-svg error:", err);
     return [];
   }
 });
 
-/* ---------------------------------------------------- */
-/* NEW: Return Container / Parent Class Data            */
-/* ---------------------------------------------------- */
-
 ipcMain.handle("browser-container-data", async (_, selectorOrClass) => {
-  if (!browserView) return [];
+  const contents = tabManager?.getActiveWebContents();
+  if (!contents) return [];
   try {
     const script = `
       (() => {
@@ -335,106 +333,24 @@ ipcMain.handle("browser-container-data", async (_, selectorOrClass) => {
             d: p.getAttribute("d") || "",
             fill: p.getAttribute("fill") || p.style?.fill || undefined,
             stroke: p.getAttribute("stroke") || p.style?.stroke || undefined,
-            strokeWidth: p.getAttribute("stroke-width") || p.style?.strokeWidth || undefined,
             id: p.id || undefined,
             className: p.getAttribute("class") || undefined,
-            transform: p.getAttribute("transform") || undefined,
-            ariaLabel: p.getAttribute("aria-label") || undefined,
-          }));
-
-          const shapes = Array.from(sEl.querySelectorAll("circle, rect, ellipse, polygon, polyline, line")).map((sh) => ({
-            tagName: sh.tagName.toLowerCase(),
-            id: sh.id || undefined,
-            className: sh.getAttribute("class") || undefined,
-            fill: sh.getAttribute("fill") || undefined,
-            stroke: sh.getAttribute("stroke") || undefined,
-            transform: sh.getAttribute("transform") || undefined,
-            cx: sh.getAttribute("cx") || undefined,
-            cy: sh.getAttribute("cy") || undefined,
-            r: sh.getAttribute("r") || undefined,
-            x: sh.getAttribute("x") || undefined,
-            y: sh.getAttribute("y") || undefined,
-            width: sh.getAttribute("width") || undefined,
-            height: sh.getAttribute("height") || undefined,
-            points: sh.getAttribute("points") || undefined,
           }));
 
           const texts = Array.from(sEl.querySelectorAll("text, tspan, title, desc")).map((t) => ({
             tagName: t.tagName.toLowerCase(),
             text: (t.textContent || "").trim(),
-            x: t.getAttribute("x") || undefined,
-            y: t.getAttribute("y") || undefined,
-            fill: t.getAttribute("fill") || undefined,
-            fontSize: t.getAttribute("font-size") || undefined,
-            transform: t.getAttribute("transform") || undefined,
           })).filter((t) => t.text);
-
-          const groups = [];
-          const dynamicTransforms = [];
-          const groupNodes = sEl.querySelectorAll("g");
-          for (let g = 0; g < groupNodes.length; g++) {
-            const gEl = groupNodes[g];
-            const tr = gEl.getAttribute("transform") || gEl.style?.transform || "";
-            if (tr) dynamicTransforms.push(tr);
-            if (tr || gEl.id || gEl.getAttribute("class")) {
-              groups.push({
-                index: g,
-                id: gEl.id || undefined,
-                className: gEl.getAttribute("class") || undefined,
-                transform: tr || undefined,
-                ariaLabel: gEl.getAttribute("aria-label") || undefined,
-              });
-            }
-          }
-
-          const rootTransform = sEl.getAttribute("transform") || sEl.style?.transform || "";
-          if (rootTransform) dynamicTransforms.push(rootTransform);
-
-          const directText = (sEl.textContent || "").replace(/\\s+/g, " ").trim();
-          const allTextJoined = [directText, ...texts.map((t) => t.text)].join(" ");
-          const numbers = (allTextJoined.match(/-?\\d+(?:\\.\\d+)?(?:x|%|\\$|€|£)?/g) || [])
-            .map((n) => n.trim())
-            .filter((v, idx, arr) => arr.indexOf(v) === idx);
-
-          let rotationAngle = undefined;
-          for (const tr of dynamicTransforms) {
-            const rotMatch = tr.match(/rotate\\(\\s*(-?\\d+(?:\\.\\d+)?)/i);
-            if (rotMatch) {
-              rotationAngle = parseFloat(rotMatch[1]);
-              break;
-            }
-          }
 
           return {
             index: sIdx,
             id: sEl.id || undefined,
             className: sEl.getAttribute("class") || undefined,
-            viewBox: sEl.getAttribute("viewBox") || undefined,
-            width: sEl.getAttribute("width") || Math.round(sRect.width) || undefined,
-            height: sEl.getAttribute("height") || Math.round(sRect.height) || undefined,
-            transform: rootTransform || undefined,
-            boundingBox: {
-              x: Math.round(sRect.x),
-              y: Math.round(sRect.y),
-              width: Math.round(sRect.width),
-              height: Math.round(sRect.height),
-            },
-            text: texts.map((t) => t.text).join(" ") || directText || undefined,
-            texts: texts.length ? texts : undefined,
+            width: Math.round(sRect.width) || undefined,
+            height: Math.round(sRect.height) || undefined,
+            text: texts.map((t) => t.text).join(" ") || (sEl.textContent || "").trim() || undefined,
             pathCount: paths.length,
             paths,
-            shapeCount: shapes.length,
-            shapes,
-            groupCount: groups.length ? groups.length : undefined,
-            groups: groups.length ? groups : undefined,
-            dynamicValues: {
-              numbers,
-              rotationAngle,
-              transforms: dynamicTransforms.length ? dynamicTransforms : undefined,
-              summary: directText || (texts.length ? texts.map((t) => t.text).join(", ") : undefined),
-            },
-            timestamp: new Date().toISOString(),
-            outerHTML: sEl.outerHTML,
           };
         }
 
@@ -454,29 +370,15 @@ ipcMain.handle("browser-container-data", async (_, selectorOrClass) => {
                 if (!found.includes(el)) found.push(el);
               }
             } catch {}
-            try {
-              const byId = doc.querySelectorAll(\`#\${cleanQuery}, [id*="\${cleanQuery}"]\`);
-              for (const el of byId) {
-                if (!found.includes(el)) found.push(el);
-              }
-            } catch {}
           }
 
           return found.map((el, i) => {
             const rect = el.getBoundingClientRect();
             const svgs = Array.from(el.querySelectorAll("svg")).map(extractSVGNode);
-
             const buttons = Array.from(el.querySelectorAll("button, [role='button']")).map((b) => ({
               text: (b.innerText || b.textContent || "").trim(),
               id: b.id || undefined,
               className: b.getAttribute("class") || undefined,
-            }));
-
-            const inputs = Array.from(el.querySelectorAll("input, select, textarea")).map((inp) => ({
-              tagName: inp.tagName.toLowerCase(),
-              type: inp.type || undefined,
-              name: inp.name || undefined,
-              value: inp.value || undefined,
             }));
 
             return {
@@ -488,16 +390,12 @@ ipcMain.handle("browser-container-data", async (_, selectorOrClass) => {
               svgCount: svgs.length,
               svgs,
               buttons: buttons.length ? buttons : undefined,
-              inputs: inputs.length ? inputs : undefined,
               boundingBox: {
                 x: Math.round(rect.x),
                 y: Math.round(rect.y),
                 width: Math.round(rect.width),
                 height: Math.round(rect.height),
               },
-              timestamp: new Date().toISOString(),
-              innerHTML: el.innerHTML,
-              outerHTML: el.outerHTML,
               ...frameInfo
             };
           });
@@ -525,153 +423,52 @@ ipcMain.handle("browser-container-data", async (_, selectorOrClass) => {
         return allResults;
       })();
     `;
-    return await browserView.webContents.executeJavaScript(script);
+    return await contents.executeJavaScript(script);
   } catch (err) {
     console.error("browser-container-data error:", err);
     return [];
   }
 });
 
-/* ---------------------------------------------------- */
-/* NEW: Execute JS inside BrowserView                   */
-/* ---------------------------------------------------- */
-
-ipcMain.handle("browser-execute", async (_, script) => {
-  return await browserView.webContents.executeJavaScript(script);
-});
-
-/* ---------------------------------------------------- */
-/* NEW: Dismiss Inactivity Popups in BrowserView        */
-/* ---------------------------------------------------- */
-
 ipcMain.handle("browser-dismiss-popup", async () => {
-  if (!browserView) return { dismissed: false, count: 0 };
+  const contents = tabManager?.getActiveWebContents();
+  if (!contents) return { dismissed: false, count: 0 };
   try {
     const script = `
       (() => {
         let count = 0;
-
-        function isInsideModal(el) {
-          let current = el;
-          while (current && current !== document.body && current !== document.documentElement) {
-            const role = current.getAttribute?.("role") || "";
-            const cls = (current.className || "").toString().toLowerCase();
-            const id = (current.id || "").toLowerCase();
-
-            if (
-              role === "dialog" ||
-              role === "alertdialog" ||
-              /modal|popup|dialog|overlay|sweet-alert|swal2|inactivity|idle|timeout|alert-box/i.test(cls + " " + id)
-            ) {
-              return current;
-            }
-            current = current.parentElement;
-          }
-          return null;
-        }
-
-        function hasInactivityContext(container) {
-          if (!container) return false;
-          const text = (container.innerText || container.textContent || "").toLowerCase();
-          return /are you still there|are you still playing|inactivity|inactive|session timeout|session expired|idle timeout|game paused|paused due to|press ok to continue|click to resume|continue playing|keep playing|still watching|idle detected|stay connected/i.test(
-            text,
-          );
-        }
-
         function scanDoc(doc) {
           if (!doc) return 0;
           let c = 0;
           const buttons = Array.from(
-            doc.querySelectorAll(
-              'button, [role="button"], .btn, input[type="button"], input[type="submit"], a.button',
-            ),
+            doc.querySelectorAll('button, [role="button"], .btn, input[type="button"]')
           );
           for (const btn of buttons) {
             try {
               const style = window.getComputedStyle(btn);
-              if (
-                style.display === "none" ||
-                style.visibility === "hidden" ||
-                style.opacity === "0" ||
-                style.pointerEvents === "none"
-              ) {
-                continue;
-              }
-              const rect = btn.getBoundingClientRect();
-              if (rect.width === 0 || rect.height === 0) continue;
-
-              const rawText = (btn.innerText || btn.textContent || btn.value || "").trim();
-              const txt = rawText.toLowerCase();
-              const ariaLabel = (btn.getAttribute("aria-label") || "").toLowerCase();
-              const cls = (btn.className || "").toString().toLowerCase();
-              const id = (btn.id || "").toLowerCase();
-              const fullAttr = cls + " " + id + " " + ariaLabel;
-
-              // Blacklist catalog / lobby words
-              if (
-                /play for free|free play|demo play|real play|login|sign in|signup|register|deposit|withdraw/i.test(
-                  txt + " " + ariaLabel,
-                )
-              ) {
-                continue;
-              }
-
-              const isExplicitInactivity =
-                /^(?:i'm here|i am here|yes,?\s*i'm here|keep playing|continue playing|resume game|resume session|stay connected|stay logged in|i'm still here|still here|unpause)$/i.test(
-                  txt,
-                ) ||
-                /inactivity-btn|idle-resume|resume-inactivity|dialog-inactivity|inactivity_ok/i.test(
-                  fullAttr,
-                );
-
-              const modal = isInsideModal(btn);
-              const isModalInactivity =
-                modal &&
-                hasInactivityContext(modal) &&
-                /^(?:ok|okay|start|continue|resume|yes|confirm|stay|reconnect|got it)$/i.test(txt);
-
-              const isDialogActionInModal =
-                modal &&
-                /dialog-ok|dialog-start|dialog-continue|dialog-resume|modal-ok|modal-continue/i.test(
-                  fullAttr,
-                );
-
-              // In-game play-button overlay (e.g. data-role="play-button", .A2zb9M, .VQJTA7, .iTKQgM, .E0dFqh)
-              const isPlayButtonOverlay =
-                btn.getAttribute?.("data-role") === "play-button" ||
-                /A2zb9M|iTKQgM|VQJTA7|E0dFqh/i.test(cls) ||
-                btn.closest?.('[data-role="play-button"]');
-
-              if (isExplicitInactivity || isModalInactivity || isDialogActionInModal || isPlayButtonOverlay) {
+              if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") continue;
+              const rawText = (btn.innerText || btn.textContent || btn.value || "").trim().toLowerCase();
+              if (/^(?:ok|okay|continue|resume|got it|close|dismiss|i'm here)$/i.test(rawText)) {
                 btn.click();
                 c++;
-                if (c >= 3) break;
+                if (c >= 2) break;
               }
-            } catch (e) {}
-          }
-          const iframes = Array.from(doc.querySelectorAll("iframe"));
-          for (const iframe of iframes) {
-            try {
-              const iDoc = iframe.contentDocument || iframe.contentWindow?.document;
-              if (iDoc) c += scanDoc(iDoc);
             } catch (e) {}
           }
           return c;
         }
-
         return scanDoc(document);
       })();
     `;
-    const count = await browserView.webContents.executeJavaScript(script);
+    const count = await contents.executeJavaScript(script);
     return { dismissed: count > 0, count };
   } catch (err) {
-    console.error("browser-dismiss-popup error:", err);
     return { dismissed: false, count: 0, error: err.message };
   }
 });
 
 /* ---------------------------------------------------- */
-/* App                                                  */
+/* App Lifecycle                                        */
 /* ---------------------------------------------------- */
 
 app.whenReady().then(() => {
@@ -680,9 +477,5 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", () => {
-  if (htmlLogger) {
-    clearInterval(htmlLogger);
-  }
-
   app.quit();
 });

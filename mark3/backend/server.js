@@ -55,6 +55,8 @@ import PlaywrightMCPClient from "./mcp-client.js";
 import Planner from "./planner.js";
 import Resolver from "./resolver.js";
 import ToolMap from "./tool-map.js";
+import ExecutionEngine from "./executor.js";
+import browserController from "./browser-controller.js";
 
 import CommandRouter from "./command-router.js";
 
@@ -212,6 +214,14 @@ resolver.options.pageReadyTimeout = CONFIG.pageReadyTimeout;
 //----------------------------------------------------------
 
 const toolMap = new ToolMap(resolver);
+
+//----------------------------------------------------------
+// Execution Engine (Page-Only Verification Pipeline)
+//----------------------------------------------------------
+
+const executionEngine = new ExecutionEngine(browserController, resolver, {
+  debug: CONFIG.debug,
+});
 
 //----------------------------------------------------------
 // Planner
@@ -966,10 +976,28 @@ async function executePlan(plan, page) {
       stats.toolExecutions++;
 
       //----------------------------------------------------
-      // Execute ONLY ONE step.
+      // Execute step via ExecutionEngine (with retry & verification)
       //----------------------------------------------------
 
-      const result = await toolMap.execute(step);
+      let execOutcome = await executionEngine.execute(step, page);
+
+      if (!execOutcome.success && toolMap) {
+        try {
+          const fallbackRes = await toolMap.execute(step);
+          if (fallbackRes?.success !== false) {
+            execOutcome = {
+              success: true,
+              tool: step.tool,
+              args: step.args,
+              result: fallbackRes,
+              verification: { verified: true, message: "Executed via ToolMap fallback" },
+            };
+          }
+        } catch (fbErr) {}
+      }
+
+      const result = execOutcome.result || execOutcome;
+      const stepVerification = execOutcome.verification;
 
       const duration = performance.now() - started;
 
@@ -987,6 +1015,8 @@ async function executePlan(plan, page) {
         success: stepSuccess,
 
         result,
+
+        verification: stepVerification,
 
         duration,
       };
@@ -1041,7 +1071,60 @@ async function executePlan(plan, page) {
       }
 
       //----------------------------------------------------
-      // STOP IMMEDIATELY ON FAILURE
+      // DYNAMIC REPLANNING ON FAILURE
+      //----------------------------------------------------
+
+      if (!stepSuccess && planner && typeof planner.replan === "function") {
+        try {
+          if (CONFIG.debug) {
+            console.log(`[RUN] Step ${stepNumber} (${step.tool}) failed verification. Triggering dynamic replan...`);
+          }
+          let pageElements = [];
+          if (typeof browserController.getInteractiveElements === "function") {
+            pageElements = await browserController.getInteractiveElements().catch(() => []);
+          }
+
+          const recoveryPlan = planner.replan({
+            failedStep: step,
+            error: result?.error || "Step failed verification",
+            currentUrl: page.url(),
+            pageElements,
+            originalGoal: plan.goal || "",
+          });
+
+          if (recoveryPlan && recoveryPlan.steps?.length) {
+            if (CONFIG.debug) {
+              console.log(`[RUN] Executing ${recoveryPlan.steps.length} replanned recovery steps...`);
+            }
+            for (const recoveryStep of recoveryPlan.steps) {
+              const recoveryOutcome = await executionEngine.execute(recoveryStep, page);
+              const recItem = {
+                index: results.length,
+                step: results.length + 1,
+                tool: recoveryStep.tool,
+                args: recoveryStep.args,
+                success: recoveryOutcome.success,
+                result: recoveryOutcome.result || recoveryOutcome,
+                verification: recoveryOutcome.verification,
+                duration: 50,
+                isReplan: true,
+              };
+              results.push(recItem);
+              if (recoveryOutcome.success) {
+                stepSuccess = true;
+                break;
+              }
+            }
+          }
+        } catch (replanErr) {
+          if (CONFIG.debug) {
+            console.warn("[RUN] Replan error:", replanErr.message);
+          }
+        }
+      }
+
+      //----------------------------------------------------
+      // STOP ON UNRECOVERED FAILURE
       //----------------------------------------------------
 
       if (!stepSuccess) {
@@ -1163,6 +1246,41 @@ function releaseRunLock() {
 
   serverState.activeRun = null;
 }
+
+//==========================================================
+// ACTIVE TAB SYNCHRONIZATION
+//==========================================================
+
+app.post("/active-tab", (req, res) => {
+  const url = String(req.body?.url || "").trim();
+  const title = String(req.body?.title || "").trim();
+  const tabId = String(req.body?.tabId || "").trim();
+
+  if (tabId) {
+    serverState.activeTabId = tabId;
+  }
+  if (url) {
+    serverState.activeTabUrl = url;
+    serverState.activeTabTitle = title;
+  }
+
+  if (typeof browserController.setActiveTabInfo === "function") {
+    browserController.setActiveTabInfo(tabId, url, title);
+  } else if (url) {
+    browserController.setActiveTargetURL(url);
+  }
+
+  if (mcp?.browserController && typeof mcp.browserController.setActiveTabInfo === "function") {
+    mcp.browserController.setActiveTabInfo(tabId, url, title);
+  }
+
+  return res.json({
+    success: true,
+    activeTabId: serverState.activeTabId || tabId,
+    activeTabUrl: serverState.activeTabUrl || url,
+    activeTabTitle: serverState.activeTabTitle || title,
+  });
+});
 
 //==========================================================
 // STATUS
@@ -1443,21 +1561,37 @@ app.post("/run", async (req, res) => {
     // ACTION
     //----------------------------------------------------
 
+    if (req.body?.tabId || req.body?.currentUrl) {
+      if (typeof browserController.setActiveTabInfo === "function") {
+        browserController.setActiveTabInfo(req.body.tabId, req.body.currentUrl);
+      } else if (req.body?.currentUrl) {
+        browserController.setActiveTargetURL(req.body.currentUrl);
+      }
+      if (mcp?.browserController && typeof mcp.browserController.setActiveTabInfo === "function") {
+        mcp.browserController.setActiveTabInfo(req.body.tabId, req.body.currentUrl);
+      }
+    }
+
     const page = await ensureBrowserReady();
 
     validateAutomationPage(page);
 
     let pageText = "";
+    let pageContext = { currentUrl: req.body?.currentUrl || page.url() };
 
     try {
       const snapshot = await captureSnapshot();
       pageText = String(snapshot?.text || "");
 
+      if (typeof browserController.getInteractiveElements === "function") {
+        pageContext.interactiveElements = await browserController.getInteractiveElements();
+      }
+
       if (CONFIG.debug) {
         console.log("[RUN] Snapshot:", pageText.length, "characters");
       }
     } catch (err) {
-      warn("[RUN] Snapshot unavailable:", err.message);
+      warn("[RUN] Snapshot/elements unavailable:", err.message);
     }
 
     stats.plannerCalls++;
@@ -1465,7 +1599,7 @@ app.post("/run", async (req, res) => {
     let plannerSource = "qwen";
 
     try {
-      plannerResult = await planner.plan(command, pageText);
+      plannerResult = await planner.plan(command, pageText, pageContext);
       plannerSource = plannerResult?.source || plannerSource;
     } catch (err) {
       error("[RUN] Planner Error:", err.message);

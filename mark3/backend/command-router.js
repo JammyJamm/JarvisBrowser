@@ -236,7 +236,7 @@ export default class CommandRouter {
 
       /^(search|find)\b/,
 
-      /^(get|extract|fetch|read|scrape|inspect)\b/,
+      /^(get|extract|fetch|read|scrape|inspect|summarize)\b/,
 
       /^(watch|stream|track|monitor|convert|start\s+interval|stop\s+interval|cancel\s+interval)\b/,
 

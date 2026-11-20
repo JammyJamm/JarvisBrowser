@@ -19,22 +19,19 @@
           <span>jarvis<span class="brand-browser"> browser</span></span>
         </a>
         <nav class="primary-nav" aria-label="Main navigation">
-          <button class="nav-link active" type="button" data-page="dashboard" aria-current="page" aria-label="Overview" title="Overview"><span class="nav-icon">⌂</span><span>Overview</span></button>
-          <button class="nav-link" type="button" data-page="browser" aria-label="Browser" title="Browser"><span class="nav-icon">◉</span><span>Browser</span></button>
-          <button class="nav-link" type="button" data-page="finance" aria-label="Finance" title="Finance"><span class="nav-icon">$</span><span>Finance</span></button>
-          <button class="nav-link" type="button" data-page="health" aria-label="Health" title="Health"><span class="nav-icon">♡</span><span>Health</span></button>
-          <button class="nav-link" type="button" data-page="calendar" aria-label="Calendar" title="Calendar"><span class="nav-icon">▦</span><span>Calendar</span></button>
-          <button class="nav-link" type="button" data-page="food" aria-label="Food" title="Food"><span class="nav-icon">🥗</span><span>Food</span></button>
+          <button class="nav-link active" type="button" data-page="dashboard" aria-current="page" aria-label="Overview" title="Overview"><span class="nav-icon feather-icon" data-feather="home" aria-hidden="true"></span><span>Overview</span></button>
+          <button class="nav-link" type="button" data-page="browser" aria-label="Browser" title="Browser"><span class="nav-icon feather-icon" data-feather="globe" aria-hidden="true"></span><span>Browser</span></button>
+          <button class="nav-link" type="button" data-page="finance" aria-label="Finance" title="Finance"><span class="nav-icon feather-icon" data-feather="dollar-sign" aria-hidden="true"></span><span>Finance</span></button>
+          <button class="nav-link" type="button" data-page="health" aria-label="Health" title="Health"><span class="nav-icon feather-icon" data-feather="heart" aria-hidden="true"></span><span>Health</span></button>
+          <button class="nav-link" type="button" data-page="calendar" aria-label="Calendar" title="Calendar"><span class="nav-icon feather-icon" data-feather="calendar" aria-hidden="true"></span><span>Calendar</span></button>
+          <button class="nav-link" type="button" data-page="food" aria-label="Food" title="Food"><span class="nav-icon feather-icon" data-feather="coffee" aria-hidden="true"></span><span>Food</span></button>
         </nav>
         <div class="sidebar-footer">
           <div class="privacy-note"><span class="privacy-dot"></span><span>Your workspace<br />is stored locally</span></div>
-          <button class="nav-link assistant-link" type="button" data-page="assistant" aria-label="Jarvis assistant" title="Jarvis assistant"><span class="nav-icon">✳</span><span>Jarvis assistant</span></button>
+          <button class="nav-link assistant-link" type="button" data-page="assistant" aria-label="Jarvis assistant" title="Jarvis assistant"><span class="nav-icon feather-icon" data-feather="zap" aria-hidden="true"></span><span>Jarvis assistant</span></button>
         </div>
         <button class="sidebar-toggle" id="sidebarToggle" type="button" aria-label="Collapse sidebar" title="Collapse sidebar" aria-expanded="true">
-          <svg class="sidebar-toggle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect x="3.5" y="4.5" width="17" height="15" rx="2.5"></rect>
-            <path d="M9 5v14M15 12l-2.5-2.5M15 12l-2.5 2.5"></path>
-          </svg>
+          <span class="sidebar-toggle-icon feather-icon" data-feather="sidebar" aria-hidden="true"></span>
         </button>
       </aside>
 
@@ -43,18 +40,18 @@
           <div class="mobile-brand"><img src="./icon/logo.svg" alt="" /><span>Jarvis</span></div>
           <div class="page-heading"><span id="todayDate"></span><h1 id="todayTime"></h1></div>
           <div class="topbar-actions">
-            <button class="icon-button" type="button" data-action="toggle-theme" aria-label="Toggle color theme" title="Toggle color theme">◐</button>
-            <button class="assistant-shortcut" type="button" data-page="assistant"><span class="assistant-spark">✳</span><span>Ask Jarvis</span></button>
+            <button class="icon-button" type="button" data-action="toggle-theme" aria-label="Toggle color theme" title="Toggle color theme"><span class="feather-icon" data-feather="moon" aria-hidden="true"></span></button>
+            <button class="assistant-shortcut" type="button" data-page="assistant"><span class="assistant-spark feather-icon" data-feather="zap" aria-hidden="true"></span><span>Ask Jarvis</span></button>
             <div class="window-controls" aria-label="Window controls">
               <button class="window-control" type="button" data-window-action="minimize" aria-label="Minimize" title="Minimize">
-                <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6h8" /></svg>
+                <span class="window-control-icon feather-icon" data-feather="minus" aria-hidden="true"></span>
               </button>
               <button class="window-control" type="button" data-window-action="maximize" aria-label="Maximize" title="Maximize">
-                <svg class="maximize-icon" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="2.5" width="7" height="7" /></svg>
-                <svg class="restore-icon" viewBox="0 0 12 12" aria-hidden="true"><path d="M4 3h5v5M3 5v5h5" /></svg>
+                <span class="maximize-icon feather-icon" data-feather="maximize" aria-hidden="true"></span>
+                <span class="restore-icon feather-icon" data-feather="minimize" aria-hidden="true"></span>
               </button>
               <button class="window-control window-control-close" type="button" data-window-action="close" aria-label="Close" title="Close">
-                <svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 3 6 6M9 3 3 9" /></svg>
+                <span class="window-control-icon feather-icon" data-feather="x" aria-hidden="true"></span>
               </button>
             </div>
           </div>
@@ -67,96 +64,94 @@
               <div class="customize-actions"><button id="restoreCardsBtn" class="subtle-button" type="button" hidden>Restore hidden</button><button id="customizeBtn" class="subtle-button" type="button" aria-pressed="false">Customize</button></div>
             </div>
             <form id="dashboardSearchForm" class="search-card" role="search">
-              <span class="search-symbol" aria-hidden="true">⌕</span>
+              <span class="search-symbol feather-icon" data-feather="search" aria-hidden="true"></span>
               <input id="dashboardSearch" type="search" placeholder="Search the web or enter a URL" aria-label="Search the web or enter a URL" autocomplete="off" />
-              <kbd>↵</kbd>
+              <kbd>Enter</kbd>
             </form>
 
             <div class="dashboard-grid">
               <section class="dashboard-card quick-card" data-card-key="shortcuts">
-                <div class="card-heading"><div><p class="eyebrow">YOUR WEB</p><h3>Quick access</h3></div><button class="card-edit-button" type="button" data-action="hide-card" aria-label="Hide quick access card">−</button></div>
+                <div class="card-heading"><div><p class="eyebrow">YOUR WEB</p><h3>Quick access</h3></div><button class="card-edit-button" type="button" data-action="hide-card" aria-label="Hide quick access card"><span class="feather-icon" data-feather="minus" aria-hidden="true"></span></button></div>
                 <div class="quick-actions">
-                  <button class="quick-action" type="button" data-url="https://mail.google.com"><span class="quick-icon quick-icon-coral">✉</span><span>Mail</span></button>
-                  <button class="quick-action" type="button" data-url="https://calendar.google.com"><span class="quick-icon quick-icon-violet">▦</span><span>Calendar</span></button>
-                  <button class="quick-action" type="button" data-url="https://drive.google.com"><span class="quick-icon quick-icon-blue">◇</span><span>Drive</span></button>
-                  <button class="quick-action" type="button" data-url="https://github.com"><span class="quick-icon quick-icon-dark">⌘</span><span>GitHub</span></button>
+                  <button class="quick-action" type="button" data-url="https://mail.google.com"><span class="quick-icon quick-icon-coral feather-icon" data-feather="mail" aria-hidden="true"></span><span>Mail</span></button>
+                  <button class="quick-action" type="button" data-url="https://calendar.google.com"><span class="quick-icon quick-icon-violet feather-icon" data-feather="calendar" aria-hidden="true"></span><span>Calendar</span></button>
+                  <button class="quick-action" type="button" data-url="https://drive.google.com"><span class="quick-icon quick-icon-blue feather-icon" data-feather="folder" aria-hidden="true"></span><span>Drive</span></button>
+                  <button class="quick-action" type="button" data-url="https://github.com"><span class="quick-icon quick-icon-dark feather-icon" data-feather="github" aria-hidden="true"></span><span>GitHub</span></button>
                 </div>
               </section>
 
               <section class="dashboard-card calendar-widget" data-card-key="schedule">
-                <div class="card-heading"><div><p class="eyebrow">YOUR DAY</p><h3>Coming up</h3></div><button class="card-edit-button" type="button" data-action="hide-card" aria-label="Hide coming up card">−</button></div>
+                <div class="card-heading"><div><p class="eyebrow">YOUR DAY</p><h3>Coming up</h3></div><button class="card-edit-button" type="button" data-action="hide-card" aria-label="Hide coming up card"><span class="feather-icon" data-feather="minus" aria-hidden="true"></span></button></div>
                 <div id="homeSchedule" class="compact-events"></div>
-                <button class="text-link" type="button" data-page="calendar">Open calendar <span aria-hidden="true">→</span></button>
+                <button class="text-link" type="button" data-page="calendar">Open calendar <span class="feather-icon" data-feather="arrow-right" aria-hidden="true"></span></button>
               </section>
 
               <section class="dashboard-card finance-widget" data-card-key="finance">
                 <div class="card-heading"><div><p class="eyebrow">MONEY</p><h3>Finance snapshot</h3></div><span class="sample-badge">SAMPLE</span></div>
                 <p class="sample-note">Illustrative data · not linked to an account</p>
                 <div class="finance-preview"><span>Monthly budget</span><strong>$2,400</strong><div class="progress-track"><span style="width: 62%"></span></div><small>$1,488 sample spending</small></div>
-                <button class="text-link" type="button" data-page="finance">Explore finance <span aria-hidden="true">→</span></button>
+                <button class="text-link" type="button" data-page="finance">Explore finance <span class="feather-icon" data-feather="arrow-right" aria-hidden="true"></span></button>
               </section>
 
               <section class="dashboard-card health-widget" data-card-key="health">
                 <div class="card-heading"><div><p class="eyebrow">WELLNESS</p><h3>Daily check-in</h3></div><span class="sample-badge">SAMPLE</span></div>
                 <p class="sample-note">Illustrative data · not connected to a health service</p>
                 <div class="health-preview"><span class="health-ring">72<small>%</small></span><div><strong>Movement goal</strong><small>5,240 of 7,000 steps</small></div></div>
-                <button class="text-link" type="button" data-page="health">Explore wellness <span aria-hidden="true">→</span></button>
+                <button class="text-link" type="button" data-page="health">Explore wellness <span class="feather-icon" data-feather="arrow-right" aria-hidden="true"></span></button>
               </section>
 
               <section class="dashboard-card" data-card-key="recent">
-                <div class="card-heading"><div><p class="eyebrow">PICK UP WHERE YOU LEFT OFF</p><h3>Recently visited</h3></div><button class="card-edit-button" type="button" data-action="hide-card" aria-label="Hide recently visited card">−</button></div>
+                <div class="card-heading"><div><p class="eyebrow">PICK UP WHERE YOU LEFT OFF</p><h3>Recently visited</h3></div><button class="card-edit-button" type="button" data-action="hide-card" aria-label="Hide recently visited card"><span class="feather-icon" data-feather="minus" aria-hidden="true"></span></button></div>
                 <div id="recentSites" class="site-list"></div>
               </section>
 
               <section class="dashboard-card" data-card-key="bookmarks">
-                <div class="card-heading"><div><p class="eyebrow">SAVED FOR LATER</p><h3>Bookmarks</h3></div><button class="card-edit-button" type="button" data-action="hide-card" aria-label="Hide bookmarks card">−</button></div>
+                <div class="card-heading"><div><p class="eyebrow">SAVED FOR LATER</p><h3>Bookmarks</h3></div><button class="card-edit-button" type="button" data-action="hide-card" aria-label="Hide bookmarks card"><span class="feather-icon" data-feather="minus" aria-hidden="true"></span></button></div>
                 <div id="bookmarkList" class="site-list"></div>
-                <button class="text-link" type="button" data-page="browser">Manage in browser <span aria-hidden="true">→</span></button>
+                <button class="text-link" type="button" data-page="browser">Manage in browser <span class="feather-icon" data-feather="arrow-right" aria-hidden="true"></span></button>
               </section>
             </div>
           </section>
 
           <section id="browserPage" class="app-page browser-page" data-page-view="browser" hidden>
             <div id="nav" class="browser-toolbar">
-              <button id="browserHomeButton" class="toolbar-button" type="button" title="Dashboard" aria-label="Dashboard" data-page="dashboard">⌂</button>
-              <button id="backButton" class="toolbar-button" type="button" title="Back" aria-label="Back" onclick="goBack()"><img class="icon" src="./icon/chevron-left.svg" alt="" /></button>
-              <button id="forwardButton" class="toolbar-button" type="button" title="Forward" aria-label="Forward" onclick="goForward()"><img class="icon" src="./icon/chevron-right.svg" alt="" /></button>
-              <button id="reloadButton" class="toolbar-button" type="button" title="Reload" aria-label="Reload" onclick="reloadPage()"><img class="icon" src="./icon/refresh-cw.svg" alt="" /></button>
+              <button id="browserHomeButton" class="toolbar-button" type="button" title="Dashboard" aria-label="Dashboard" data-page="dashboard"><span class="feather-icon" data-feather="home" aria-hidden="true"></span></button>
+              <button id="backButton" class="toolbar-button" type="button" title="Back" aria-label="Back" onclick="goBack()"><span class="icon feather-icon" data-feather="chevron-left" aria-hidden="true"></span></button>
+              <button id="forwardButton" class="toolbar-button" type="button" title="Forward" aria-label="Forward" onclick="goForward()"><span class="icon feather-icon" data-feather="chevron-right" aria-hidden="true"></span></button>
+              <button id="reloadButton" class="toolbar-button" type="button" title="Reload" aria-label="Reload" onclick="reloadPage()"><span class="icon feather-icon" data-feather="refresh-cw" aria-hidden="true"></span></button>
               <div class="urlBlock"><img src="./icon/logo.svg" alt="" /><input id="url" type="text" value="https://example.com" autocomplete="off" spellcheck="false" aria-label="Address and search" /></div>
-              <button id="navigateButton" class="toolbar-button navigate-button" type="button" title="Go" aria-label="Go" onclick="navigate()"><img class="icon" src="./icon/send.svg" alt="" /></button>
+              <button id="navigateButton" class="toolbar-button navigate-button" type="button" title="Go" aria-label="Go" onclick="navigate()"><span class="icon feather-icon" data-feather="send" aria-hidden="true"></span></button>
               <button id="browserAssistantButton" class="toolbar-button browser-assistant-button" type="button" aria-label="Ask Jarvis" title="Ask Jarvis" aria-expanded="false">
-                <img class="icon" src="./icon/message-circle.svg" alt="" />
+                <span class="icon feather-icon" data-feather="message-circle" aria-hidden="true"></span>
               </button>
               <button class="toolbar-button browser-tool-button" type="button" data-browser-tool="bookmark" aria-label="Save page" title="Save page" aria-pressed="false">
-                <svg class="icon bookmark-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <path d="m12 3 2.75 5.57 6.15.9-4.45 4.34 1.05 6.13L12 17.05l-5.5 2.89 1.05-6.13L3.1 9.47l6.15-.9L12 3Z" />
-                </svg>
+                <span class="icon bookmark-icon feather-icon" data-feather="star" aria-hidden="true"></span>
               </button>
               <button class="toolbar-button browser-tool-button" type="button" data-browser-tool="history" aria-label="Browsing history" title="Browsing history">
-                <img class="icon" src="./icon/clock.svg" alt="" />
+                <span class="icon feather-icon" data-feather="clock" aria-hidden="true"></span>
               </button>
               <button class="toolbar-button browser-tool-button" type="button" data-browser-tool="downloads" aria-label="Downloads" title="Downloads">
-                <img class="icon" src="./icon/download.svg" alt="" />
+                <span class="icon feather-icon" data-feather="download" aria-hidden="true"></span>
               </button>
               <button class="toolbar-button browser-tool-button" type="button" data-browser-tool="private" aria-label="Private browsing unavailable" aria-disabled="true" title="Private browsing unavailable">
-                <img class="icon" src="./icon/eye-off.svg" alt="" />
+                <span class="icon feather-icon" data-feather="eye-off" aria-hidden="true"></span>
               </button>
-              <button id="newTabButton" class="toolbar-button new-tab-button" type="button" aria-label="New tab" title="New tab"><span aria-hidden="true">＋</span></button>
+              <button id="newTabButton" class="toolbar-button new-tab-button" type="button" aria-label="New tab" title="New tab"><span class="feather-icon" data-feather="plus" aria-hidden="true"></span></button>
             </div>
             <div id="tabs" class="browser-tabs" role="tablist" aria-label="Browser tabs"></div>
             <div class="browser-utilities">
-              <div id="browserUtilityPanel" class="utility-panel" hidden><div class="card-heading"><h3 id="utilityPanelTitle"></h3><button class="icon-button" type="button" data-action="close-utility" aria-label="Close panel">×</button></div><div id="browserUtilityContent"></div></div>
+              <div id="browserUtilityPanel" class="utility-panel" hidden><div class="card-heading"><h3 id="utilityPanelTitle"></h3><button class="icon-button" type="button" data-action="close-utility" aria-label="Close panel"><span class="feather-icon" data-feather="x" aria-hidden="true"></span></button></div><div id="browserUtilityContent"></div></div>
             </div>
             <div id="layout" class="browser-layout">
               <div id="browser" aria-label="Browser content"></div>
               <aside id="browserAssistantPanel" class="browser-assistant-panel" aria-label="Ask Jarvis" aria-hidden="true" inert>
                 <div class="browser-assistant-heading">
-                  <div><span class="assistant-spark">✳</span><strong>Ask Jarvis</strong></div>
+                  <div><span class="assistant-spark feather-icon" data-feather="zap" aria-hidden="true"></span><strong>Ask Jarvis</strong></div>
                   <div class="assistant-tabs" role="tablist" aria-label="Jarvis panel views">
                     <button id="assistantLiveTab" class="assistant-tab active" type="button" role="tab" aria-selected="true" aria-controls="assistantLiveView" tabindex="0">Live</button>
                     <button id="assistantLogsTab" class="assistant-tab" type="button" role="tab" aria-selected="false" aria-controls="assistantLogsView" tabindex="-1">Jarvis Logs</button>
                   </div>
-                  <button id="closeBrowserAssistant" class="icon-button" type="button" aria-label="Close Ask Jarvis" title="Close">×</button>
+                  <button id="closeBrowserAssistant" class="icon-button" type="button" aria-label="Close Ask Jarvis" title="Close"><span class="feather-icon" data-feather="x" aria-hidden="true"></span></button>
                 </div>
                 <section id="assistantLiveView" class="assistant-panel-view" role="tabpanel" aria-labelledby="assistantLiveTab">
                   <div id="aiForm">
@@ -175,7 +170,7 @@
                           spellcheck="false"
                         ></textarea>
                         <button id="submitCmdBtn" type="button" class="cmd-send-btn" title="Send Command" aria-label="Send command">
-                          <img src="./icon/send.svg" alt="" />
+                          <span class="feather-icon" data-feather="send" aria-hidden="true"></span>
                         </button>
                       </div>
                     </form>
@@ -183,7 +178,7 @@
                 </section>
                 <section id="assistantLogsView" class="assistant-panel-view assistant-logs-view" role="tabpanel" aria-labelledby="assistantLogsTab" hidden inert>
                   <div class="assistant-panel-toolbar">
-                    <button id="assistantDismissPopupBtn" class="subtle-button" type="button">🛡 Dismiss popup</button>
+                    <button id="assistantDismissPopupBtn" class="subtle-button" type="button"><span class="feather-icon" data-feather="shield" aria-hidden="true"></span> Dismiss popup</button>
                   </div>
                   <div id="inactivityStatus" class="inactivity-status" role="status">Inactivity guard ready</div>
                   <div id="logs" class="panel-view active" role="log" aria-label="Jarvis activity logs" aria-live="polite"></div>
@@ -204,25 +199,25 @@
               <section class="dashboard-card chart-card"><div class="card-heading"><div><p class="eyebrow">CASH FLOW</p><h3>Monthly overview</h3></div><label class="select-wrap"><span class="visually-hidden">Chart period</span><select class="dashboard-select"><option>Last 6 months</option><option>This year</option></select></label></div><div class="chart-legend"><span><i class="legend-income"></i> Income</span><span><i class="legend-spending"></i> Spending</span><span class="sample-badge">SAMPLE</span></div><div class="bar-chart" aria-label="Sample income and spending by month"><div class="chart-column"><div class="bar-pair"><i style="height: 68%"></i><i style="height: 38%"></i></div><span>Jun</span></div><div class="chart-column"><div class="bar-pair"><i style="height: 54%"></i><i style="height: 42%"></i></div><span>Jul</span></div><div class="chart-column"><div class="bar-pair"><i style="height: 80%"></i><i style="height: 49%"></i></div><span>Aug</span></div><div class="chart-column"><div class="bar-pair"><i style="height: 62%"></i><i style="height: 34%"></i></div><span>Sep</span></div><div class="chart-column"><div class="bar-pair"><i style="height: 72%"></i><i style="height: 48%"></i></div><span>Oct</span></div><div class="chart-column"><div class="bar-pair"><i style="height: 88%"></i><i style="height: 56%"></i></div><span>Nov</span></div></div></section>
               <section class="dashboard-card"><div class="card-heading"><div><p class="eyebrow">SPENDING PLAN</p><h3>Budget tracking</h3></div><span class="sample-badge">SAMPLE</span></div><div class="budget-list"><div><span>Home & bills</span><strong>$980 <small>/ $1,200</small></strong><div class="progress-track"><span style="width: 82%"></span></div></div><div><span>Food & dining</span><strong>$420 <small>/ $600</small></strong><div class="progress-track"><span style="width: 70%"></span></div></div><div><span>Everyday</span><strong>$188 <small>/ $400</small></strong><div class="progress-track"><span style="width: 47%"></span></div></div></div></section>
             </div>
-            <section class="dashboard-card transaction-card"><div class="card-heading"><div><p class="eyebrow">LATEST ACTIVITY</p><h3>Recent transactions</h3></div><span class="sample-note">All entries below are illustrative</span></div><div class="transaction-list"><div class="transaction-row"><span class="transaction-icon">☕</span><span><strong>Coffee & Co.</strong><small>Today · Food & dining</small></span><strong>−$5.80</strong></div><div class="transaction-row"><span class="transaction-icon">↗</span><span><strong>Monthly pay</strong><small>Nov 14 · Income</small></span><strong class="positive">＋$4,800.00</strong></div><div class="transaction-row"><span class="transaction-icon">⌂</span><span><strong>Home utilities</strong><small>Nov 12 · Home & bills</small></span><strong>−$124.00</strong></div></div></section>
+            <section class="dashboard-card transaction-card"><div class="card-heading"><div><p class="eyebrow">LATEST ACTIVITY</p><h3>Recent transactions</h3></div><span class="sample-note">All entries below are illustrative</span></div><div class="transaction-list"><div class="transaction-row"><span class="transaction-icon feather-icon" data-feather="coffee" aria-hidden="true"></span><span><strong>Coffee & Co.</strong><small>Today · Food & dining</small></span><strong>−$5.80</strong></div><div class="transaction-row"><span class="transaction-icon feather-icon" data-feather="trending-up" aria-hidden="true"></span><span><strong>Monthly pay</strong><small>Nov 14 · Income</small></span><strong class="positive">＋$4,800.00</strong></div><div class="transaction-row"><span class="transaction-icon feather-icon" data-feather="home" aria-hidden="true"></span><span><strong>Home utilities</strong><small>Nov 12 · Home & bills</small></span><strong>−$124.00</strong></div></div></section>
           </section>
 
           <section id="healthPage" class="app-page section-page" data-page-view="health" hidden>
             <div class="section-intro"><div><p class="eyebrow">SMALL STEPS, GOOD DAYS</p><h2>Wellness</h2><p class="muted">A gentle overview to help you stay in tune with yourself.</p></div><span class="sample-badge">SAMPLE DATA · NOT CONNECTED</span></div>
-            <div class="health-banner"><div><span class="eyebrow">TODAY'S NOTE</span><h3>Progress is a practice, not a perfect score.</h3><p>These example metrics are for preview only and are not medical advice.</p></div><span class="health-banner-mark">♡</span></div>
+            <div class="health-banner"><div><span class="eyebrow">TODAY'S NOTE</span><h3>Progress is a practice, not a perfect score.</h3><p>These example metrics are for preview only and are not medical advice.</p></div><span class="health-banner-mark feather-icon" data-feather="heart" aria-hidden="true"></span></div>
             <div class="stat-grid health-stats">
               <article class="stat-card"><span class="stat-label">Steps today <span class="sample-badge">SAMPLE</span></span><strong>5,240 <small>/ 7,000</small></strong><div class="progress-track"><span style="width: 75%"></span></div><span class="stat-context">Illustrative activity</span></article>
               <article class="stat-card"><span class="stat-label">Sleep last night <span class="sample-badge">SAMPLE</span></span><strong>7h 24m</strong><span class="stat-context">Illustrative sleep duration</span></article>
-              <article class="stat-card"><span class="stat-label">Water today <span class="sample-badge">SAMPLE</span></span><strong id="waterCount">4 <small>/ 8 glasses</small></strong><div class="water-controls"><button class="subtle-button" type="button" data-action="water-minus" aria-label="Remove one glass of water">−</button><button class="subtle-button" type="button" data-action="water-plus">Add a glass</button></div></article>
+              <article class="stat-card"><span class="stat-label">Water today <span class="sample-badge">SAMPLE</span></span><strong id="waterCount">4 <small>/ 8 glasses</small></strong><div class="water-controls"><button class="subtle-button" type="button" data-action="water-minus" aria-label="Remove one glass of water"><span class="feather-icon" data-feather="minus" aria-hidden="true"></span></button><button class="subtle-button" type="button" data-action="water-plus"><span class="feather-icon" data-feather="plus" aria-hidden="true"></span> Add a glass</button></div></article>
               <article class="stat-card"><span class="stat-label">Weekly movement <span class="sample-badge">SAMPLE</span></span><strong>3.5 <small>/ 5 hours</small></strong><div class="progress-track"><span style="width: 70%"></span></div><span class="stat-context">Illustrative weekly goal</span></article>
             </div>
             <section class="dashboard-card chart-card"><div class="card-heading"><div><p class="eyebrow">A LITTLE AT A TIME</p><h3>Movement this week</h3></div><span class="sample-badge">SAMPLE</span></div><div class="health-chart"><div class="health-day"><i style="height: 45%"></i><span>Mon</span></div><div class="health-day"><i style="height: 72%"></i><span>Tue</span></div><div class="health-day"><i style="height: 56%"></i><span>Wed</span></div><div class="health-day"><i style="height: 84%"></i><span>Thu</span></div><div class="health-day"><i style="height: 38%"></i><span>Fri</span></div><div class="health-day"><i style="height: 0%"></i><span>Sat</span></div><div class="health-day"><i style="height: 0%"></i><span>Sun</span></div></div><p class="chart-footnote">All health values are examples. Connect a supported health service before relying on personal metrics.</p></section>
           </section>
 
           <section id="calendarPage" class="app-page section-page" data-page-view="calendar" hidden>
-            <div class="section-intro"><div><p class="eyebrow">MAKE ROOM FOR WHAT MATTERS</p><h2>Calendar</h2><p class="muted">Your plans, tasks and reminders in one calm view.</p></div><button id="addEventButton" class="primary-button" type="button">＋ Add event</button></div>
+            <div class="section-intro"><div><p class="eyebrow">MAKE ROOM FOR WHAT MATTERS</p><h2>Calendar</h2><p class="muted">Your plans, tasks and reminders in one calm view.</p></div><button id="addEventButton" class="primary-button" type="button"><span class="feather-icon" data-feather="plus" aria-hidden="true"></span> Add event</button></div>
             <section class="dashboard-card calendar-main">
-              <div class="calendar-controls"><div class="calendar-date-control"><button class="icon-button" type="button" data-action="calendar-prev" aria-label="Previous period">‹</button><button class="icon-button" type="button" data-action="calendar-next" aria-label="Next period">›</button><h3 id="calendarHeading"></h3><button class="subtle-button" type="button" data-action="calendar-today">Today</button></div><div class="view-switch" role="group" aria-label="Calendar view"><button type="button" data-calendar-view="month" class="active">Month</button><button type="button" data-calendar-view="week">Week</button><button type="button" data-calendar-view="day">Day</button></div></div>
+              <div class="calendar-controls"><div class="calendar-date-control"><button class="icon-button" type="button" data-action="calendar-prev" aria-label="Previous period"><span class="feather-icon" data-feather="chevron-left" aria-hidden="true"></span></button><button class="icon-button" type="button" data-action="calendar-next" aria-label="Next period"><span class="feather-icon" data-feather="chevron-right" aria-hidden="true"></span></button><h3 id="calendarHeading"></h3><button class="subtle-button" type="button" data-action="calendar-today">Today</button></div><div class="view-switch" role="group" aria-label="Calendar view"><button type="button" data-calendar-view="month" class="active">Month</button><button type="button" data-calendar-view="week">Week</button><button type="button" data-calendar-view="day">Day</button></div></div>
               <div class="calendar-weekdays" aria-hidden="true"><span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span></div>
               <div id="calendarGrid" class="calendar-grid"></div>
               <div class="calendar-footer"><button id="reminderPermissionButton" class="text-link" type="button">Enable desktop reminders</button><span id="reminderStatus" class="muted">Reminders are off</span></div>
@@ -239,12 +234,12 @@
               <div class="food-section-heading"><div><p class="eyebrow">TODAY'S MEALS</p><h3>Meal today</h3></div><span id="foodTodayDate" class="muted"></span></div>
               <div class="food-meals-grid">
                 <form class="dashboard-card food-meal-card" data-meal-form="breakfast">
-                  <div class="food-meal-heading"><div><span class="food-meal-icon">☀</span><div><p class="eyebrow">MORNING</p><h3>Breakfast</h3></div></div><span class="food-protein-value"><span id="breakfastProteinLabel">0</span> g protein</span></div>
+                  <div class="food-meal-heading"><div><span class="food-meal-icon feather-icon" data-feather="sunrise" aria-hidden="true"></span><div><p class="eyebrow">MORNING</p><h3>Breakfast</h3></div></div><span class="food-protein-value"><span id="breakfastProteinLabel">0</span> g protein</span></div>
                   <label class="food-field">Meal plan<textarea id="breakfastFoods" name="foods" rows="2" maxlength="240" placeholder="Add your breakfast foods"></textarea></label>
                   <div class="food-meal-actions"><label class="food-protein-input">Protein estimate <span><input id="breakfastProtein" name="protein" type="number" min="0" max="300" step="1" value="0" inputmode="numeric" /> g</span></label><button class="subtle-button" type="submit">Save breakfast</button></div>
                 </form>
                 <form class="dashboard-card food-meal-card" data-meal-form="dinner">
-                  <div class="food-meal-heading"><div><span class="food-meal-icon dinner-icon">☾</span><div><p class="eyebrow">EVENING</p><h3>Dinner</h3></div></div><span class="food-protein-value"><span id="dinnerProteinLabel">0</span> g protein</span></div>
+                  <div class="food-meal-heading"><div><span class="food-meal-icon dinner-icon feather-icon" data-feather="moon" aria-hidden="true"></span><div><p class="eyebrow">EVENING</p><h3>Dinner</h3></div></div><span class="food-protein-value"><span id="dinnerProteinLabel">0</span> g protein</span></div>
                   <label class="food-field">Meal plan<textarea id="dinnerFoods" name="foods" rows="2" maxlength="240" placeholder="Add your dinner foods"></textarea></label>
                   <div class="food-meal-actions"><label class="food-protein-input">Protein estimate <span><input id="dinnerProtein" name="protein" type="number" min="0" max="300" step="1" value="0" inputmode="numeric" /> g</span></label><button class="subtle-button" type="submit">Save dinner</button></div>
                 </form>
@@ -270,7 +265,7 @@
                   <input id="produceName" name="name" maxlength="48" placeholder="Add produce you have" required />
                   <label class="visually-hidden" for="produceType">Produce type</label>
                   <select id="produceType" name="type" aria-label="Produce type"><option value="fruit">Fruit</option><option value="vegetable">Vegetable</option></select>
-                  <button class="primary-button" type="submit" aria-label="Add produce">＋</button>
+                  <button class="primary-button" type="submit" aria-label="Add produce"><span class="feather-icon" data-feather="plus" aria-hidden="true"></span></button>
                 </form>
                 <div class="produce-group"><h4>Fruits</h4><div id="availableFruits" class="produce-list"></div></div>
                 <div class="produce-group"><h4>Vegetables</h4><div id="availableVegetables" class="produce-list"></div></div>
@@ -284,7 +279,7 @@
       <form id="eventForm" class="event-form">
         <div class="event-form-header">
           <h3 id="eventFormTitle">Add event</h3>
-          <button class="icon-button" type="button" data-action="close-event" aria-label="Close event form">×</button>
+          <button class="icon-button" type="button" data-action="close-event" aria-label="Close event form"><span class="feather-icon" data-feather="x" aria-hidden="true"></span></button>
         </div>
         <label class="form-field">Event title<input id="eventTitle" name="title" maxlength="100" required /></label>
         <label class="form-field">Type<select id="eventType" name="type"><option value="Meeting">Meeting</option><option value="Task">Task</option><option value="Personal">Personal</option><option value="Reminder">Reminder</option></select></label>
@@ -311,1126 +306,48 @@
 
     <script>
       // ==========================================================
-      // GLOBAL STATE
+      // JARVIS BROWSER BOOTSTRAP & RESIZE OBSERVER
       // ==========================================================
-
       window.aiState = {
-        ready: false,
-
-        pendingCommand: null,
-
+        ready: true,
         backendReady: false,
-
-        initialized: false,
-
-        initializing: false,
-
-        navigating: false,
-
-        currentUrl: "",
-
-        lastError: null,
-
         backendUrl: "http://localhost:9000",
-
+        currentUrl: "https://example.com",
         startedAt: Date.now(),
       };
 
-      // ==========================================================
-      // CONFIGURATION
-      // ==========================================================
-
-      const BACKEND_URL = "http://localhost:9000";
-
-      const BACKEND_HEALTH_URL = `${BACKEND_URL}/status`;
-
-      const BACKEND_TIMEOUT = 10000;
-
-      const BACKEND_MAX_ATTEMPTS = 30;
-
-      const BACKEND_RETRY_DELAY = 500;
-
-      // ==========================================================
-      // DOM HELPERS
-      // ==========================================================
-
-      function $(id) {
-        return document.getElementById(id);
-      }
-
-      // ==========================================================
-      // LOGGING
-      // ==========================================================
-
       function log(message) {
-        const text =
-          message === undefined || message === null ? "" : String(message);
-
+        const text = message === undefined || message === null ? "" : String(message);
         console.log("[Jarvis]", text);
-
-        const logs = $("logs");
-
-        if (!logs) {
-          return;
+        const logs = document.getElementById("logs");
+        if (logs) {
+          const div = document.createElement("div");
+          div.className = "jarvis-log-entry";
+          div.innerText = text;
+          logs.appendChild(div);
+          logs.scrollTop = logs.scrollHeight;
         }
-
-        const div = document.createElement("div");
-        div.className = "jarvis-log-entry";
-
-        div.innerText = text;
-
-        logs.appendChild(div);
-
-        logs.scrollTop = logs.scrollHeight;
       }
       window.jarvisLog = log;
 
-      // ==========================================================
-      // STATUS
-      // ==========================================================
-
-      function setStatus(message) {
-        const status = $("statusText");
-
-        if (status) {
-          const text = String(message || "");
-          status.innerText = text;
-          status.closest(".statusBlock").dataset.state =
-            /analyz/i.test(text) ? "analyzing" :
-            /working/i.test(text) ? "working" :
-            /unable|error|failed/i.test(text) ? "error" : "ready";
-        }
-      }
-
-      // ==========================================================
-      // ERROR HANDLING
-      // ==========================================================
-
-      function setError(error) {
-        const message = error?.message || String(error || "Unknown error");
-
-        window.aiState.lastError = message;
-
-        console.error("[Jarvis Error]", message);
-
-        log(`❌ ${message}`);
-
-        setStatus("Jarvis encountered an error");
-      }
-
-      // ==========================================================
-      // URL FORMATTER
-      // ==========================================================
-
-      function formatURL(value) {
-        let url = String(value || "").trim();
-
-        if (!url) {
-          return "https://google.com";
-        }
-
-        //--------------------------------------------------------
-        // Already valid HTTP/HTTPS
-        //--------------------------------------------------------
-
-        if (/^https?:\/\//i.test(url)) {
-          return url;
-        }
-
-        //--------------------------------------------------------
-        // Localhost / IP / file-like URLs
-        //--------------------------------------------------------
-
-        if (
-          /^localhost(?::\d+)?(?:\/|$)/i.test(url) ||
-          /^\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?(?:\/|$)/.test(url)
-        ) {
-          return `http://${url}`;
-        }
-
-        //--------------------------------------------------------
-        // Search-like input
-        //--------------------------------------------------------
-
-        if (/\s/.test(url) || !url.includes(".")) {
-          return `https://www.google.com/search?q=${encodeURIComponent(url)}`;
-        }
-
-        //--------------------------------------------------------
-        // Normal domain
-        //--------------------------------------------------------
-
-        return `https://${url}`;
-      }
-
-      // ==========================================================
-      // CHECK BROWSER API
-      // ==========================================================
-
-      function ensureBrowserAPI() {
-        if (!window.browserAPI) {
-          throw new Error("Electron browserAPI is not available");
-        }
-
-        return window.browserAPI;
-      }
-
-      // ==========================================================
-      // CHECK FUNCTION
-      // ==========================================================
-
-      function hasBrowserFunction(name) {
-        return (
-          window.browserAPI && typeof window.browserAPI[name] === "function"
-        );
-      }
-
-      // ==========================================================
-      // GENERIC TIMEOUT
-      // ==========================================================
-
-      async function fetchWithTimeout(
-        url,
-        options = {},
-        timeout = BACKEND_TIMEOUT,
-      ) {
-        const controller = new AbortController();
-
-        const timer = setTimeout(() => controller.abort(), timeout);
-
-        try {
-          return await fetch(url, {
-            ...options,
-            signal: controller.signal,
-          });
-        } finally {
-          clearTimeout(timer);
-        }
-      }
-
-      // ==========================================================
-      // BACKEND HEALTH CHECK
-      // ==========================================================
-
-      async function checkBackend() {
-        try {
-          const response = await fetchWithTimeout(BACKEND_HEALTH_URL, {
-            method: "GET",
-            cache: "no-store",
-          });
-
-          if (!response.ok) {
-            throw new Error(`Backend returned HTTP ${response.status}`);
-          }
-
-          window.aiState.backendReady = true;
-
-          return true;
-        } catch (error) {
-          window.aiState.backendReady = false;
-
-          return false;
-        }
-      }
-
-      // ==========================================================
-      // WAIT FOR BACKEND
-      // ==========================================================
-
-      async function waitForBackend(
-        maxAttempts = BACKEND_MAX_ATTEMPTS,
-        retryDelay = BACKEND_RETRY_DELAY,
-      ) {
-        if (window.aiState.backendReady) {
-          return true;
-        }
-
-        log("⏳ Connecting to Jarvis backend...");
-
-        setStatus("Connecting to Jarvis backend...");
-
-        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-          const available = await checkBackend();
-
-          if (available) {
-            log("✅ Jarvis backend connected");
-
-            setStatus("Jarvis backend connected");
-
-            return true;
-          }
-
-          console.warn(
-            `Backend connection attempt ${attempt}/${maxAttempts} failed`,
-          );
-
-          if (attempt < maxAttempts) {
-            await new Promise((resolve) => setTimeout(resolve, retryDelay));
-          }
-        }
-
-        window.aiState.backendReady = false;
-
-        setStatus("Backend unavailable");
-
-        log("❌ Unable to connect to Jarvis backend");
-
-        return false;
-      }
-
-      // ==========================================================
-      // BACKEND REQUEST HELPER
-      // ==========================================================
-
-      async function backendFetch(endpoint, options = {}) {
-        //--------------------------------------------------------
-        // Ensure backend
-        //--------------------------------------------------------
-
-        if (!window.aiState.backendReady) {
-          const connected = await waitForBackend();
-
-          if (!connected) {
-            throw new Error("Jarvis backend is unavailable");
-          }
-        }
-
-        //--------------------------------------------------------
-        // Request
-        //--------------------------------------------------------
-
-        const response = await fetchWithTimeout(`${BACKEND_URL}${endpoint}`, {
-          ...options,
-
-          headers: {
-            "Content-Type": "application/json",
-
-            ...(options.headers || {}),
-          },
-        });
-
-        //--------------------------------------------------------
-        // Backend failure
-        //--------------------------------------------------------
-
-        if (!response.ok) {
-          let message = `Backend request failed: ${response.status} ${response.statusText}`;
-
-          try {
-            const errorData = await response.clone().json();
-
-            if (errorData?.error) {
-              message = errorData.error;
-            }
-          } catch {
-            // Ignore non-JSON error response
-          }
-
-          throw new Error(message);
-        }
-
-        return response;
-      }
-
-      // ==========================================================
-      // NAVIGATE
-      // ==========================================================
-
-      async function navigate(providedUrl = null) {
-        if (window.aiState.navigating) {
-          log("⏳ Navigation already in progress...");
-
-          return false;
-        }
-
-        window.aiState.navigating = true;
-
-        try {
-          //------------------------------------------------------
-          // URL
-          //------------------------------------------------------
-
-          const input = $("url");
-
-          if (!input) {
-            throw new Error("URL input element not found");
-          }
-
-          const rawUrl = providedUrl !== null ? providedUrl : input.value;
-
-          const url = formatURL(rawUrl);
-
-          input.value = url;
-
-          window.aiState.currentUrl = url;
-
-          //------------------------------------------------------
-          // Browser API
-          //------------------------------------------------------
-
-          const browser = ensureBrowserAPI();
-
-          log(`🌐 Navigating to ${url}`);
-
-          setStatus(`Opening ${url}`);
-
-          //------------------------------------------------------
-          // Electron browser
-          //------------------------------------------------------
-
-          if (typeof browser.navigate !== "function") {
-            throw new Error("browserAPI.navigate() is not available");
-          }
-
-          await browser.navigate(url);
-
-          //------------------------------------------------------
-          // Backend
-          //------------------------------------------------------
-
-          if (!window.aiState.backendReady) {
-            await waitForBackend(10, 300);
-          }
-
-          if (window.aiState.backendReady) {
-            try {
-              await backendFetch("/navigate", {
-                method: "POST",
-
-                body: JSON.stringify({
-                  url,
-                }),
-              });
-            } catch (backendError) {
-              console.warn(
-                "Backend navigation synchronization failed:",
-                backendError.message,
-              );
-
-              log(
-                `⚠️ Browser opened, backend sync failed: ${backendError.message}`,
-              );
-            }
-          }
-
-          //------------------------------------------------------
-          // Success
-          //------------------------------------------------------
-
-          setStatus("Ready when you are");
-
-          log(`✅ Navigation completed: ${url}`);
-
-          return true;
-        } catch (error) {
-          setError(error);
-
-          log(`❌ Navigation failed: ${error.message}`);
-
-          return false;
-        } finally {
-          window.aiState.navigating = false;
-        }
-      }
-
-      // ==========================================================
-      // BACK
-      // ==========================================================
-
-      async function goBack() {
-        try {
-          const browser = ensureBrowserAPI();
-
-          if (typeof browser.back !== "function") {
-            throw new Error("browserAPI.back() is not available");
-          }
-
-          await browser.back();
-
-          log("↩️ Back");
-        } catch (error) {
-          setError(error);
-
-          log(`❌ Back failed: ${error.message}`);
-        }
-      }
-
-      // ==========================================================
-      // FORWARD
-      // ==========================================================
-
-      async function goForward() {
-        try {
-          const browser = ensureBrowserAPI();
-
-          if (typeof browser.forward !== "function") {
-            throw new Error("browserAPI.forward() is not available");
-          }
-
-          await browser.forward();
-
-          log("↪️ Forward");
-        } catch (error) {
-          setError(error);
-
-          log(`❌ Forward failed: ${error.message}`);
-        }
-      }
-
-      // ==========================================================
-      // RELOAD
-      // ==========================================================
-
-      async function reloadPage() {
-        try {
-          const browser = ensureBrowserAPI();
-
-          if (typeof browser.reload !== "function") {
-            throw new Error("browserAPI.reload() is not available");
-          }
-
-          await browser.reload();
-
-          log("🔄 Page reloaded");
-        } catch (error) {
-          setError(error);
-
-          log(`❌ Reload failed: ${error.message}`);
-        }
-      }
-
-      // ==========================================================
-      // RESIZE BROWSER
-      // ==========================================================
-
       function resizeBrowser() {
-        try {
-          if (
-            window.electronAPI &&
-            typeof window.electronAPI.resizeBrowser === "function"
-          ) {
-            window.electronAPI.resizeBrowser();
-
-            return true;
-          }
-
-          //------------------------------------------------------
-          // Optional browserAPI resize
-          //------------------------------------------------------
-
-          if (
-            window.browserAPI &&
-            typeof window.browserAPI.resize === "function"
-          ) {
-            window.browserAPI.resize();
-
-            return true;
-          }
-
-          return false;
-        } catch (error) {
-          console.error("❌ Browser resize failed:", error);
-
-          return false;
+        if (window.electronAPI && typeof window.electronAPI.resizeBrowser === "function") {
+          window.electronAPI.resizeBrowser();
         }
       }
+      window.resizeBrowser = resizeBrowser;
 
-      // ==========================================================
-      // SYNC URL FROM ELECTRON
-      // ==========================================================
-
-      function setupURLSynchronization() {
-        //--------------------------------------------------------
-        // Optional preload event
-        //--------------------------------------------------------
-
-        if (
-          window.browserAPI &&
-          typeof window.browserAPI.onURLChanged === "function"
-        ) {
-          window.browserAPI.onURLChanged((url) => {
-            if (!url) {
-              return;
-            }
-
-            const input = $("url");
-
-            if (input) {
-              input.value = String(url);
-            }
-
-            window.aiState.currentUrl = String(url);
-          });
-
-          log("🔗 URL synchronization enabled");
+      window.addEventListener("resize", resizeBrowser);
+      window.addEventListener("DOMContentLoaded", () => {
+        setTimeout(resizeBrowser, 150);
+        const browserEl = document.getElementById("browser");
+        if (browserEl && window.ResizeObserver) {
+          new ResizeObserver(resizeBrowser).observe(browserEl);
         }
-
-        //--------------------------------------------------------
-        // Optional Electron event
-        //--------------------------------------------------------
-
-        if (
-          window.electronAPI &&
-          typeof window.electronAPI.onURLChanged === "function"
-        ) {
-          window.electronAPI.onURLChanged((url) => {
-            if (!url) {
-              return;
-            }
-
-            const input = $("url");
-
-            if (input) {
-              input.value = String(url);
-            }
-
-            window.aiState.currentUrl = String(url);
-          });
-        }
-      }
-
-      // ==========================================================
-      // INITIALIZE JARVIS
-      // ==========================================================
-
-      async function initializeJarvis() {
-        //--------------------------------------------------------
-        // Already initialized
-        //--------------------------------------------------------
-
-        if (window.aiState.initialized) {
-          console.log("ℹ️ Jarvis is already initialized");
-
-          return true;
-        }
-
-        //--------------------------------------------------------
-        // Already initializing
-        //--------------------------------------------------------
-
-        if (window.aiState.initializing) {
-          console.log("ℹ️ Jarvis initialization already running");
-
-          return false;
-        }
-
-        window.aiState.initializing = true;
-
-        try {
-          log("🚀 Starting Jarvis Browser...");
-
-          setStatus("Starting Jarvis Browser...");
-
-          //------------------------------------------------------
-          // STEP 1
-          // Browser API
-          //------------------------------------------------------
-
-          if (!window.browserAPI) {
-            throw new Error("Electron browserAPI is not available");
-          }
-
-          //------------------------------------------------------
-          // STEP 2
-          // Backend
-          //------------------------------------------------------
-
-          const backendReady = await waitForBackend();
-
-          if (!backendReady) {
-            throw new Error("Jarvis backend could not be reached");
-          }
-
-          //------------------------------------------------------
-          // STEP 3
-          // URL
-          //------------------------------------------------------
-
-          const input = $("url");
-
-          if (!input) {
-            throw new Error("URL input element not found");
-          }
-
-          const url = formatURL(input.value);
-
-          input.value = url;
-
-          window.aiState.currentUrl = url;
-
-          //------------------------------------------------------
-          // STEP 4
-          // Browser navigation
-          //------------------------------------------------------
-
-          log(`🌐 Opening ${url}`);
-
-          setStatus(`Opening ${url}`);
-
-          const browser = ensureBrowserAPI();
-
-          if (typeof browser.navigate !== "function") {
-            throw new Error("browserAPI.navigate() is not available");
-          }
-
-          await browser.navigate(url);
-
-          //------------------------------------------------------
-          // STEP 5
-          // Backend initialization
-          //------------------------------------------------------
-
-          log("🔌 Initializing browser automation...");
-
-          setStatus("Initializing browser automation...");
-
-          const response = await backendFetch("/init", {
-            method: "POST",
-
-            body: JSON.stringify({
-              url,
-            }),
-          });
-
-          let data = null;
-
-          try {
-            data = await response.json();
-          } catch {
-            data = {
-              success: true,
-            };
-          }
-
-          //------------------------------------------------------
-          // Backend explicitly rejected initialization
-          //------------------------------------------------------
-
-          if (data && data.success === false) {
-            throw new Error(data.error || "Backend initialization failed");
-          }
-
-          //------------------------------------------------------
-          // STEP 6
-          // State
-          //------------------------------------------------------
-
-          window.aiState.ready = true;
-
-          window.aiState.initialized = true;
-
-          window.aiState.backendReady = true;
-
-          window.aiState.lastError = null;
-
-          //------------------------------------------------------
-          // STEP 7
-          // Final status
-          //------------------------------------------------------
-
-          setStatus("Ready when you are");
-
-          log("✅ Jarvis Browser is ready");
-
-          console.log("✅ Jarvis initialization complete", data);
-
-          return true;
-        } catch (error) {
-          window.aiState.ready = false;
-
-          window.aiState.initialized = false;
-
-          window.aiState.lastError = error?.message || String(error);
-
-          console.error("❌ Jarvis initialization failed:", error);
-
-          log(`❌ Jarvis startup failed: ${error.message}`);
-
-          setStatus("Jarvis startup failed");
-
-          return false;
-        } finally {
-          window.aiState.initializing = false;
-        }
-      }
-
-      // ==========================================================
-      // ENSURE JARVIS READY
-      // ==========================================================
-
-      async function ensureJarvisReady() {
-        if (window.aiState.ready && window.aiState.initialized) {
-          return true;
-        }
-
-        return await initializeJarvis();
-      }
-
-      // ==========================================================
-      // BROWSER RESIZE OBSERVER
-      // ==========================================================
-
-      function setupBrowserResizeObserver() {
-        const browserDiv = $("browser");
-
-        if (!browserDiv || !window.ResizeObserver) {
-          return;
-        }
-
-        const observer = new ResizeObserver(() => {
-          resizeBrowser();
-        });
-
-        observer.observe(browserDiv);
-
-        window.jarvisResizeObserver = observer;
-      }
-
-      // ==========================================================
-      // URL INPUT ENTER
-      // ==========================================================
-
-      function setupURLInput() {
-        const input = $("url");
-
-        if (!input) {
-          return;
-        }
-
-        input.addEventListener("keydown", async (event) => {
-          if (event.key !== "Enter") {
-            return;
-          }
-
-          event.preventDefault();
-
-          await navigate();
-        });
-
-        //--------------------------------------------------------
-        // Focus select
-        //--------------------------------------------------------
-
-        input.addEventListener("focus", () => {
-          input.select();
-        });
-      }
-
-      // ==========================================================
-      // AI COMMAND INPUT
-      //
-      // ai.js owns actual AI command processing.
-      // We only protect readiness here.
-      // ==========================================================
-
-      function setupAIFormGuard() {
-        const form = document.getElementById("ai-form");
-        const cmdInput = document.getElementById("cmd");
-        const submitBtn = document.getElementById("submitCmdBtn");
-
-        if (!form) {
-          console.error("ai-form not found");
-          return;
-        }
-
-        async function submitAICommand(event) {
-          if (event) {
-            event.preventDefault();
-            event.stopPropagation();
-          }
-
-          const val = cmdInput ? cmdInput.value.trim() : "";
-          if (!val) return;
-
-          if (cmdInput) cmdInput.value = "";
-
-          const getHandler = () =>
-            typeof window.handleAISubmit === "function"
-              ? window.handleAISubmit
-              : typeof window.executeUserCommand === "function"
-                ? window.executeUserCommand
-                : null;
-
-          const handler = getHandler();
-          if (handler) {
-            try {
-              await handler(val);
-            } catch (err) {
-              console.error("AI submit error:", err);
-              if (typeof log === "function") log(`❌ AI Error: ${err.message}`);
-            }
-          } else {
-            console.log("Waiting for AI handler to initialize...");
-            let retries = 0;
-            const timer = setInterval(async () => {
-              retries++;
-              const retryHandler = getHandler();
-              if (retryHandler) {
-                clearInterval(timer);
-                try {
-                  await retryHandler(val);
-                } catch (err) {
-                  console.error("AI submit error:", err);
-                  if (typeof log === "function")
-                    log(`❌ AI Error: ${err.message}`);
-                }
-              } else if (retries >= 15) {
-                clearInterval(timer);
-                console.error("AI submit handler not found");
-                if (typeof log === "function")
-                  log("❌ AI submit handler not ready. Please try again.");
-                if (cmdInput && !cmdInput.value) cmdInput.value = val;
-              }
-            }, 100);
-          }
-        }
-
-        form.addEventListener("submit", submitAICommand, true);
-
-        if (submitBtn) {
-          submitBtn.addEventListener("click", submitAICommand);
-        }
-
-        if (cmdInput) {
-          cmdInput.addEventListener("keydown", (e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              e.stopPropagation();
-              submitAICommand(e);
-            }
-          });
-        }
-      }
-
-      // Initialize form guard as early as possible
-      setupAIFormGuard();
-      // ==========================================================
-      // INITIAL PAGE LOAD
-      // ==========================================================
-
-      window.addEventListener(
-        "load",
-        async () => {
-          try {
-            log("🚀 Jarvis Browser loading...");
-
-            //------------------------------------------------------
-            // Resize
-            //------------------------------------------------------
-
-            resizeBrowser();
-
-            //------------------------------------------------------
-            // Resize observer
-            //------------------------------------------------------
-
-            setupBrowserResizeObserver();
-
-            //------------------------------------------------------
-            // URL input
-            //------------------------------------------------------
-
-            setupURLInput();
-
-            //------------------------------------------------------
-            // URL synchronization
-            //------------------------------------------------------
-
-            setupURLSynchronization();
-
-            //------------------------------------------------------
-            // AI form guard
-            //------------------------------------------------------
-
-            setupAIFormGuard();
-
-            //------------------------------------------------------
-            // Initialize
-            //------------------------------------------------------
-
-            await initializeJarvis();
-          } catch (error) {
-            console.error("❌ Page initialization failed:", error);
-
-            log(`❌ Page initialization failed: ${error.message}`);
-          }
-        },
-        {
-          once: true,
-        },
-      );
-
-      // ==========================================================
-      // WINDOW RESIZE
-      // ==========================================================
-
-      window.addEventListener("resize", () => {
-        resizeBrowser();
       });
-
-      // ==========================================================
-      // EXPOSE NAVIGATION FUNCTIONS
-      // ==========================================================
-
-      window.navigate = navigate;
-
-      window.goBack = goBack;
-
-      window.goForward = goForward;
-
-      window.reloadPage = reloadPage;
-
-      // ==========================================================
-      // JARVIS DEBUG / CONTROL API
-      // ==========================================================
-
-      window.jarvis = {
-        //--------------------------------------------------------
-        // State
-        //--------------------------------------------------------
-
-        state: window.aiState,
-
-        //--------------------------------------------------------
-        // Backend
-        //--------------------------------------------------------
-
-        async checkBackend() {
-          const available = await checkBackend();
-
-          return {
-            success: available,
-
-            message: available
-              ? "Backend is available"
-              : "Backend is unavailable",
-          };
-        },
-
-        //--------------------------------------------------------
-        // Initialize
-        //--------------------------------------------------------
-
-        async initialize() {
-          return await initializeJarvis();
-        },
-
-        //--------------------------------------------------------
-        // Ensure ready
-        //--------------------------------------------------------
-
-        async ready() {
-          return await ensureJarvisReady();
-        },
-
-        //--------------------------------------------------------
-        // Navigate
-        //--------------------------------------------------------
-
-        async navigate(url) {
-          return await navigate(url);
-        },
-
-        //--------------------------------------------------------
-        // Back
-        //--------------------------------------------------------
-
-        async back() {
-          return await goBack();
-        },
-
-        //--------------------------------------------------------
-        // Forward
-        //--------------------------------------------------------
-
-        async forward() {
-          return await goForward();
-        },
-
-        //--------------------------------------------------------
-        // Reload
-        //--------------------------------------------------------
-
-        async reload() {
-          return await reloadPage();
-        },
-
-        //--------------------------------------------------------
-        // Resize
-        //--------------------------------------------------------
-
-        resize() {
-          return resizeBrowser();
-        },
-
-        //--------------------------------------------------------
-        // Backend request
-        //--------------------------------------------------------
-
-        async backend(endpoint, options = {}) {
-          const response = await backendFetch(endpoint, options);
-
-          const contentType = response.headers.get("content-type") || "";
-
-          if (contentType.includes("application/json")) {
-            return await response.json();
-          }
-
-          return await response.text();
-        },
-
-        //--------------------------------------------------------
-        // Diagnostics
-        //--------------------------------------------------------
-
-        diagnostics() {
-          return {
-            state: {
-              ...window.aiState,
-            },
-
-            browserAPI: !!window.browserAPI,
-
-            electronAPI: !!window.electronAPI,
-
-            backend: BACKEND_URL,
-
-            browserFunctions: {
-              navigate: hasBrowserFunction("navigate"),
-
-              back: hasBrowserFunction("back"),
-
-              forward: hasBrowserFunction("forward"),
-
-              reload: hasBrowserFunction("reload"),
-
-              resize: hasBrowserFunction("resize"),
-
-              onURLChanged: hasBrowserFunction("onURLChanged"),
-            },
-
-            uptime: Date.now() - window.aiState.startedAt,
-          };
-        },
-      };
-
-      // ==========================================================
-      // GLOBAL DEBUG
-      // ==========================================================
-
-      console.log("==================================================");
-
-      console.log("Jarvis Browser Frontend");
-
-      console.log("Backend:", BACKEND_URL);
-
-      console.log("==================================================");
     </script>
-
-    <!-- ==========================================================
-         AI ENGINE
-         ========================================================== -->
-
+    <script src="tabs.js"></script>
+    <script src="browser.js"></script>
     <script src="dashboard.js"></script>
     <script src="ai.js"></script>
   </body>

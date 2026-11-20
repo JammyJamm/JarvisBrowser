@@ -12,7 +12,7 @@
 
 import PlannerCore from "./planner.js";
 import IntentParser from "./parser.js";
-import ActionExecutor from "./executor.js";
+import ActionExecutor from "../executor.js";
 
 /**
  * Main Planner Class

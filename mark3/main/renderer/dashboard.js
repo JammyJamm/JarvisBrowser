@@ -87,6 +87,25 @@
     return element;
   };
 
+  function makeFeatherIcon(name, className = "feather-icon") {
+    const icon = makeElement("span", className);
+    icon.dataset.feather = name;
+    icon.setAttribute("aria-hidden", "true");
+    icon.style.setProperty("--feather-mask", `url("./icon/${name}.svg")`);
+    return icon;
+  }
+
+  function initializeFeatherIcons(root = document) {
+    root.querySelectorAll("[data-feather]").forEach((icon) => {
+      icon.style.setProperty(
+        "--feather-mask",
+        `url("./icon/${icon.dataset.feather}.svg")`,
+      );
+    });
+  }
+
+  window.jarvisCreateIcon = makeFeatherIcon;
+
   const showEmpty = (container, message) => {
     container.replaceChildren(makeElement("div", "empty-state", message));
   };
@@ -310,10 +329,11 @@
       ...items.map((item) => {
         const chip = makeElement("span", "produce-chip");
         chip.append(makeElement("span", "", item.name));
-        const remove = makeElement("button", "produce-remove", "×");
+        const remove = makeElement("button", "produce-remove");
         remove.type = "button";
         remove.dataset.removeProduce = item.id;
         remove.setAttribute("aria-label", `Remove ${item.name}`);
+        remove.append(makeFeatherIcon("x"));
         chip.append(remove);
         return chip;
       }),
@@ -351,10 +371,11 @@
       );
       label.type = "button";
       label.addEventListener("click", () => activateTab(index));
-      const close = makeElement("button", "browser-tab-close", "×");
+      const close = makeElement("button", "browser-tab-close");
       close.type = "button";
       close.setAttribute("aria-label", `Close ${getSiteLabel(tab.url)}`);
       close.tabIndex = -1;
+      close.append(makeFeatherIcon("x"));
 
       tabButton.append(label, close);
       close.addEventListener("click", () => closeTab(index));
@@ -472,9 +493,10 @@
             : item.url,
         ),
       );
-      const open = makeElement("button", "site-open-button", "↗");
+      const open = makeElement("button", "site-open-button");
       open.type = "button";
       open.setAttribute("aria-label", `Open ${getSiteLabel(item.url)}`);
+      open.append(makeFeatherIcon("external-link"));
       open.addEventListener("click", () => navigateTo(item.url));
       row.append(favicon, info, open);
       container.append(row);
@@ -770,9 +792,10 @@
         makeElement("strong", "", getSiteLabel(item.url)),
         makeElement("small", "", item.url),
       );
-      const open = makeElement("button", "site-open-button", "↗");
+      const open = makeElement("button", "site-open-button");
       open.type = "button";
       open.setAttribute("aria-label", `Open ${getSiteLabel(item.url)}`);
+      open.append(makeFeatherIcon("external-link"));
       open.addEventListener("click", () => navigateTo(item.url));
       row.append(info, open);
       list.append(row);
@@ -838,6 +861,11 @@
 
   function updateTheme(theme) {
     document.body.dataset.theme = theme;
+    const themeButton = document.querySelector('[data-action="toggle-theme"] .feather-icon');
+    if (themeButton) {
+      themeButton.dataset.feather = theme === "dark" ? "sun" : "moon";
+      initializeFeatherIcons(themeButton.parentElement);
+    }
     save(keys.theme, theme);
   }
 
@@ -1291,5 +1319,6 @@
     window.setInterval(checkReminders, 30000);
   }
 
+  initializeFeatherIcons();
   init();
 })();

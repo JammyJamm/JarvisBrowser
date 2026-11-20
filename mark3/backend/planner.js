@@ -80,7 +80,7 @@ export default class Planner {
       enableCore: options.enableCore ?? false,
 
       // Optional deterministic fallback.
-      enableRegexFallback: options.enableRegexFallback ?? false,
+      enableRegexFallback: options.enableRegexFallback ?? true,
 
       enableLLM: options.enableLLM ?? true,
 
@@ -204,7 +204,22 @@ export default class Planner {
 
     try {
       //====================================================
-      // LLM FIRST
+      // FAST PATH: DETERMINISTIC PLANNER (<1ms)
+      //====================================================
+      const fastPlan = this.fastDeterministicPlan(command, context);
+      if (fastPlan) {
+        const normalizedFast = this.normalizeAdvanced(fastPlan, command);
+        const fastValidation = this.validatePlan(normalizedFast, command);
+        if (fastValidation.valid) {
+          this.stats.recoveryHits++;
+          this.stats.actionResponses++;
+          this.log("Fast-path plan matched:", normalizedFast);
+          return normalizedFast;
+        }
+      }
+
+      //====================================================
+      // SEMANTIC LLM PLANNER
       //====================================================
 
       if (this.options.enableLLM && this.options.llmFirst) {
@@ -242,13 +257,13 @@ export default class Planner {
         //==================================================
 
         if (llmResult?.mode === "chat") {
-          const recovered = this.recoverSimpleCommand(command);
-          if (recovered) {
-            const validation = this.validatePlan(recovered, command);
+          const actionPlan = this.fastDeterministicPlan(command, context) || this.recoverSimpleCommand(command);
+          if (actionPlan) {
+            const validation = this.validatePlan(actionPlan, command);
             if (validation.valid) {
               this.stats.recoveryHits++;
-              this.warn("Recovered browser action returned as chat:", recovered);
-              return recovered;
+              this.warn("Recovered browser action returned as chat:", actionPlan);
+              return actionPlan;
             }
           }
 
@@ -256,7 +271,7 @@ export default class Planner {
           return llmResult;
         }
 
-        const recovered = this.recoverSimpleCommand(command);
+        const recovered = this.fastDeterministicPlan(command, context) || this.recoverSimpleCommand(command);
         if (recovered) {
           const validation = this.validatePlan(recovered, command);
           if (validation.valid) {
@@ -1673,8 +1688,11 @@ FINAL RULES
 
             format: "json",
 
+            think: false,
+
             options: {
               temperature: this.options.temperature,
+              num_predict: 512,
             },
           }),
         });
@@ -1737,6 +1755,422 @@ FINAL RULES
     }
 
     return null;
+  }
+
+  //========================================================
+  // FAST DETERMINISTIC PLANNER
+  //========================================================
+
+  fastDeterministicPlan(command, context = {}) {
+    const text = String(command || "").trim();
+    if (!text) return null;
+
+    // Check for multi-step instructions joined by sequential connectives
+    const subCommands = this.splitCompoundCommand(text);
+
+    if (subCommands.length > 1) {
+      const steps = [];
+      for (let i = 0; i < subCommands.length; i++) {
+        const subPlan = this.parseSingleCommand(subCommands[i], context);
+        if (subPlan && subPlan.steps) {
+          steps.push(...subPlan.steps);
+        } else {
+          return null; // Delegate whole command to LLM / regex fallback if any sub-command cannot be parsed
+        }
+      }
+      if (steps.length > 0) {
+        let multiPlan = {
+          mode: "action",
+          source: "fast-path-multistep",
+          goal: text,
+          steps: steps.map((s, idx) => ({ ...s, id: `step_${idx + 1}` })),
+        };
+        if (context?.interactiveElements && Array.isArray(context.interactiveElements)) {
+          multiPlan = this.groundPlanWithElements(multiPlan, context.interactiveElements);
+        }
+        return multiPlan;
+      }
+    }
+
+    let singlePlan = this.parseSingleCommand(text, context);
+    if (singlePlan && context?.interactiveElements && Array.isArray(context.interactiveElements)) {
+      singlePlan = this.groundPlanWithElements(singlePlan, context.interactiveElements);
+    }
+    return singlePlan;
+  }
+
+  splitCompoundCommand(text) {
+    if (!text) return [];
+
+    const rawChunks = text
+      .split(/\s*(?:\r?\n|;)\s*/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    const subCommands = [];
+    const actionKeywords = "go|navigate|open|visit|click|press|tap|type|enter|write|fill|search|select|choose|pick|scroll|reload|refresh|wait|read|inspect|back|forward";
+    // Also split on 'and' followed by 'field with value'
+    const regex = new RegExp(`\\s+(?:(?:and\\s+then|then|after\\s+that|afterwards|next)\\b|(?:and\\s+(?=(?:${actionKeywords})\\b))|(?:and\\s+(?=[a-zA-Z0-9_\\-]+\\s+with\\s+)))`, "i");
+
+    for (const chunk of rawChunks) {
+      const parts = chunk.split(regex).map((p) => p.trim()).filter(Boolean);
+      subCommands.push(...parts);
+    }
+
+    return subCommands;
+  }
+
+  parseSingleCommand(text, context = {}) {
+    const clean = text.replace(/^[0-9]+[.)]\s*/, "").trim();
+
+    // Keypress (Check before click so "press Enter" or "hit Enter" is not parsed as clicking an element named "Enter")
+    let keyMatch = clean.match(/^(?:please\s+)?(?:press|hit)(?:\s+key)?\s+(enter|escape|tab|arrowup|arrowdown|arrowleft|arrowright|backspace|delete|space)\b/i);
+    if (keyMatch) {
+      const key = keyMatch[1].charAt(0).toUpperCase() + keyMatch[1].slice(1);
+      return {
+        mode: "action",
+        source: "fast-path",
+        goal: `Press key "${key}"`,
+        steps: [{ id: "step_1", tool: "press", args: { key } }],
+      };
+    }
+
+    // 1. Navigation Controls (Back, Forward, Reload)
+    if (/^(?:please\s+)?(?:go\s+)?back$/i.test(clean)) {
+      return {
+        mode: "action",
+        source: "fast-path",
+        goal: "Go back",
+        steps: [{ id: "step_1", tool: "back", args: {} }],
+      };
+    }
+
+    if (/^(?:please\s+)?(?:go\s+)?forward$/i.test(clean)) {
+      return {
+        mode: "action",
+        source: "fast-path",
+        goal: "Go forward",
+        steps: [{ id: "step_1", tool: "forward", args: {} }],
+      };
+    }
+
+    if (/^(?:please\s+)?(?:reload|refresh)(?:\s+page)?$/i.test(clean)) {
+      return {
+        mode: "action",
+        source: "fast-path",
+        goal: "Reload page",
+        steps: [{ id: "step_1", tool: "reload", args: {} }],
+      };
+    }
+
+    // 2. Navigation to URL
+    let match = clean.match(/^(?:please\s+)?(?:go(?:\s+to)?|navigate(?:\s+to)?|open|visit)\s+(.+)$/i);
+    if (match) {
+      let dest = match[1].trim().replace(/^["']|["']$/g, "").trim();
+      let url = dest;
+      if (!url.startsWith("http://") && !url.startsWith("https://") && !url.startsWith("file://")) {
+        if (url.includes(".") && !url.includes(" ")) {
+          url = "https://" + url;
+        } else if (!url.includes(" ")) {
+          url = "https://" + url + ".com";
+        } else {
+          url = "https://www.google.com/search?q=" + encodeURIComponent(url);
+        }
+      }
+      return {
+        mode: "action",
+        source: "fast-path",
+        goal: `Navigate to ${url}`,
+        steps: [{ id: "step_1", tool: "navigate", args: { url } }],
+      };
+    }
+
+    // 3. Click / Press / Tap
+    match = clean.match(/^(?:please\s+)?(?:click|press|tap)(?:\s+on)?(?:\s+the)?\s+(.+)$/i);
+    if (match) {
+      let target = match[1].trim().replace(/^["']|["']$/g, "").trim();
+      target = target.replace(/\s+(?:button|link|tab|icon)$/i, "").trim();
+      if (target) {
+        return {
+          mode: "action",
+          source: "fast-path",
+          goal: `Click "${target}"`,
+          steps: [{ id: "step_1", tool: "click", args: { target } }],
+        };
+      }
+    }
+
+    // 4. Type / Fill / Enter
+    match = clean.match(/^(?:please\s+)?(?:type|enter|write|fill)\s+(.+?)\s+(?:in|into|to|on)\s+(?:the\s+)?(.+)$/i);
+    if (match) {
+      const value = match[1].trim().replace(/^["']|["']$/g, "");
+      const field = match[2].trim().replace(/^["']|["']$/g, "").replace(/\s+(?:field|input|box)$/i, "");
+      return {
+        mode: "action",
+        source: "fast-path",
+        goal: `Type "${value}" in ${field}`,
+        steps: [{ id: "step_1", tool: "type", args: { field, value, pressEnter: false } }],
+      };
+    }
+
+    match = clean.match(/^(?:please\s+)?(?:type|enter|write|fill)\s+(?:in|into)?\s*(?:the\s+)?([a-zA-Z0-9_\-\s]+?)\s+(?:with|as)\s+(.+)$/i);
+    if (match) {
+      const field = match[1].trim().replace(/^["']|["']$/g, "").replace(/\s+(?:field|input|box)$/i, "");
+      const value = match[2].trim().replace(/^["']|["']$/g, "");
+      return {
+        mode: "action",
+        source: "fast-path",
+        goal: `Type "${value}" in ${field}`,
+        steps: [{ id: "step_1", tool: "type", args: { field, value, pressEnter: false } }],
+      };
+    }
+
+    // Shorthand field with value (e.g. "email with a@b.com" or "password with 1234")
+    match = clean.match(/^([a-zA-Z0-9_\-]+)\s+with\s+(.+)$/i);
+    if (match) {
+      const field = match[1].trim();
+      const value = match[2].trim().replace(/^["']|["']$/g, "");
+      return {
+        mode: "action",
+        source: "fast-path",
+        goal: `Type "${value}" in ${field}`,
+        steps: [{ id: "step_1", tool: "type", args: { field, value, pressEnter: false } }],
+      };
+    }
+
+    // 5. Select / Choose from dropdown
+    match = clean.match(/^(?:please\s+)?(?:select|choose|pick)\s+(?:option\s+)?(.+?)\s+(?:from|in)\s+(?:the\s+)?(.+)$/i);
+    if (match) {
+      const value = match[1].trim().replace(/^["']|["']$/g, "");
+      const field = match[2].trim().replace(/^["']|["']$/g, "").replace(/\s+(?:dropdown|select|menu)$/i, "");
+      return {
+        mode: "action",
+        source: "fast-path",
+        goal: `Select "${value}" in ${field}`,
+        steps: [{ id: "step_1", tool: "select", args: { field, value } }],
+      };
+    }
+
+    // 6. Search
+    match = clean.match(/^(?:please\s+)?(?:search(?:\s+for)?|lookup|google)\s+(.+)$/i);
+    if (match) {
+      let query = match[1].trim().replace(/^["']|["']$/g, "");
+      // Remove trailing "on google" or "in search"
+      query = query.replace(/\s+on\s+(?:google|bing|yahoo)$/i, "").trim();
+      return {
+        mode: "action",
+        source: "fast-path",
+        goal: `Search for "${query}"`,
+        steps: [{ id: "step_1", tool: "type", args: { field: "search", value: query, pressEnter: true } }],
+      };
+    }
+
+    // 7. Scroll
+    match = clean.match(/^(?:please\s+)?scroll\s+(up|down)(?:\s+by\s+(\d+))?$/i);
+    if (match) {
+      const dir = match[1].toLowerCase();
+      const amount = match[2] ? parseInt(match[2], 10) : 500;
+      return {
+        mode: "action",
+        source: "fast-path",
+        goal: `Scroll ${dir}`,
+        steps: [{ id: "step_1", tool: "scroll", args: { direction: dir, amount } }],
+      };
+    }
+
+    // 8. Keypress
+    match = clean.match(/^(?:please\s+)?(?:press|hit)(?:\s+key)?\s+([a-zA-Z0-9_\-]+)$/i);
+    if (match && !/^(?:page|button|link|tab)$/i.test(match[1])) {
+      const key = match[1].trim();
+      return {
+        mode: "action",
+        source: "fast-path",
+        goal: `Press key "${key}"`,
+        steps: [{ id: "step_1", tool: "press", args: { key } }],
+      };
+    }
+
+    // 9. Read / Extract / Summarize Page
+    if (/^(?:please\s+)?(?:read|extract|get|summarize)(?:\s+the)?(?:\s+page|\s+content|\s+text)?$/i.test(clean)) {
+      return {
+        mode: "action",
+        source: "fast-path",
+        goal: "Read page content",
+        steps: [{ id: "step_1", tool: "read", args: {} }],
+      };
+    }
+
+    // 10. Wait / Sleep
+    match = clean.match(/^wait\s+([0-9]+(?:\.[0-9]+)?)\s*(ms|milliseconds|s|sec|seconds)?$/i);
+    if (match) {
+      let time = parseFloat(match[1]);
+      const unit = (match[2] || "ms").toLowerCase();
+      if (unit.startsWith("s")) time *= 1000;
+      return {
+        mode: "action",
+        source: "fast-path",
+        goal: `Wait ${time}ms`,
+        steps: [{ id: "step_1", tool: "wait", args: { time: Math.round(time) } }],
+      };
+    }
+
+    return null;
+  }
+
+  //========================================================
+  // GROUND PLAN WITH LIVE INTERACTIVE ELEMENTS
+  //========================================================
+
+  groundPlanWithElements(plan, elements = []) {
+    if (!plan || !Array.isArray(plan.steps) || !elements.length) return plan;
+
+    const groundedSteps = plan.steps.map((step) => {
+      if (step.tool === "click") {
+        const target = String(step.args?.target || "").toLowerCase();
+        if (target) {
+          const match = elements.find((el) => {
+            const t = (el.text || "").toLowerCase();
+            const aria = (el.ariaLabel || "").toLowerCase();
+            const id = (el.id || "").toLowerCase();
+            return t === target || aria === target || id === target;
+          }) || elements.find((el) => {
+            const t = (el.text || "").toLowerCase();
+            const aria = (el.ariaLabel || "").toLowerCase();
+            return (t.length > 2 && t.includes(target)) || (aria.length > 2 && aria.includes(target));
+          });
+
+          if (match) {
+            return {
+              ...step,
+              args: {
+                ...step.args,
+                target: match.text || match.ariaLabel || match.id || step.args.target,
+                selector: match.id ? `#${match.id}` : undefined,
+                role: match.role || undefined,
+              },
+            };
+          }
+        }
+      } else if (step.tool === "type") {
+        const field = String(step.args?.field || "").toLowerCase();
+        if (field && field !== "search") {
+          const match = elements.find((el) => {
+            if (el.tagName !== "input" && el.tagName !== "textarea") return false;
+            const name = (el.name || "").toLowerCase();
+            const id = (el.id || "").toLowerCase();
+            const ph = (el.placeholder || "").toLowerCase();
+            return name === field || id === field || ph === field;
+          });
+
+          if (match) {
+            return {
+              ...step,
+              args: {
+                ...step.args,
+                field: match.name || match.id || match.placeholder || step.args.field,
+                selector: match.id ? `#${match.id}` : undefined,
+              },
+            };
+          }
+        }
+      }
+      return step;
+    });
+
+    return { ...plan, steps: groundedSteps };
+  }
+
+  //========================================================
+  // DYNAMIC REPLANNING
+  //========================================================
+
+  replan({ failedStep, error = "", currentUrl = "", pageElements = [], originalGoal = "" }) {
+    this.log(`Replanning for failed step:`, failedStep, `Error: ${error}`);
+    if (!failedStep) return null;
+
+    const recoverySteps = [];
+
+    if (failedStep.tool === "click") {
+      const target = String(failedStep.args?.target || "").toLowerCase();
+      // Search pageElements for alternate candidates
+      const candidate = pageElements.find((el) => {
+        const text = (el.text || "").toLowerCase();
+        const aria = (el.ariaLabel || "").toLowerCase();
+        const id = (el.id || "").toLowerCase();
+        return (
+          (text && (text.includes(target) || target.includes(text))) ||
+          (aria && (aria.includes(target) || target.includes(aria))) ||
+          (id && (id.includes(target) || target.includes(id)))
+        );
+      });
+
+      if (candidate) {
+        recoverySteps.push({
+          id: "replan_step_1",
+          tool: "click",
+          args: {
+            target: candidate.id ? `#${candidate.id}` : candidate.text || candidate.ariaLabel,
+            selector: candidate.id ? `#${candidate.id}` : undefined,
+          },
+          rationale: `Targeting live DOM element "${candidate.text || candidate.id}"`,
+        });
+      } else {
+        // Wait and retry click
+        recoverySteps.push({
+          id: "replan_step_1",
+          tool: "wait",
+          args: { time: 800 },
+        });
+        recoverySteps.push({
+          id: "replan_step_2",
+          tool: "click",
+          args: failedStep.args,
+          rationale: "Retrying click after DOM stabilization",
+        });
+      }
+    } else if (failedStep.tool === "type") {
+      const field = String(failedStep.args?.field || "").toLowerCase();
+      const inputEl = pageElements.find((el) => {
+        if (el.tagName !== "input" && el.tagName !== "textarea") return false;
+        const name = (el.name || "").toLowerCase();
+        const id = (el.id || "").toLowerCase();
+        const ph = (el.placeholder || "").toLowerCase();
+        return name.includes(field) || id.includes(field) || ph.includes(field);
+      }) || pageElements.find((el) => el.tagName === "input");
+
+      if (inputEl) {
+        recoverySteps.push({
+          id: "replan_step_1",
+          tool: "type",
+          args: {
+            field: inputEl.id ? `#${inputEl.id}` : inputEl.name || inputEl.placeholder || "input",
+            value: failedStep.args?.value || "",
+            pressEnter: Boolean(failedStep.args?.pressEnter),
+          },
+          rationale: `Targeting visible input "${inputEl.id || inputEl.name || inputEl.placeholder}"`,
+        });
+      }
+    } else if (failedStep.tool === "navigate") {
+      recoverySteps.push({
+        id: "replan_step_1",
+        tool: "reload",
+        args: {},
+        rationale: "Reloading page after navigation failure",
+      });
+    }
+
+    if (!recoverySteps.length) {
+      return null;
+    }
+
+    return {
+      mode: "action",
+      source: "replan",
+      isReplan: true,
+      originalGoal,
+      failedStep,
+      steps: recoverySteps,
+    };
   }
 
   //========================================================

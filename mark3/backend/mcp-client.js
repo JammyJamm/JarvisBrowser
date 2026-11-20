@@ -37,6 +37,7 @@
 //
 //==========================================================
 
+import { chromium } from "playwright";
 import browserController from "./browser-controller.js";
 import {
   getFrameSVGs,
@@ -266,29 +267,24 @@ export default class PlaywrightMCPClient {
 
   async connectInternal(force = false) {
     try {
-      //------------------------------------------------------
-      // Force means discard local Playwright handles.
-      //
-      // IMPORTANT:
-      // This does NOT close Electron.
-      //------------------------------------------------------
-
       if (force) {
         await this.disconnect();
       }
 
+      if (this.browserController) {
+        this.log("Connecting via shared BrowserController...");
+        const page = await this.browserController.connect(force);
+        this.browser = this.browserController.browser;
+        this.context = this.browserController.context;
+        this.page = page;
+        this.connected = this.browserController.connected;
+        this.lastConnected = Date.now();
+        this.lastURL = page ? page.url() : "";
+        return this.page;
+      }
+
       this.log("Connecting to Electron CDP:", this.options.cdpURL);
-
-      //------------------------------------------------------
-      // CONNECT TO ELECTRON
-      //------------------------------------------------------
-
       const browser = await chromium.connectOverCDP(this.options.cdpURL);
-
-      //------------------------------------------------------
-      // Store browser
-      //------------------------------------------------------
-
       this.browser = browser;
 
       //------------------------------------------------------

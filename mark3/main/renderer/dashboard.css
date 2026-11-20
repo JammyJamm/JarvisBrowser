@@ -114,17 +114,25 @@ textarea:focus-visible {
   color: var(--color-text);
 }
 
-.window-control:hover {
-  background: color-mix(in srgb, var(--color-text) 9%, transparent);
+.feather-icon {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  background-color: currentColor;
+  -webkit-mask: var(--feather-mask) center / contain no-repeat;
+  mask: var(--feather-mask) center / contain no-repeat;
 }
 
-.window-control svg {
+.window-control-icon,
+.window-control .maximize-icon,
+.window-control .restore-icon {
   width: 12px;
   height: 12px;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: square;
-  stroke-width: 1.1;
+}
+
+.window-control:hover {
+  background: color-mix(in srgb, var(--color-text) 9%, transparent);
 }
 
 .window-control .restore-icon {
@@ -136,7 +144,7 @@ textarea:focus-visible {
 }
 
 .window-maximized .window-control .restore-icon {
-  display: block;
+  display: inline-block;
 }
 
 .window-control-close:hover {
@@ -259,8 +267,10 @@ textarea:focus-visible {
 .nav-icon {
   display: grid;
   width: 30px;
+  height: 26px;
   place-items: center;
-  font-size: 18px;
+  -webkit-mask-size: 19px 19px;
+  mask-size: 19px 19px;
 }
 
 .sidebar-footer {
@@ -389,7 +399,8 @@ textarea:focus-visible {
 
 .assistant-spark {
   color: var(--color-primary);
-  font-size: 16px;
+  width: 16px;
+  height: 16px;
 }
 
 .mobile-brand {
@@ -491,8 +502,8 @@ textarea:focus-visible {
 
 .search-symbol {
   color: var(--color-primary);
-  font-size: 24px;
-  line-height: 1;
+  width: 20px;
+  height: 20px;
 }
 
 .search-card input {
@@ -562,6 +573,11 @@ textarea:focus-visible {
   color: var(--color-muted);
 }
 
+.card-edit-button .feather-icon {
+  width: 15px;
+  height: 15px;
+}
+
 .customizing .card-edit-button {
   display: inline-grid;
   place-items: center;
@@ -626,7 +642,6 @@ textarea:focus-visible {
   flex: 0 0 36px;
   place-items: center;
   border-radius: 11px;
-  font-size: 17px;
 }
 
 .quick-icon-coral {
@@ -644,6 +659,35 @@ textarea:focus-visible {
 .quick-icon-dark {
   background: #eef0f3;
   color: #343743;
+}
+
+.quick-icon.feather-icon,
+.transaction-icon.feather-icon,
+.food-meal-icon.feather-icon {
+  position: relative;
+  background-color: transparent;
+  -webkit-mask: none;
+  mask: none;
+}
+
+.quick-icon.feather-icon::before,
+.transaction-icon.feather-icon::before,
+.food-meal-icon.feather-icon::before {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 18px;
+  height: 18px;
+  background-color: currentColor;
+  content: "";
+  transform: translate(-50%, -50%);
+  -webkit-mask: var(--feather-mask) center / contain no-repeat;
+  mask: var(--feather-mask) center / contain no-repeat;
+}
+
+.quick-icon.feather-icon::before {
+  width: 17px;
+  height: 17px;
 }
 body[data-theme="dark"] .quick-icon-coral {
   background: #3a2828;
@@ -674,6 +718,11 @@ body[data-theme="dark"] .quick-icon-dark {
 
 .text-link:hover {
   color: var(--color-primary);
+}
+
+.text-link .feather-icon {
+  width: 13px;
+  height: 13px;
 }
 
 .compact-events,
@@ -710,8 +759,6 @@ body[data-theme="dark"] .quick-icon-dark {
   border-radius: 10px;
   background: var(--color-surface-muted);
   color: var(--color-secondary);
-  font-size: 11px;
-  font-weight: 700;
 }
 
 .site-row > span:nth-child(2),
@@ -761,6 +808,11 @@ body[data-theme="dark"] .quick-icon-dark {
 .site-open-button:hover {
   background: var(--color-primary-soft);
   color: var(--color-primary);
+}
+
+.site-open-button .feather-icon {
+  width: 15px;
+  height: 15px;
 }
 
 .empty-state {
@@ -1068,7 +1120,8 @@ body[data-theme="dark"] .quick-icon-dark {
 
 .health-banner-mark {
   color: var(--color-success);
-  font-size: 44px;
+  width: 44px;
+  height: 44px;
 }
 
 .water-controls {
@@ -1346,8 +1399,6 @@ body[data-theme="dark"] .quick-icon-dark {
 .toolbar-button .icon {
   width: 18px;
   height: 18px;
-  object-fit: contain;
-  filter: grayscale(1);
 }
 
 .urlBlock {
@@ -1388,7 +1439,7 @@ body[data-theme="dark"] .quick-icon-dark {
 }
 
 .navigate-button .icon {
-  filter: none;
+  background-color: var(--color-primary);
 }
 
 .new-tab-button {
@@ -1518,20 +1569,15 @@ body[data-theme="dark"] .quick-icon-dark {
 }
 
 .browser-assistant-button .icon {
-  filter: none;
+  background-color: var(--color-primary);
 }
 
 .browser-tool-button .icon {
-  filter: none;
+  background-color: currentColor;
 }
 
 .browser-tool-button[aria-pressed="true"] {
   color: var(--color-primary);
-}
-
-.browser-tool-button[aria-pressed="true"] .bookmark-icon {
-  fill: color-mix(in srgb, var(--color-primary) 20%, transparent);
-  stroke: var(--color-primary);
 }
 
 .browser-tool-button[aria-disabled="true"] {
@@ -2527,7 +2573,6 @@ body.sidebar-collapsed .sidebar-toggle-icon {
   border-radius: 12px;
   background: var(--color-primary-soft);
   color: var(--color-primary);
-  font-size: 18px;
 }
 
 .dinner-icon {
