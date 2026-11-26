@@ -647,6 +647,184 @@ async function ensureBrowserReady() {
   }
 }
 
+function getInstallResearchQuery(plan, command) {
+  const commandText = String(plan.commandText || "").trim();
+  const packageManagerCommand = commandText.match(
+    /^(npm|npx|pnpm|yarn|bun|pip3?|winget|choco)\s+(?:install|i|add)\s+(.+)$/i,
+  );
+  const target =
+    plan.args?.target ||
+    plan.args?.package ||
+    plan.args?.repo ||
+    packageManagerCommand?.[2]?.replace(/\s+--[\w-]+(?:=\S+)?/g, "") ||
+    commandText ||
+    command;
+  const manager = packageManagerCommand?.[1] || "";
+  return `${String(target).replace(/\s+/g, " ").trim()} official installation documentation ${manager}`.trim();
+}
+
+async function researchSystemInstall(plan, command, conversationHistory = []) {
+  const page = await ensureBrowserReady();
+  const query = getInstallResearchQuery(plan, command);
+  const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+  await page.goto(searchUrl, {
+    waitUntil: "domcontentloaded",
+    timeout: CONFIG.navigationTimeout,
+  });
+  const searchResults = await page.locator("a[href]").evaluateAll((anchors) =>
+    anchors
+      .map((anchor) => {
+        const href = anchor.href || "";
+        let url = href;
+        try {
+          const parsed = new URL(href);
+          if (parsed.hostname.endsWith("google.com")) {
+            url = parsed.searchParams.get("q") || parsed.searchParams.get("url") || "";
+          }
+        } catch {
+          return null;
+        }
+        const title = (anchor.innerText || anchor.getAttribute("aria-label") || "").trim();
+        const excerpt = (
+          anchor.closest("div")?.parentElement?.innerText ||
+          anchor.parentElement?.innerText ||
+          ""
+        ).trim();
+        return { title, url, excerpt: excerpt.slice(0, 500) };
+      })
+      .filter((result) => {
+        if (!result?.title || !/^https:\/\//i.test(result.url)) return false;
+        try {
+          const host = new URL(result.url).hostname.toLowerCase();
+          return !host.endsWith("google.com") && !host.endsWith("googleusercontent.com");
+        } catch {
+          return false;
+        }
+      })
+      .slice(0, 12),
+  );
+  const searchTitle = await page.title();
+  const searchPageText = await page.locator("body").innerText({
+    timeout: CONFIG.pageReadyTimeout,
+  });
+  if (!searchPageText.trim() || !searchResults.length) {
+    throw new Error(`Browser research page returned no readable results: ${page.url()}`);
+  }
+
+  stats.plannerCalls++;
+  const sourceChoice = await planner.researchInstallation(
+    query,
+    searchResults
+      .map((result, index) => `${index + 1}. ${result.title}\nURL: ${result.url}\n${result.excerpt}`)
+      .join("\n\n"),
+    {
+      stage: "search",
+      platform: process.platform,
+      packageManager: plan.commandText?.split(/\s+/)[0] || "",
+      conversationHistory,
+    },
+  );
+  const selectedSource = searchResults.find((result) => {
+    try {
+      return new URL(result.url).href.replace(/\/$/, "") ===
+        new URL(sourceChoice?.sourceUrl || "").href.replace(/\/$/, "");
+    } catch {
+      return false;
+    }
+  });
+  if (!sourceChoice?.found || !selectedSource) {
+    throw new Error(
+      sourceChoice?.reason ||
+        "Jarvis could not verify an official installation source from the browser search results.",
+    );
+  }
+
+  await page.goto(selectedSource.url, {
+    waitUntil: "domcontentloaded",
+    timeout: CONFIG.navigationTimeout,
+  });
+  const docTitle = await page.title();
+  const documentationText = await page.locator("body").innerText({
+    timeout: CONFIG.pageReadyTimeout,
+  });
+  if (!documentationText.trim()) {
+    throw new Error(`Official documentation page returned no readable text: ${page.url()}`);
+  }
+
+  stats.plannerCalls++;
+  const installPlan = await planner.researchInstallation(query, documentationText, {
+    stage: "documentation",
+    platform: process.platform,
+    packageManager: plan.commandText?.split(/\s+/)[0] || "",
+    sourceUrl: page.url(),
+    sourceTitle: docTitle,
+    conversationHistory,
+  });
+  const recommendedCommand = String(installPlan?.command || "").trim();
+  const allowedCommand =
+    /^(?:npm\s+(?:install|i)|pnpm\s+(?:add|install)|yarn\s+add|bun\s+(?:add|install)|pip3?\s+install|python(?:3)?\s+-m\s+pip\s+install|winget\s+install|choco\s+install|brew\s+install|sudo\s+apt-get\s+install|git\s+clone)\b/i;
+  const normalizeEvidence = (value) => String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+  const normalizedDocs = normalizeEvidence(documentationText);
+  const evidenceQuote = String(installPlan?.evidenceQuote || "").trim();
+  const quoteIsPresent =
+    evidenceQuote.length >= 8 && normalizedDocs.includes(normalizeEvidence(evidenceQuote));
+  const commandIsPresent = normalizeEvidence(recommendedCommand)
+    ? normalizedDocs.includes(normalizeEvidence(recommendedCommand))
+    : false;
+  if (
+    !installPlan?.found ||
+    !recommendedCommand ||
+    !allowedCommand.test(recommendedCommand) ||
+    !/^[A-Za-z0-9@._/:=+\-[\] ]+$/.test(recommendedCommand) ||
+    recommendedCommand.length > 500 ||
+    !quoteIsPresent ||
+    !commandIsPresent
+  ) {
+    throw new Error(
+      installPlan?.reason ||
+        "Jarvis could not verify an exact, safe installation command in the selected official documentation. No installation was run.",
+    );
+  }
+
+  plan.commandText = recommendedCommand;
+  plan.options = [
+    {
+      id: "official_researched",
+      label: "Use command from official documentation",
+      commandText: recommendedCommand,
+    },
+  ];
+  plan.summary = `Install ${installPlan.package || plan.args?.target || query} using the command verified in official documentation`;
+  plan.args = {
+    ...(plan.args || {}),
+    browserResearch: {
+      query,
+      url: page.url(),
+      searchUrl,
+      searchTitle,
+      sourceUrl: page.url(),
+      sourceTitle: docTitle,
+      sourceExcerpt: documentationText.slice(0, 2200),
+      command: recommendedCommand,
+      package: installPlan.package || "",
+      evidenceQuote,
+      reason: installPlan.reason || "",
+      steps: Array.isArray(installPlan.steps) ? installPlan.steps.slice(0, 6) : [],
+      searchResults: searchResults.slice(0, 6).map(({ title, url }) => ({
+        title,
+        url,
+      })),
+      conversationHistory: conversationHistory.slice(-8),
+      planner: {
+        mode: "installation_research",
+        source: "official_documentation",
+        reply: installPlan.reason || "",
+      },
+    },
+  };
+  serverState.lastPlan = installPlan;
+}
+
 //==========================================================
 // SNAPSHOT
 //==========================================================
@@ -699,6 +877,22 @@ function failure(err) {
   };
 }
 
+function normalizeConversationHistory(history) {
+  if (!Array.isArray(history)) return [];
+  return history
+    .filter(
+      (turn) =>
+        ["user", "assistant"].includes(turn?.role) &&
+        typeof turn.content === "string" &&
+        turn.content.trim(),
+    )
+    .slice(-24)
+    .map((turn) => ({
+      role: turn.role,
+      content: turn.content.trim().slice(0, 1400),
+    }));
+}
+
 //==========================================================
 // ROUTER
 //==========================================================
@@ -723,7 +917,7 @@ async function routeCommand(command, context = {}) {
   }
 
   if (typeof commandRouter.classify === "function") {
-    const classification = commandRouter.classify(command);
+    const classification = commandRouter.classify(command, context);
 
     return {
       ...classification,
@@ -752,6 +946,8 @@ async function handleChat(command, context = {}) {
     route: context.route,
 
     requestId: context.requestId,
+
+    conversationHistory: context.conversationHistory,
 
     debug: CONFIG.debug,
 
@@ -1437,6 +1633,7 @@ app.post("/run", async (req, res) => {
   const started = startTimer();
 
   const command = String(req.body?.command || "").trim();
+  const conversationHistory = normalizeConversationHistory(req.body?.conversationHistory);
 
   //------------------------------------------------------
   // VALIDATE
@@ -1500,6 +1697,8 @@ app.post("/run", async (req, res) => {
         requestId: req.requestId,
 
         page: null,
+
+        conversationHistory,
       });
     } catch (err) {
       error("[RUN] Router Error:", err.message);
@@ -1556,6 +1755,8 @@ app.post("/run", async (req, res) => {
           route,
 
           requestId: req.requestId,
+
+          conversationHistory,
         });
 
         stopTimer(started);
@@ -1602,15 +1803,16 @@ app.post("/run", async (req, res) => {
 
     //----------------------------------------------------
     // SYSTEM / PROJECT / CLI INSTALL
-    //
-    // Browser is NOT required.
     //----------------------------------------------------
 
     if (route.mode === "system") {
       try {
-        const plan = await systemAgent.plan(command);
+        const plan = await systemAgent.plan(command, { conversationHistory });
 
         if (plan.requiresConfirmation) {
+          if (plan.requiresBrowserResearch) {
+            await researchSystemInstall(plan, command, conversationHistory);
+          }
           const pendingAction = systemAgent.createPendingAction(plan, command);
           stopTimer(started);
           return res.json(
@@ -1712,6 +1914,7 @@ app.post("/run", async (req, res) => {
       const agentResult = await interactiveAgent.startSession(command, {
         page,
         route,
+        conversationHistory,
       });
 
       serverState.lastPlan = agentResult.plan || null;
@@ -1733,7 +1936,10 @@ app.post("/run", async (req, res) => {
     }
 
     let pageText = "";
-    let pageContext = { currentUrl: req.body?.currentUrl || page.url() };
+    let pageContext = {
+      currentUrl: req.body?.currentUrl || page.url(),
+      conversationHistory,
+    };
 
     try {
       const snapshot = await captureSnapshot();

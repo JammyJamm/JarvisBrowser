@@ -619,22 +619,6 @@
       );
     });
 
-    const toggleBtn = document.getElementById("officeTimerToggleBtn");
-    if (toggleBtn) {
-      const icon = toggleBtn.querySelector(".feather-icon");
-      if (icon) {
-        icon.dataset.feather = officeState.isRunning ? "pause" : "play";
-        initializeFeatherIcons(toggleBtn);
-      }
-      toggleBtn.setAttribute(
-        "aria-label",
-        officeState.isRunning ? "Pause office timer" : "Start office timer",
-      );
-      toggleBtn.title = officeState.isRunning
-        ? "Pause office timer"
-        : "Start office timer";
-    }
-
     const isOffice = matchesOfficeNetwork(officeState.network, store.officeConfig.officeNetworks);
     const netPill = document.getElementById("officeNetworkBtn");
     const netText = document.getElementById("officeNetworkText");
@@ -1980,15 +1964,6 @@
         const cell = event.target.closest("[data-date]");
         if (cell) openEventDialog(cell.dataset.date);
       });
-
-    // Office Timer UI bindings
-    document.getElementById("officeTimerToggleBtn")?.addEventListener("click", () => {
-      if (officeState.isRunning) {
-        pauseOfficeTimer("manual");
-      } else {
-        startOfficeTimer("manual");
-      }
-    });
 
     document.querySelectorAll("[data-office-target]").forEach((btn) => {
       btn.addEventListener("click", () => {

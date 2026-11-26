@@ -53,6 +53,7 @@ async function runSystemAgentTests() {
     );
     assert.strictEqual(ghPlan.tool, "install_github");
     assert.strictEqual(ghPlan.requiresConfirmation, true);
+    assert.strictEqual(ghPlan.requiresBrowserResearch, true);
     assert.strictEqual(ghPlan.args.repo, "HKUDS/CLI-Anything");
     assert.match(ghPlan.commandText, /cli-anything-hub/i);
 
@@ -92,6 +93,7 @@ async function runSystemAgentTests() {
     const hubInstall = await agent.plan("cli-hub install gimp");
     assert.strictEqual(hubInstall.tool, "cli_hub");
     assert.strictEqual(hubInstall.requiresConfirmation, true);
+    assert.strictEqual(hubInstall.requiresBrowserResearch, true);
     console.log("  PASSED");
 
     // Test 6: Generic software auto-install options & self-healing command diagnosis
@@ -99,7 +101,15 @@ async function runSystemAgentTests() {
     const softPlan = await agent.plan("can you install vlc");
     assert.strictEqual(softPlan.tool, "install_package");
     assert.strictEqual(softPlan.requiresConfirmation, true);
+    assert.strictEqual(softPlan.requiresBrowserResearch, true);
     assert(Array.isArray(softPlan.options) && softPlan.options.length >= 2, "Expected selectable installer options");
+    const npmPlan = await agent.plan("npm install lodash");
+    assert.strictEqual(npmPlan.tool, "install_package");
+    assert.strictEqual(npmPlan.requiresBrowserResearch, true);
+    const explicitNpmPlan = await agent.plan("run command npm install lodash");
+    assert.strictEqual(explicitNpmPlan.requiresBrowserResearch, true);
+    const pnpmPlan = await agent.plan("pnpm add lodash");
+    assert.strictEqual(pnpmPlan.requiresBrowserResearch, true);
 
     const wingetHeal = agent.diagnoseAndHealCommand("winget install VideoLAN.VLC", {
       success: false,
@@ -140,16 +150,84 @@ async function runSystemAgentTests() {
     assert.strictEqual(codePlan.requiresConfirmation, true);
     assert.deepStrictEqual(codePlan.args.targetFiles, ["sample.js"]);
 
-    agent.callCodeHealLLM = async () => ({
+    console.log("Test 8: Recognize and target an office timer UI change");
+    const timerFiles = [
+      "main/renderer/index.html",
+      "main/renderer/dashboard.js",
+      "main/renderer/dashboard.css",
+    ];
+    for (const file of timerFiles) {
+      const fullPath = path.join(tempRoot, file);
+      await fs.mkdir(path.dirname(fullPath), { recursive: true });
+      await fs.writeFile(fullPath, "", "utf8");
+    }
+    const timerPlan = await agent.plan("Remove pause button from office timmer from our project");
+    assert.strictEqual(timerPlan.tool, "code_heal");
+    assert.deepStrictEqual(timerPlan.args.targetFiles, timerFiles);
+    const contextualTimerPlan = await agent.plan("Remove that button", {
+      conversationHistory: [
+        { role: "user", content: "Update the office timer project and remove the pause button." },
+      ],
+    });
+    assert.strictEqual(contextualTimerPlan.tool, "code_heal");
+    assert.deepStrictEqual(contextualTimerPlan.args.targetFiles, timerFiles);
+    console.log("  PASSED");
+
+    console.log("Test 9: Identify browser-backed install feature files for code healing");
+    const installFeatureFiles = [
+      "backend/command-router.js",
+      "backend/server.js",
+      "backend/system-agent.js",
+      "backend/planner.js",
+      "main/renderer/ai.js",
+    ];
+    for (const file of installFeatureFiles) {
+      const fullPath = path.join(tempRoot, file);
+      await fs.mkdir(path.dirname(fullPath), { recursive: true });
+      await fs.writeFile(fullPath, "", "utf8");
+    }
+    const featurePlan = await agent.plan(
+      "Update my code: software and npm installs should search the internet, show in browser UI, and plan based on the browser page.",
+    );
+    assert.deepStrictEqual(featurePlan.args.targetFiles, installFeatureFiles);
+    console.log("  PASSED");
+
+    console.log("Test 10: Code-heal timeout reports actionable error");
+    const timeoutAgent = new SystemAgent({ projectRoot: tempRoot, codeHealTimeoutMs: 10 });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (_url, options) =>
+      new Promise((_resolve, reject) => {
+        options.signal.addEventListener(
+          "abort",
+          () => reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })),
+          { once: true },
+        );
+      });
+    try {
+      await assert.rejects(
+        () => timeoutAgent.callCodeHealLLM("test"),
+        /timed out after 10 ms.*Ollama/i,
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    console.log("  PASSED");
+
+    let codeHealPrompt = "";
+    agent.callCodeHealLLM = async (prompt) => {
+      codeHealPrompt = prompt;
+      return ({
       summary: "Updated the sample value.",
       edits: [{ file: "sample.js", target: "const answer = 1;", replacement: "const answer = 2;" }],
-    });
+      });
+    };
     const pendingCode = agent.createPendingAction(codePlan, "Update our code");
     const codeResult = await agent.approveAction(pendingCode.actionId);
     assert.strictEqual(codeResult.success, true);
     assert.strictEqual(codeResult.result.action, "code_heal");
     assert.deepStrictEqual(codeResult.result.modifiedFiles, ["sample.js"]);
     assert.match(await fs.readFile(codeFile, "utf8"), /const answer = 2;/);
+    assert.match(codeHealPrompt, /RELEVANT PAST CONVERSATION/);
 
     await fs.mkdir(outsideRoot, { recursive: true });
     const outsideFile = path.join(outsideRoot, "escape.js");

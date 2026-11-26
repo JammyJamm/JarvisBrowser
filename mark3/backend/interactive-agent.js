@@ -809,6 +809,7 @@ NEVER authorize or trigger payment / Place Order / Pay Now unless USER SELECTION
 
 USER GOAL: ${session.goal}
 PARSED GOAL: ${JSON.stringify(session.parsedGoal)}
+RELEVANT RECENT CONVERSATION: ${JSON.stringify(session.conversationHistory || [])}
 USER SELECTIONS SO FAR: ${JSON.stringify(session.userSelections)}
 RECENT STEPS: ${JSON.stringify(session.stepHistory.slice(-5).map((s) => ({ tool: s.tool, args: s.args, status: s.status, success: s.success, evidence: s.evidence })))}
 
@@ -1407,6 +1408,12 @@ Return ONLY JSON in one of these formats:
       },
       pendingPrompt: null,
       activePage: context.page || null,
+      conversationHistory: Array.isArray(context.conversationHistory)
+        ? context.conversationHistory.slice(-16).map((turn) => ({
+            role: turn.role,
+            content: String(turn.content || "").slice(0, 1200),
+          }))
+        : [],
       summary: "",
     };
 

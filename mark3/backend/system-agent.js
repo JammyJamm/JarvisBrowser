@@ -39,6 +39,13 @@ export default class SystemAgent {
       options.endpoint ||
       process.env.OLLAMA_ENDPOINT ||
       "http://localhost:11434/api/generate";
+    const configuredCodeHealTimeout = Number(
+      options.codeHealTimeoutMs || process.env.CODE_HEAL_TIMEOUT_MS || 120000,
+    );
+    this.codeHealTimeoutMs =
+      Number.isFinite(configuredCodeHealTimeout) && configuredCodeHealTimeout > 0
+        ? configuredCodeHealTimeout
+        : 120000;
     this.debug = Boolean(options.debug);
     this.pendingActions = new Map();
   }
@@ -519,10 +526,12 @@ export default class SystemAgent {
       /^(?:code\s*heal|heal\s*code|update\s+(?:our\s+|the\s+)?code|fix\s+(?:our\s+|the\s+)?code|apply\s+comment|code\s+comment)\b/i.test(
         text,
       ) ||
-      (/\b(?:update|edit|modify|change|refactor|patch|heal|fix)\b/i.test(text) &&
+      (/\b(?:add|remove|hide|show|enable|disable|delete|create|implement|update|edit|modify|change|refactor|patch|heal|fix)\b/i.test(text) &&
         /\b(?:code|source\s*code|file|files|planner|agent|ui|renderer|server|backend|script|function|bug|error|styles?|css|html|js)\b/i.test(
           text,
-        ))
+        )) ||
+      (/\b(?:add|remove|hide|show|enable|disable|delete|create|implement|update|edit|modify|change|refactor|patch|heal|fix)\b/i.test(text) &&
+        /\b(?:project|application|app|component|feature|dashboard|office\s+tim(?:er|mer))\b/i.test(text))
     );
   }
 
@@ -557,6 +566,17 @@ export default class SystemAgent {
 
     // 2. Keyword-to-module mapping for common mark3 project components
     const keywordMap = [
+      {
+        regex: /\b(?:internet|browser\s+ui|browser[-\s]?research|web\s+search|npm|software\s+install)\b/i,
+        files: [
+          "backend/command-router.js",
+          "backend/server.js",
+          "backend/system-agent.js",
+          "backend/planner.js",
+          "main/renderer/ai.js",
+        ],
+      },
+      { regex: /\boffice\s+tim(?:er|mer)\b/i, files: ["main/renderer/index.html", "main/renderer/dashboard.js", "main/renderer/dashboard.css"] },
       { regex: /\b(ui|render|card|step|frontend|chat|dashboard)\b/i, files: ["main/renderer/ai.js", "main/renderer/styles.css"] },
       { regex: /\b(interactive|checkout|payment|variant|svgjarvis|agent)\b/i, files: ["backend/interactive-agent.js"] },
       { regex: /\b(planner|plan|replan)\b/i, files: ["backend/planner.js", "backend/interactive-agent.js"] },
@@ -588,20 +608,20 @@ export default class SystemAgent {
             if (e.isFile() && /\.(js|css|html)$/i.test(e.name)) {
               const rel = dir === "." ? e.name : `${dir}/${e.name}`;
               found.add(rel);
-              if (found.size >= 4) break;
+              if (found.size >= 5) break;
             }
           }
         } catch {}
-        if (found.size >= 4) break;
+        if (found.size >= 5) break;
       }
     }
 
-    return [...found].slice(0, 4);
+    return [...found].slice(0, 5);
   }
 
   async callCodeHealLLM(prompt) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 30000);
+    const timer = setTimeout(() => controller.abort(), this.codeHealTimeoutMs);
     try {
       const res = await fetch(this.endpoint, {
         method: "POST",
@@ -616,7 +636,6 @@ export default class SystemAgent {
           options: { temperature: 0, num_predict: 1800 },
         }),
       });
-      clearTimeout(timer);
       if (!res.ok) {
         throw new Error(`LLM returned HTTP ${res.status}`);
       }
@@ -629,8 +648,14 @@ export default class SystemAgent {
       }
       return JSON.parse(raw.slice(start, end + 1));
     } catch (err) {
-      clearTimeout(timer);
+      if (controller.signal.aborted) {
+        throw new Error(
+          `Code-healing model request timed out after ${this.codeHealTimeoutMs} ms. Check that Ollama is running and try again.`,
+        );
+      }
       throw err;
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -652,7 +677,7 @@ export default class SystemAgent {
     return errors;
   }
 
-  async executeCodeHeal(comment, targetFiles = []) {
+  async executeCodeHeal(comment, targetFiles = [], conversationHistory = []) {
     const instruction = String(comment || "").trim();
     if (!instruction) {
       throw new Error("A code update / healing comment is required.");
@@ -687,8 +712,17 @@ export default class SystemAgent {
       .map(([rel, content]) => `=== FILE: ${rel} ===\n${content}`)
       .join("\n\n");
 
+    const historyContext = Array.isArray(conversationHistory)
+      ? conversationHistory
+          .slice(-12)
+          .map((turn) => `${turn.role}: ${String(turn.content || "").slice(0, 1000)}`)
+          .join("\n")
+      : "";
     const patchPrompt = `You are the svgJarvis Code Healing & Update Agent.
 Apply the user's comment/request safely with minimal exact replacements.
+
+RELEVANT PAST CONVERSATION:
+${historyContext || "(none)"}
 
 USER COMMENT / REQUEST:
 ${instruction}
@@ -834,18 +868,31 @@ Return ONLY valid JSON:
   // PLANNER FOR SYSTEM / PROJECT / INSTALL COMMANDS
   //========================================================
 
-  async plan(input) {
+  async plan(input, context = {}) {
     const raw = this.unwrapInstallRequest(input);
     const originalRaw = String(input || "").trim();
     const lower = raw.toLowerCase();
+    const conversationHistory = Array.isArray(context.conversationHistory)
+      ? context.conversationHistory
+          .filter((turn) => ["user", "assistant"].includes(turn?.role) && typeof turn.content === "string")
+          .slice(-24)
+          .map((turn) => ({ role: turn.role, content: turn.content.slice(0, 1400) }))
+      : [];
+    const priorConversationText = conversationHistory.map((turn) => turn.content).join("\n");
+    const contextualCodeEdit =
+      /\b(?:add|remove|hide|show|enable|disable|delete|create|implement|update|edit|modify|change|refactor|patch|heal|fix)\b/i.test(raw) &&
+      /\b(?:it|that|this|them|those|these|one|button|feature)\b/i.test(raw) &&
+      /\b(?:code|project files?|source|planner|agent|feature|software|npm|office timer)\b/i.test(priorConversationText);
 
     if (!raw) {
       throw new Error("Empty system command.");
     }
 
     // 0. Comment-driven code update / code healing
-    if (this.isCodeHealInstruction(originalRaw) || this.isCodeHealInstruction(raw)) {
-      const targetFiles = await this.findRelevantCodeFiles(originalRaw);
+    if (this.isCodeHealInstruction(originalRaw) || this.isCodeHealInstruction(raw) || contextualCodeEdit) {
+      const targetFiles = await this.findRelevantCodeFiles(
+        `${originalRaw}\n${conversationHistory.map((turn) => turn.content).join("\n")}`,
+      );
       return {
         mode: "system",
         tool: "code_heal",
@@ -856,6 +903,7 @@ Return ONLY valid JSON:
         args: {
           comment: originalRaw,
           targetFiles,
+          conversationHistory,
         },
       };
     }
@@ -873,6 +921,7 @@ Return ONLY valid JSON:
         summary: isCliAnything
           ? `Clone HKUDS/CLI-Anything into ${targetDir} and install cli-anything-hub via pip`
           : `Clone ${gh.slug} into ${targetDir} and install detected dependencies`,
+        requiresBrowserResearch: true,
         cwd: this.projectRoot,
         commandText,
         args: { repo: gh.slug, targetDir, url: gh.url },
@@ -889,6 +938,7 @@ Return ONLY valid JSON:
         mode: "system",
         tool: "cli_hub",
         requiresConfirmation: !isReadOnly,
+        requiresBrowserResearch: firstWord === "install" || firstWord === "add",
         summary: isReadOnly ? `Query CLI-Hub: cli-hub ${subArgs}` : `Run CLI-Hub: cli-hub ${subArgs}`,
         cwd: this.projectRoot,
         commandText: `cli-hub ${subArgs}`,
@@ -905,6 +955,7 @@ Return ONLY valid JSON:
         mode: "system",
         tool: "install_cli_hub",
         requiresConfirmation: true,
+        requiresBrowserResearch: true,
         summary: "Install cli-anything-hub (CLI-Anything package manager) via pip",
         cwd: this.projectRoot,
         commandText: "pip install cli-anything-hub",
@@ -913,11 +964,12 @@ Return ONLY valid JSON:
     }
 
     // 4. Direct package manager commands (pip, npm, npx, winget, choco)
-    if (/^(pip3?|npm|npx|winget|choco)\s+(install|i|add|uninstall|update|upgrade|test|run)\b/i.test(raw)) {
+    if (/^(pip3?|npm|npx|pnpm|yarn|bun|winget|choco)\s+(install|i|add|uninstall|update|upgrade|test|run)\b/i.test(raw)) {
       return {
         mode: "system",
         tool: "install_package",
         requiresConfirmation: true,
+        requiresBrowserResearch: /^(?:pip3?|npm|npx|pnpm|yarn|bun|winget|choco)\s+(?:install|i|add)\b/i.test(raw),
         summary: `Run package manager command: ${raw}`,
         cwd: this.projectRoot,
         commandText: raw,
@@ -965,6 +1017,7 @@ Return ONLY valid JSON:
         mode: "system",
         tool: "install_package",
         requiresConfirmation: true,
+        requiresBrowserResearch: true,
         summary: `Install "${target}"${alreadyNote} — choose installer or edit command before approving`,
         cwd: this.projectRoot,
         commandText,
@@ -1033,6 +1086,7 @@ Return ONLY valid JSON:
         mode: "system",
         tool: "run_command",
         requiresConfirmation: true,
+        requiresBrowserResearch: /^(?:npm|npx|pnpm|yarn|bun|pip3?|winget|choco)\s+(?:install|i|add)\b/i.test(cmdText),
         summary: `Execute command in ${this.projectRoot}`,
         cwd: this.projectRoot,
         commandText: cmdText,
@@ -1090,6 +1144,7 @@ Return ONLY valid JSON:
         return await this.executeCodeHeal(
           plan.args?.comment || plan.commandText,
           plan.args?.targetFiles || [],
+          plan.args?.conversationHistory || [],
         );
 
       case "cli_hub":

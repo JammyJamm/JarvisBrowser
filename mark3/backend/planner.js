@@ -357,6 +357,48 @@ export default class Planner {
     }
   }
 
+  async researchInstallation(query, evidence, context = {}) {
+    const stage = context.stage === "documentation" ? "documentation" : "search";
+    const prompt = stage === "search"
+      ? `You are a software installation research assistant. The user must not have to search manually; research only from the browser search results supplied below.
+
+USER REQUEST: ${query}
+PLATFORM: ${context.platform || process.platform}
+PACKAGE MANAGER HINT: ${context.packageManager || "infer from the request"}
+
+SEARCH RESULTS (title, URL, excerpt):
+${String(evidence || "").slice(0, 10000)}
+
+Choose the best official vendor or package-registry result that directly documents this exact software/package. Do not select ads, mirrors, forums, or unrelated packages. Do not invent a URL; sourceUrl must exactly match one URL in the supplied results. If no reliable official result is present, return found=false.
+
+Return JSON only:
+{"found":true,"sourceUrl":"https://...","sourceTitle":"...","reason":"..."}
+or
+{"found":false,"reason":"..."}`
+      : `You are an installation-command researcher. Extract exact, platform-appropriate installation guidance from the official documentation text provided. Understand the user's rough natural-language request and correct obvious spelling/grammar when identifying the intended package, but never silently substitute a different package.
+
+USER REQUEST: ${query}
+PLATFORM: ${context.platform || process.platform}
+OFFICIAL DOCUMENTATION URL: ${context.sourceUrl || ""}
+DOCUMENTATION TITLE: ${context.sourceTitle || ""}
+
+DOCUMENTATION TEXT:
+${String(evidence || "").slice(0, 16000)}
+
+Return one safe install command only. It must be a single command (no shell chaining, pipes, redirection, scripts, or destructive commands) and must be supported by this documentation text. If the documentation does not state a suitable command, use an empty command and set found=false. Include a short exact evidenceQuote copied from the text. Do not run or install anything.
+
+Return JSON only:
+{"found":true,"package":"canonical package/application name","command":"exact install command","sourceUrl":"${context.sourceUrl || ""}","sourceTitle":"${context.sourceTitle || ""}","evidenceQuote":"exact relevant text","steps":["..."],"reason":"..."}
+or
+{"found":false,"reason":"..."}`;
+
+    const result = await this.callLLM(prompt);
+    if (!result || typeof result !== "object") {
+      return { found: false, reason: "The language model could not produce a verified installation research result." };
+    }
+    return result;
+  }
+
   //========================================================
   // TEXT CLEANING
   //========================================================

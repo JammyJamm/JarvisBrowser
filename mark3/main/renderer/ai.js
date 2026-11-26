@@ -19,9 +19,49 @@
   const form = document.getElementById("ai-form");
   const input = document.getElementById("cmd");
   const submitBtn = document.getElementById("submitCmdBtn");
+  const CONVERSATION_HISTORY_KEY = "jarvisConversationHistory";
+  const MAX_CONVERSATION_TURNS = 24;
+  const MAX_CONVERSATION_TURN_CHARS = 1400;
 
   let isExecuting = false;
   let activeAbortController = null;
+  let conversationHistory = loadConversationHistory();
+
+  function loadConversationHistory() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(CONVERSATION_HISTORY_KEY) || "[]");
+      if (!Array.isArray(saved)) return [];
+      return saved
+        .filter((turn) => ["user", "assistant"].includes(turn?.role) && typeof turn.content === "string")
+        .slice(-MAX_CONVERSATION_TURNS)
+        .map((turn) => ({
+          role: turn.role,
+          content: turn.content.slice(0, MAX_CONVERSATION_TURN_CHARS),
+        }));
+    } catch (err) {
+      console.warn("Could not load Jarvis conversation history:", err);
+      return [];
+    }
+  }
+
+  function rememberConversationTurn(role, content) {
+    const text = String(content || "").trim();
+    if (!text || !["user", "assistant"].includes(role)) return;
+    conversationHistory.push({
+      role,
+      content: text.slice(0, MAX_CONVERSATION_TURN_CHARS),
+    });
+    conversationHistory = conversationHistory.slice(-MAX_CONVERSATION_TURNS);
+    try {
+      localStorage.setItem(CONVERSATION_HISTORY_KEY, JSON.stringify(conversationHistory));
+    } catch (err) {
+      console.warn("Could not save Jarvis conversation history:", err);
+    }
+  }
+
+  function getPriorConversation() {
+    return conversationHistory.slice(0, -1);
+  }
 
   function escapeHTML(str) {
     if (!str) return "";
@@ -321,6 +361,26 @@
     const pending = data.pendingAction || {};
     const isCodeHeal = pending.tool === "code_heal";
     const targetFiles = Array.isArray(pending.args?.targetFiles) ? pending.args.targetFiles : [];
+    const browserResearch = pending.args?.browserResearch;
+    const installSteps = Array.isArray(browserResearch?.steps) ? browserResearch.steps : [];
+    const searchResults = Array.isArray(browserResearch?.searchResults)
+      ? browserResearch.searchResults
+      : [];
+    const browserResearchHtml = browserResearch
+      ? `
+        <div class="agent-goal-summary"><strong>LLM installation research:</strong> ${escapeHTML(browserResearch.package || browserResearch.query || "Installation search")}</div>
+        <div class="system-meta-row"><strong>Official source:</strong> <a href="${escapeHTML(browserResearch.sourceUrl || "")}" target="_blank" rel="noopener noreferrer">${escapeHTML(browserResearch.sourceTitle || browserResearch.sourceUrl || "")}</a></div>
+        <div class="system-meta-row"><strong>Recommended command:</strong></div>
+        <pre class="system-terminal-output">${escapeHTML(browserResearch.command || pending.commandText || "")}</pre>
+        ${browserResearch.evidenceQuote ? `<div class="agent-summary-warning"><strong>Verified from documentation:</strong> ${escapeHTML(browserResearch.evidenceQuote)}</div>` : ""}
+        ${browserResearch.reason ? `<div class="agent-goal-summary">${escapeHTML(browserResearch.reason)}</div>` : ""}
+        ${installSteps.length ? `<ol class="system-research-plan">${installSteps.map((step) => `<li>${escapeHTML(typeof step === "string" ? step : JSON.stringify(step))}</li>`).join("")}</ol>` : ""}
+        <details><summary>Search results and documentation reviewed in browser</summary>
+          <div class="system-file-chips">${searchResults.map((result) => `<a class="system-file-chip" href="${escapeHTML(result.url || "")}" target="_blank" rel="noopener noreferrer">${escapeHTML(result.title || result.url || "")}</a>`).join("")}</div>
+          <pre class="system-terminal-output">${escapeHTML(browserResearch.sourceExcerpt || "")}</pre>
+        </details>
+      `
+      : "";
     if (card?.header) {
       card.header.querySelector(".agent-title").innerText = isCodeHeal
         ? "Jarvis · Code Update Plan"
@@ -345,6 +405,7 @@
       <div class="system-action-card">
         <div class="agent-goal-summary"><strong>${isCodeHeal ? "Code update plan:" : "Action:"}</strong> ${escapeHTML(pending.summary || "Run system command")}</div>
         <div class="system-meta-row"><strong>Folder:</strong> <code>${escapeHTML(pending.cwd || "")}</code></div>
+        ${browserResearchHtml}
         ${isCodeHeal ? `
           <div class="system-meta-row"><strong>Your request:</strong></div>
           <pre class="system-terminal-output">${escapeHTML(pending.args?.comment || "")}</pre>
@@ -409,6 +470,12 @@
         }
 
         const cmdSuccess = approveData.result?.success !== false;
+        rememberConversationTurn(
+          "assistant",
+          approveData.result?.summary ||
+            approveData.result?.stderr ||
+            (cmdSuccess ? "The approved system action completed." : "The approved system action failed."),
+        );
         card.header.querySelector(".agent-title").innerText = cmdSuccess
           ? (isCodeHeal ? "Jarvis · Code Updated & Verified" : "Jarvis · System Task Completed")
           : (isCodeHeal ? "Jarvis · Code Update Failed" : "Jarvis · Command Exited with Errors");
@@ -444,6 +511,20 @@
   }
 
   function renderActionResponse(card, data) {
+    const actionSummary = [
+      data.summary,
+      data.pendingPrompt?.question,
+      ...(Array.isArray(data.steps)
+        ? data.steps
+            .filter((step) => step?.success !== false)
+            .slice(-4)
+            .map((step) => step.what || step.comment || step.evidence)
+        : []),
+    ]
+      .filter(Boolean)
+      .join(" ");
+    if (actionSummary) rememberConversationTurn("assistant", actionSummary);
+
     if (data.status === "needs_input" && data.pendingPrompt) {
       renderInteractivePrompt(card, data);
       return;
@@ -592,6 +673,7 @@
           return;
         }
 
+        rememberConversationTurn("user", customInput || choice);
         renderActionResponse(card, nextData);
       } catch (err) {
         setStatus("Unable to resume task", "error");
@@ -661,6 +743,8 @@
 
     const messageBlock = appendUserMessage(commandText);
     const agentCard = appendAgentCard(messageBlock, "Analyzing instruction...");
+    rememberConversationTurn("user", commandText);
+    const priorConversation = getPriorConversation().slice(-MAX_CONVERSATION_TURNS);
 
     logToPanel(`Command submitted: "${commandText}"`);
 
@@ -693,6 +777,7 @@
           command: commandText,
           currentUrl,
           tabId: currentTabId,
+          conversationHistory: priorConversation,
         }),
       });
 
@@ -721,6 +806,15 @@
       if (data.mode === "system") {
         if (data.status === "pending_confirmation") {
           setStatus("Waiting for your approval", "working");
+          rememberConversationTurn(
+            "assistant",
+            [
+              data.plan?.summary,
+              data.pendingAction?.args?.browserResearch?.planner?.reply,
+            ]
+              .filter(Boolean)
+              .join(" "),
+          );
           renderSystemConfirmation(agentCard, data);
           return;
         }
@@ -732,6 +826,10 @@
         if (agentCard?.body) {
           renderSystemResult(agentCard.body, data.result || {});
         }
+        rememberConversationTurn(
+          "assistant",
+          data.result?.summary || data.result?.stdout || data.result?.stderr || "System request completed.",
+        );
         return;
       }
 
@@ -744,6 +842,7 @@
         if (agentCard?.body) {
           agentCard.body.innerHTML = `<div class="agent-chat-reply">${escapeHTML(data.reply || "Done.")}</div>`;
         }
+        rememberConversationTurn("assistant", data.reply || "Done.");
         return;
       }
 

@@ -69,6 +69,57 @@ async function runPlannerTests() {
   assert.strictEqual(plan7.steps[2].tool, "click");
   console.log("  PASSED");
 
+  // Test 7: Installation research extracts an official source and exact command
+  console.log("Test 7: Installation research uses supplied browser evidence");
+  const searchResults = [
+    { title: "Lodash - npm", url: "https://www.npmjs.com/package/lodash" },
+  ];
+  let researchPrompt = "";
+  planner.callLLM = async (prompt) => {
+    researchPrompt = prompt;
+    return {
+      found: true,
+      package: "lodash",
+      command: "npm install lodash",
+      sourceUrl: "https://www.npmjs.com/package/lodash",
+      sourceTitle: "Lodash - npm",
+      evidenceQuote: "npm install lodash",
+      steps: ["Install lodash using npm."],
+      reason: "The npm package documentation identifies the install command.",
+    };
+  };
+  const installResearch = await planner.researchInstallation(
+    "lodash official installation npm",
+    "Installation\nnpm install lodash",
+    {
+      stage: "documentation",
+      sourceUrl: searchResults[0].url,
+      sourceTitle: searchResults[0].title,
+      platform: "win32",
+    },
+  );
+  assert.strictEqual(installResearch.found, true);
+  assert.strictEqual(installResearch.command, "npm install lodash");
+  assert.match(researchPrompt, /OFFICIAL DOCUMENTATION URL/);
+  assert.match(researchPrompt, /Return JSON only/);
+  planner.callLLM = async (prompt) => {
+    researchPrompt = prompt;
+    return {
+      found: true,
+      sourceUrl: "https://www.npmjs.com/package/lodash",
+      sourceTitle: "Lodash - npm",
+      reason: "Official npm package page.",
+    };
+  };
+  const sourceResearch = await planner.researchInstallation(
+    "lodash official installation npm",
+    "1. Lodash - npm\nURL: https://www.npmjs.com/package/lodash",
+    { stage: "search", platform: "win32" },
+  );
+  assert.strictEqual(sourceResearch.sourceUrl, searchResults[0].url);
+  assert.match(researchPrompt, /SEARCH RESULTS/);
+  console.log("  PASSED");
+
   console.log("=== All Planner Unit Tests Passed Successfully ===");
 }
 

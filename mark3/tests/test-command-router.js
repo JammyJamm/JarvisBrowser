@@ -62,6 +62,7 @@ async function runCommandRouterTests() {
 
   const systemCases = [
     "Update our code: make the planner visible before applying the changes.",
+    "Remove pause button from office timmer from our project",
     "install https://github.com/HKUDS/CLI-Anything",
     "this is git hub code , can you install in our app ? https://github.com/HKUDS/CLI-Anything",
     "pip install cli-anything-hub",
@@ -72,12 +73,27 @@ async function runCommandRouterTests() {
     "run command dir",
     "can you install vlc",
     "auto install python",
+    "pnpm add lodash",
   ];
 
   for (const cmd of systemCases) {
     const route = await router.route(cmd);
     assert.strictEqual(route.mode, "system", `Expected "${cmd}" to be classified as 'system', got '${route.mode}'`);
   }
+  const codeHealRoute = await router.route("Remove pause button from office timmer from our project");
+  assert.strictEqual(codeHealRoute.intentType, "code_heal");
+  const installWorkflowHealRoute = await router.route(
+    "Update my code: software and npm installs should search the internet, show in browser UI, and plan based on the browser page.",
+  );
+  assert.strictEqual(installWorkflowHealRoute.mode, "system");
+  assert.strictEqual(installWorkflowHealRoute.intentType, "code_heal");
+  const contextualEditRoute = await router.route("Remove that button", {
+    conversationHistory: [
+      { role: "user", content: "Update the office timer project and remove the pause button." },
+    ],
+  });
+  assert.strictEqual(contextualEditRoute.mode, "system");
+  assert.strictEqual(contextualEditRoute.intentType, "code_heal");
   console.log(`  PASSED ${systemCases.length} system classification cases`);
 
   console.log("=== All CommandRouter Unit Tests Passed Successfully ===");

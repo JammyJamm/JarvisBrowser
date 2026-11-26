@@ -117,7 +117,7 @@ export default class CommandRouter {
     // CLASSIFY
     //------------------------------------------------------
 
-    const classification = this.classify(text);
+    const classification = this.classify(text, context);
 
     this.log("Classification:", classification);
 
@@ -182,7 +182,7 @@ export default class CommandRouter {
   // CLASSIFY
   //========================================================
 
-  classify(input) {
+  classify(input, context = {}) {
     const raw = String(input || "").trim();
     const text = raw.toLowerCase();
 
@@ -199,6 +199,16 @@ export default class CommandRouter {
     }
 
     const unwrapped = this.unwrapRequestPrefix(raw).toLowerCase();
+    const recentConversation = Array.isArray(context.conversationHistory)
+      ? context.conversationHistory
+          .slice(-12)
+          .map((turn) => String(turn?.content || ""))
+          .join("\n")
+      : "";
+    const priorCodeDiscussion =
+      /\b(?:code|project files?|source|planner|agent|feature|software|npm|office timer)\b/i.test(
+        recentConversation,
+      );
 
     //------------------------------------------------------
     // MULTI-STEP BROWSER ACTIONS
@@ -244,11 +254,17 @@ export default class CommandRouter {
       /^(?:code\s*heal|heal\s*code|update\s+(?:our\s+|the\s+)?code|fix\s+(?:our\s+|the\s+)?code)\b/i.test(
         unwrapped,
       ) ||
-      (/\b(?:update|edit|modify|change|refactor|patch|heal|fix)\b/i.test(unwrapped) &&
+      (/\b(?:add|remove|hide|show|enable|disable|delete|create|implement|update|edit|modify|change|refactor|patch|heal|fix)\b/i.test(unwrapped) &&
         /\b(?:code|source\s*code|file|files|planner|agent|ui|renderer|server|backend|script|function|bug|error|styles?|css|html|js)\b/i.test(
           unwrapped,
         ) &&
-        !/^(?:what|why|how|when|where|who|which|is|are|do|does|did)\b/i.test(text));
+        !/^(?:what|why|how|when|where|who|which|is|are|do|does|did)\b/i.test(text)) ||
+      (/\b(?:add|remove|hide|show|enable|disable|delete|create|implement|update|edit|modify|change|refactor|patch|heal|fix)\b/i.test(unwrapped) &&
+        /\b(?:project|application|app|component|feature|dashboard|office\s+tim(?:er|mer))\b/i.test(unwrapped) &&
+        !/^(?:what|why|how|when|where|who|which|is|are|do|does|did)\b/i.test(text)) ||
+      (priorCodeDiscussion &&
+        /\b(?:add|remove|hide|show|enable|disable|delete|create|implement|update|edit|modify|change|refactor|patch|heal|fix)\b/i.test(unwrapped) &&
+        /\b(?:it|that|this|them|those|these|one|button|feature)\b/i.test(unwrapped));
 
     if (isCodeHealRequest) {
       return {
@@ -272,7 +288,7 @@ export default class CommandRouter {
 
     const systemPatterns = [
       /^(?:cli-hub|cli-anything-[a-z0-9_-]+)\b/i,
-      /^(?:pip3?|npm|npx|winget|choco)\s+(?:install|i|add|uninstall|update|upgrade|search|list|test|run)\b/i,
+      /^(?:pip3?|npm|npx|pnpm|yarn|bun|winget|choco)\s+(?:install|i|add|uninstall|update|upgrade|search|list|test|run)\b/i,
       /^git\s+(?:clone|pull|status|log|branch|checkout)\b/i,
       /^(?:please\s+)?(?:auto[-\s]?)?(?:install|heal|repair|fix)\b/i,
       /\b(?:auto[-\s]?install|install|setup|clone|integrate)\b.*\b(?:cli-anything|cli-hub|github\.com|software|app|package|packages|dependencies|tool|cli)\b/i,

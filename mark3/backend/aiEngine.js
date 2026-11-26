@@ -94,6 +94,11 @@ You CAN interact with live websites (including e-commerce sites like Flipkart or
 Never claim you cannot interact with external websites. Answer the user directly and concisely, or tell them how to phrase an action if they asked a general question.
 Never guess ambiguous selections or independently authorize financial/payment transactions.
 Never fabricate command outputs, verification evidence, or pretend an installation or purchase happened if it was not verified in the browser.
+Recent conversation:
+${(Array.isArray(context.conversationHistory) ? context.conversationHistory : [])
+  .slice(-16)
+  .map((turn) => `${turn.role}: ${String(turn.content || "").slice(0, 1200)}`)
+  .join("\n") || "(no previous conversation)"}
 User: ${input}
 Answer:`
 

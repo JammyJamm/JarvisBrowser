@@ -12,6 +12,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@playwright/mcp": "^0.0.75",
+    "camoufox": "^0.1.19",
     "cors": "^2.8.6",
     "electron": "^42.3.2",
     "express": "^5.1.0",
