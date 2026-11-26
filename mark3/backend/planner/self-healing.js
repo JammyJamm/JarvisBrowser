@@ -395,7 +395,14 @@ class SelfHealing {
       type = ERROR_TYPES.FRAME_NOT_FOUND;
     } else if (message.includes("detached") || message.includes("stale")) {
       type = ERROR_TYPES.STALE_ELEMENT;
-    } else if (message.includes("navigation") || message.includes("goto")) {
+    } else if (
+      message.includes("navigation") ||
+      message.includes("goto") ||
+      message.includes("err_cert") ||
+      message.includes("err_name_not_resolved") ||
+      message.includes("err_connection") ||
+      message.includes("err_ssl")
+    ) {
       type = ERROR_TYPES.NAVIGATION_FAILED;
     } else if (message.includes("page has been closed")) {
       type = ERROR_TYPES.PAGE_CLOSED;
@@ -446,8 +453,14 @@ class SelfHealing {
 
       ERROR_TYPES.DETACHED_ELEMENT,
 
+      ERROR_TYPES.NAVIGATION_FAILED,
+
       ERROR_TYPES.NETWORK_ERROR,
     ]);
+
+    if (type === ERROR_TYPES.NAVIGATION_FAILED && this.options.stopOnNavigationFailure) {
+      return false;
+    }
 
     return retryable.has(type);
   }
@@ -642,6 +655,14 @@ class SelfHealing {
 
         return [
           {
+            strategy: RECOVERY_STRATEGIES.RELOCATE,
+
+            alternative: true,
+
+            error: errorInfo,
+          },
+
+          {
             strategy: RECOVERY_STRATEGIES.RETRY,
           },
 
@@ -689,6 +710,13 @@ class SelfHealing {
 
       case RECOVERY_STRATEGIES.RETRY:
         await this._sleep(delay);
+
+        break;
+
+      case RECOVERY_STRATEGIES.RELOCATE:
+        if (typeof context.relocate === "function") {
+          await context.relocate(recovery);
+        }
 
         break;
 

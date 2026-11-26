@@ -17,8 +17,10 @@ const testFiles = [
   "test-command-router.js",
   "test-planner.js",
   "test-executor.js",
+  "test-system-agent.js",
   "test-browser-integration.js",
   "test-agentic-workflow.js",
+  "test-interactive-agent.js",
 ];
 
 async function runTest(file) {

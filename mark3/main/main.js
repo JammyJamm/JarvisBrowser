@@ -13,12 +13,26 @@
 //
 //==========================================================
 
-const { app, BrowserWindow, ipcMain, Menu } = require("electron");
+const { app, BrowserWindow, ipcMain, Menu, powerMonitor } = require("electron");
 const path = require("path");
 const TabManager = require("./tab-manager.js");
+const { detectCurrentNetwork } = require("./network-monitor.js");
 
 let win;
 let tabManager;
+let officeTimerServicePromise = null;
+let networkWatchTimer = null;
+let lastNetworkSignature = "";
+
+function getOfficeTimerService() {
+  if (!officeTimerServicePromise) {
+    const serviceUrl = require("url").pathToFileURL(
+      path.join(__dirname, "..", "database", "officeTimerService.js"),
+    ).href;
+    officeTimerServicePromise = import(serviceUrl);
+  }
+  return officeTimerServicePromise;
+}
 
 // Enable Chrome DevTools Protocol
 app.commandLine.appendSwitch("remote-debugging-port", "9222");
@@ -468,14 +482,109 @@ ipcMain.handle("browser-dismiss-popup", async () => {
 });
 
 /* ---------------------------------------------------- */
+/* Office Timer & Network IPC                           */
+/* ---------------------------------------------------- */
+
+async function pollAndBroadcastNetwork() {
+  const network = await detectCurrentNetwork();
+  const signature = JSON.stringify({
+    connected: network.connected,
+    type: network.type,
+    name: network.name,
+    ssid: network.ssid,
+    profile: network.profile,
+  });
+
+  if (signature !== lastNetworkSignature) {
+    lastNetworkSignature = signature;
+    if (win && !win.isDestroyed()) {
+      win.webContents.send("office-network-changed", network);
+    }
+  }
+  return network;
+}
+
+function startNetworkWatcher() {
+  if (networkWatchTimer) clearInterval(networkWatchTimer);
+  pollAndBroadcastNetwork().catch((err) =>
+    console.error("Initial network poll error:", err),
+  );
+  networkWatchTimer = setInterval(() => {
+    pollAndBroadcastNetwork().catch((err) =>
+      console.error("Network poll error:", err),
+    );
+  }, 5000);
+}
+
+ipcMain.handle("office-timer:get-network", async () => {
+  return await pollAndBroadcastNetwork();
+});
+
+ipcMain.handle("office-timer:get-config", async () => {
+  const svc = await getOfficeTimerService();
+  const res = await svc.getOfficeTimerConfig();
+  if (res.success && !res.exists) {
+    const net = await detectCurrentNetwork();
+    if (net.connected && net.name) {
+      const seeded = {
+        ...res.config,
+        officeNetworks: Array.from(
+          new Set([net.name, ...(net.identifiers || [])].filter(Boolean)),
+        ),
+      };
+      await svc.saveOfficeTimerConfig(seeded);
+      return { success: true, exists: true, config: seeded };
+    }
+  }
+  return res;
+});
+
+ipcMain.handle("office-timer:save-config", async (_, config) => {
+  const svc = await getOfficeTimerService();
+  return await svc.saveOfficeTimerConfig(config);
+});
+
+ipcMain.handle("office-timer:get-day", async (_, dateStr) => {
+  const svc = await getOfficeTimerService();
+  return await svc.getOfficeAttendance(dateStr);
+});
+
+ipcMain.handle("office-timer:get-range", async (_, startDateStr, endDateStr) => {
+  const svc = await getOfficeTimerService();
+  return await svc.getOfficeAttendanceRange(startDateStr, endDateStr);
+});
+
+ipcMain.handle("office-timer:save-day", async (_, dateStr, payload) => {
+  const svc = await getOfficeTimerService();
+  return await svc.saveOfficeAttendance(dateStr, payload);
+});
+
+/* ---------------------------------------------------- */
 /* App Lifecycle                                        */
 /* ---------------------------------------------------- */
 
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
   createWindow();
+  startNetworkWatcher();
+
+  powerMonitor.on("suspend", () => {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send("office-power-event", { type: "suspend", at: Date.now() });
+    }
+  });
+  powerMonitor.on("resume", () => {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send("office-power-event", { type: "resume", at: Date.now() });
+    }
+    pollAndBroadcastNetwork().catch(() => {});
+  });
 });
 
 app.on("window-all-closed", () => {
+  if (networkWatchTimer) {
+    clearInterval(networkWatchTimer);
+    networkWatchTimer = null;
+  }
   app.quit();
 });

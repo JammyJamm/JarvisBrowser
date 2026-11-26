@@ -78,3 +78,30 @@ contextBridge.exposeInMainWorld("browserAPI", {
     return () => ipcRenderer.removeListener("tab-loading-state", listener);
   },
 });
+
+contextBridge.exposeInMainWorld("officeTimerAPI", {
+  getNetwork: () => ipcRenderer.invoke("office-timer:get-network"),
+  getConfig: () => ipcRenderer.invoke("office-timer:get-config"),
+  saveConfig: (config) => ipcRenderer.invoke("office-timer:save-config", config),
+  getDay: (dateStr) => ipcRenderer.invoke("office-timer:get-day", dateStr),
+  getRange: (startDateStr, endDateStr) =>
+    ipcRenderer.invoke("office-timer:get-range", startDateStr, endDateStr),
+  saveDay: (dateStr, payload) =>
+    ipcRenderer.invoke("office-timer:save-day", dateStr, payload),
+  onNetworkChanged: (callback) => {
+    if (typeof callback !== "function") {
+      throw new TypeError("onNetworkChanged expects a callback");
+    }
+    const listener = (_, data) => callback(data);
+    ipcRenderer.on("office-network-changed", listener);
+    return () => ipcRenderer.removeListener("office-network-changed", listener);
+  },
+  onPowerEvent: (callback) => {
+    if (typeof callback !== "function") {
+      throw new TypeError("onPowerEvent expects a callback");
+    }
+    const listener = (_, data) => callback(data);
+    ipcRenderer.on("office-power-event", listener);
+    return () => ipcRenderer.removeListener("office-power-event", listener);
+  },
+});

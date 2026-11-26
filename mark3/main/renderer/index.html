@@ -38,7 +38,37 @@
       <main class="workspace">
         <header class="topbar">
           <div class="mobile-brand"><img src="./icon/logo.svg" alt="" /><span>Jarvis</span></div>
-          <div class="page-heading"><span id="todayDate"></span><h1 id="todayTime"></h1></div>
+          <div class="topbar-left">
+            <div class="page-heading"><span id="todayDate"></span><h1 id="todayTime"></h1></div>
+            <div class="office-timer-bar" id="officeTimerBar" aria-label="Office work timer">
+              <div class="office-timer-display">
+                <div class="office-timer-top">
+                  <span class="office-timer-eyebrow">OFFICE TIMER</span>
+                  <span id="officeTimerStatusDot" class="office-timer-dot" title="Timer status"></span>
+                </div>
+                <div class="office-timer-readout">
+                  <strong id="officeTimerRemaining" class="office-timer-remaining">8h 30m left</strong>
+                </div>
+                <div class="office-timer-times" id="officeTimerTimeRange">Connect to office Wi-Fi to start</div>
+                <div class="office-timer-progress" role="progressbar" aria-label="Office workday progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="0% complete">
+                  <span id="officeTimerProgressFill"></span>
+                </div>
+              </div>
+              <div class="office-timer-controls">
+                <div class="office-target-switch" role="group" aria-label="Daily office target">
+                  <button type="button" class="office-target-btn active" data-office-target="510" title="8 hours 30 minutes target">8.30h</button>
+                  <button type="button" class="office-target-btn" data-office-target="420" title="7 hours target">7h</button>
+                </div>
+                <button id="officeTimerToggleBtn" class="office-timer-btn" type="button" aria-label="Start office timer" title="Start / Pause office timer">
+                  <span class="feather-icon" data-feather="play" aria-hidden="true"></span>
+                </button>
+                <button id="officeNetworkBtn" class="office-network-pill" type="button" aria-label="Office network settings" title="Manage office network and timer">
+                  <span class="feather-icon" data-feather="wifi" aria-hidden="true"></span>
+                  <span id="officeNetworkText">Checking...</span>
+                </button>
+              </div>
+            </div>
+          </div>
           <div class="topbar-actions">
             <button class="icon-button" type="button" data-action="toggle-theme" aria-label="Toggle color theme" title="Toggle color theme"><span class="feather-icon" data-feather="moon" aria-hidden="true"></span></button>
             <button class="assistant-shortcut" type="button" data-page="assistant"><span class="assistant-spark feather-icon" data-feather="zap" aria-hidden="true"></span><span>Ask Jarvis</span></button>
@@ -164,7 +194,7 @@
                       <div class="cmd-box">
                         <textarea
                           id="cmd"
-                          placeholder="Ask Jarvis to browse, search, or interact with this page..."
+                          placeholder="Ask Jarvis to browse, inspect project files, or install CLIs..."
                           rows="3"
                           autocomplete="off"
                           spellcheck="false"
@@ -215,7 +245,31 @@
           </section>
 
           <section id="calendarPage" class="app-page section-page" data-page-view="calendar" hidden>
-            <div class="section-intro"><div><p class="eyebrow">MAKE ROOM FOR WHAT MATTERS</p><h2>Calendar</h2><p class="muted">Your plans, tasks and reminders in one calm view.</p></div><button id="addEventButton" class="primary-button" type="button"><span class="feather-icon" data-feather="plus" aria-hidden="true"></span> Add event</button></div>
+            <div class="section-intro"><div><p class="eyebrow">MAKE ROOM FOR WHAT MATTERS</p><h2>Calendar</h2><p class="muted">Your plans, tasks and office hours in one calm view.</p></div><button id="addEventButton" class="primary-button" type="button"><span class="feather-icon" data-feather="plus" aria-hidden="true"></span> Add event</button></div>
+            <section class="dashboard-card office-calendar-summary" aria-label="Office hours summary">
+              <div class="office-summary-item">
+                <span class="eyebrow">TODAY IN OFFICE</span>
+                <strong id="calOfficeTodayValue">0h 00m / 8h 30m</strong>
+                <small id="calOfficeTodayMeta" class="muted">Waiting for office network</small>
+              </div>
+              <div class="office-summary-item">
+                <span class="eyebrow">PERIOD TOTAL</span>
+                <strong id="calOfficePeriodValue">0h 00m</strong>
+                <small id="calOfficePeriodMeta" class="muted">0 / 0 days met target</small>
+              </div>
+              <div class="office-summary-item">
+                <span class="eyebrow">OFFICE NETWORK</span>
+                <strong id="calOfficeNetworkValue">Not set</strong>
+                <small id="calOfficeNetworkMeta" class="muted">Synced with Firebase DB</small>
+              </div>
+              <div class="office-summary-actions">
+                <div class="office-target-switch" role="group" aria-label="Today's office target">
+                  <button type="button" class="office-target-btn active" data-office-target="510">8.30h</button>
+                  <button type="button" class="office-target-btn" data-office-target="420">7h</button>
+                </div>
+                <button id="calOfficeSettingsBtn" class="subtle-button" type="button"><span class="feather-icon" data-feather="wifi" aria-hidden="true"></span> Network</button>
+              </div>
+            </section>
             <section class="dashboard-card calendar-main">
               <div class="calendar-controls"><div class="calendar-date-control"><button class="icon-button" type="button" data-action="calendar-prev" aria-label="Previous period"><span class="feather-icon" data-feather="chevron-left" aria-hidden="true"></span></button><button class="icon-button" type="button" data-action="calendar-next" aria-label="Next period"><span class="feather-icon" data-feather="chevron-right" aria-hidden="true"></span></button><h3 id="calendarHeading"></h3><button class="subtle-button" type="button" data-action="calendar-today">Today</button></div><div class="view-switch" role="group" aria-label="Calendar view"><button type="button" data-calendar-view="month" class="active">Month</button><button type="button" data-calendar-view="week">Week</button><button type="button" data-calendar-view="day">Day</button></div></div>
               <div class="calendar-weekdays" aria-hidden="true"><span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span></div>
@@ -296,6 +350,78 @@
           <button class="primary-button" type="submit">Save event</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog id="officeTimerDialog" class="event-dialog office-dialog">
+      <div class="event-form">
+        <div class="event-form-header">
+          <h3>Office Timer &amp; Network</h3>
+          <button class="icon-button" type="button" data-action="close-office-dialog" aria-label="Close office timer settings"><span class="feather-icon" data-feather="x" aria-hidden="true"></span></button>
+        </div>
+
+        <div class="office-dialog-status">
+          <div>
+            <span class="eyebrow">CURRENT CONNECTION</span>
+            <strong id="officeDialogCurrentNet">Detecting network...</strong>
+            <small id="officeDialogMatchStatus" class="muted">Checking office network match</small>
+          </div>
+          <button id="noteCurrentNetworkBtn" class="primary-button" type="button">Note current network</button>
+        </div>
+
+        <div class="office-dialog-section">
+          <span class="eyebrow">NOTED OFFICE NETWORKS</span>
+          <div id="officeNotedNetworksList" class="produce-list"></div>
+          <form id="addOfficeNetworkForm" class="office-network-add">
+            <input id="addOfficeNetworkInput" type="text" maxlength="80" placeholder="Add Wi-Fi SSID or network name (e.g. CS-B5F-AP)" />
+            <button class="subtle-button" type="submit">Add</button>
+          </form>
+        </div>
+
+        <div class="form-row">
+          <label class="form-field">
+            Default daily target
+            <select id="officeDefaultTargetSelect">
+              <option value="510">8h 30m (8.5 hrs)</option>
+              <option value="420">7h 00m (7 hrs)</option>
+            </select>
+          </label>
+          <label class="form-field">
+            Viewing / Edit Date
+            <input id="officeInspectDate" type="date" />
+          </label>
+        </div>
+
+        <label class="checkbox-field">
+          <input id="officeAutoStartToggle" type="checkbox" checked />
+          Auto-start timer when connected to office network
+        </label>
+
+        <div class="office-day-editor">
+          <div class="office-day-editor-head">
+            <span class="eyebrow" id="officeInspectHeading">TODAY'S LOG</span>
+            <span id="officeFirebaseStatus" class="sample-badge">FIREBASE READY</span>
+          </div>
+          <div class="form-row">
+            <label class="form-field">
+              Day Target
+              <select id="officeDayTargetSelect">
+                <option value="510">8h 30m</option>
+                <option value="420">7h 00m</option>
+              </select>
+            </label>
+            <label class="form-field">
+              Logged Minutes (adjust)
+              <input id="officeDayMinutesInput" type="number" min="0" max="1440" step="1" />
+            </label>
+          </div>
+          <div id="officeDaySessionsList" class="office-sessions-list"></div>
+        </div>
+
+        <div class="event-form-actions">
+          <button id="officeSaveDayBtn" class="subtle-button" type="button">Save day to Firebase</button>
+          <button class="primary-button" type="button" data-action="close-office-dialog">Done</button>
+        </div>
+      </div>
     </dialog>
         </div>
       </main>

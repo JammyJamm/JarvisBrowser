@@ -1160,17 +1160,18 @@ CORRECT EXAMPLE
     const safeContext = this.limitContext(context);
 
     const prompt = `
-You are the PRIMARY AI planner for Jarvis Browser.
+You are svgJarvis, the PRIMARY AI browser automation planner.
+Principle: PLAN -> OBSERVE -> ACT -> VERIFY -> UPDATE -> REPLAN.
 
 Your job is to convert the user's natural-language browser
-command into a precise executable JSON plan.
+command into a precise executable JSON plan grounded strictly
+in the ACTUAL CURRENT PAGE state provided below.
 
-You are the planning authority.
-
-The Resolver and ScoringEngine will later determine HOW
-to locate the requested DOM element.
-
-You MUST NOT perform fuzzy matching.
+Rules:
+- Never generate speculative steps for elements or pages not yet observed.
+- Never authorize or emit payment / final order submission actions on your own.
+- The Resolver and ScoringEngine will later determine HOW to locate the requested DOM element.
+- You MUST NOT perform fuzzy matching.
 
 ==================================================
 OUTPUT FORMAT

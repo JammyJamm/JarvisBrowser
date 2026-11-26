@@ -47,6 +47,8 @@
 import express from "express";
 import cors from "cors";
 import crypto from "crypto";
+import path from "path";
+import { fileURLToPath } from "url";
 
 import CredentialManager from "./auth/credential-manager.js";
 import ProfileManager from "./auth/profile-manager.js";
@@ -59,6 +61,8 @@ import ExecutionEngine from "./executor.js";
 import browserController from "./browser-controller.js";
 
 import CommandRouter from "./command-router.js";
+import SystemAgent from "./system-agent.js";
+import InteractiveAgent from "./interactive-agent.js";
 
 import aiEngine from "./aiEngine.js";
 import {
@@ -74,6 +78,13 @@ import {
 import {
   formatTimeToValuesJSON,
 } from "../database/gameservice.js";
+import {
+  getOfficeTimerConfig,
+  saveOfficeTimerConfig,
+  saveOfficeAttendance,
+  getOfficeAttendance,
+  getOfficeAttendanceRange,
+} from "../database/officeTimerService.js";
 
 //==========================================================
 // EXPRESS
@@ -258,6 +269,22 @@ const commandRouter = new CommandRouter({
 const credentialManager = new CredentialManager();
 
 const profileManager = new ProfileManager();
+
+const __serverDirname = path.dirname(fileURLToPath(import.meta.url));
+const systemAgent = new SystemAgent({
+  projectRoot: path.resolve(__serverDirname, ".."),
+  model: CONFIG.model,
+  endpoint: CONFIG.endpoint,
+  debug: CONFIG.debug,
+});
+
+const interactiveAgent = new InteractiveAgent({
+  browserController,
+  executionEngine,
+  model: CONFIG.model,
+  endpoint: CONFIG.endpoint,
+  debug: CONFIG.debug,
+});
 
 //==========================================================
 // SERVER STATE
@@ -470,8 +497,15 @@ function validateAutomationPage(page) {
   }
 
   const url = typeof page.url === "function" ? page.url() : "";
+  const lower = String(url || "").trim().toLowerCase();
 
-  if (isDevToolsURL(url) || !/^https?:\/\//i.test(url)) {
+  // Allow recoverable WebContentsView states (about:blank or chrome-error:// after a failed navigation)
+  // so subsequent navigate/self-healing steps can recover the tab cleanly.
+  if (lower === "about:blank" || lower.startsWith("chrome-error://")) {
+    return page;
+  }
+
+  if (isDevToolsURL(url) || (!/^https?:\/\//i.test(url) && !/^file:\/\//i.test(url))) {
     throw new Error(`Invalid automation page selected: ${url}`);
   }
 
@@ -770,6 +804,14 @@ function normalizeRoute(route) {
     mode = "action";
   }
 
+  //--------------------------------------------------------
+  // SYSTEM
+  //--------------------------------------------------------
+
+  if (["system", "cli", "local", "install", "shell", "files"].includes(mode)) {
+    mode = "system";
+  }
+
   return {
     ...(route || {}),
 
@@ -998,10 +1040,21 @@ async function executePlan(plan, page) {
 
       const result = execOutcome.result || execOutcome;
       const stepVerification = execOutcome.verification;
+      const effectiveArgs = execOutcome.args || step.args;
 
       const duration = performance.now() - started;
 
       const stepSuccess = result?.success !== false;
+
+      let browserUrlAfter = "";
+      try {
+        browserUrlAfter = page && !page.isClosed() ? page.url() : "";
+      } catch {}
+
+      const healedSuffix = execOutcome.healing?.recovered
+        ? ` [Auto-Healed: ${(execOutcome.healing.strategies || []).join(", ")}]`
+        : "";
+      const stepComment = `// Step ${stepNumber}: ${step.tool}${effectiveArgs?.url ? ` -> ${effectiveArgs.url}` : effectiveArgs?.target ? ` "${effectiveArgs.target}"` : ""}${healedSuffix}`;
 
       const item = {
         index,
@@ -1010,7 +1063,19 @@ async function executePlan(plan, page) {
 
         tool: step.tool,
 
-        args: step.args,
+        args: effectiveArgs,
+
+        comment: step.comment || stepComment,
+
+        browserCheck: {
+          url: browserUrlAfter,
+          directionAligned: stepSuccess && !String(browserUrlAfter).startsWith("chrome-error://"),
+          directionNote: stepSuccess
+            ? `Browser verified at ${browserUrlAfter || "active tab"}`
+            : `Step verification failed at ${browserUrlAfter || "active tab"}`,
+        },
+
+        healing: execOutcome.healing,
 
         success: stepSuccess,
 
@@ -1536,6 +1601,65 @@ app.post("/run", async (req, res) => {
     }
 
     //----------------------------------------------------
+    // SYSTEM / PROJECT / CLI INSTALL
+    //
+    // Browser is NOT required.
+    //----------------------------------------------------
+
+    if (route.mode === "system") {
+      try {
+        const plan = await systemAgent.plan(command);
+
+        if (plan.requiresConfirmation) {
+          const pendingAction = systemAgent.createPendingAction(plan, command);
+          stopTimer(started);
+          return res.json(
+            success({
+              mode: "system",
+              status: "pending_confirmation",
+              command,
+              route,
+              plan,
+              pendingAction,
+              statistics: {
+                routerCalls: stats.routerCalls,
+                duration: stats.lastRequestTime,
+              },
+            }),
+          );
+        }
+
+        const result = await systemAgent.executePlan(plan);
+        stopTimer(started);
+
+        return res.json(
+          success({
+            mode: "system",
+            status: "completed",
+            command,
+            route,
+            plan,
+            result,
+            statistics: {
+              routerCalls: stats.routerCalls,
+              duration: stats.lastRequestTime,
+            },
+          }),
+        );
+      } catch (err) {
+        error("[RUN] System Agent Error:", err.message);
+        stopTimer(started);
+        return res.status(500).json({
+          success: false,
+          mode: "system",
+          command,
+          route,
+          error: `System Agent failed: ${err.message}`,
+        });
+      }
+    }
+
+    //----------------------------------------------------
     // UNKNOWN MODE
     //----------------------------------------------------
 
@@ -1553,7 +1677,7 @@ app.post("/run", async (req, res) => {
 
         error: "Command Router returned an unknown mode.",
 
-        expectedModes: ["chat", "action"],
+        expectedModes: ["chat", "action", "system"],
       });
     }
 
@@ -1575,6 +1699,38 @@ app.post("/run", async (req, res) => {
     const page = await ensureBrowserReady();
 
     validateAutomationPage(page);
+
+    //----------------------------------------------------
+    // OBSERVATION-DRIVEN BROWSER AGENT
+    //
+    // Observe the active page before choosing each action, then
+    // re-observe after execution until the goal is verified.
+    //----------------------------------------------------
+
+    if (route.mode === "action") {
+      stats.plannerCalls++;
+      const agentResult = await interactiveAgent.startSession(command, {
+        page,
+        route,
+      });
+
+      serverState.lastPlan = agentResult.plan || null;
+      stopTimer(started);
+
+      return res.json(
+        success({
+          ...agentResult,
+          route,
+          plannerSource: "interactive-agent",
+          statistics: {
+            routerCalls: stats.routerCalls,
+            plannerCalls: stats.plannerCalls,
+            toolExecutions: stats.toolExecutions,
+            duration: stats.lastRequestTime,
+          },
+        }),
+      );
+    }
 
     let pageText = "";
     let pageContext = { currentUrl: req.body?.currentUrl || page.url() };
@@ -2677,6 +2833,163 @@ app.post("/cache/clear", async (req, res) => {
 });
 
 //==========================================================
+// SYSTEM & PROJECT AGENT ENDPOINTS
+//==========================================================
+
+app.get("/system/info", async (req, res) => {
+  try {
+    const info = await systemAgent.getSystemInfo();
+    return res.json(success(info));
+  } catch (err) {
+    return res.status(500).json(failure(err));
+  }
+});
+
+app.get("/system/files", async (req, res) => {
+  try {
+    const targetPath = req.query?.path || ".";
+    const listing = await systemAgent.listDir(targetPath);
+    return res.json(success(listing));
+  } catch (err) {
+    return res.status(500).json(failure(err));
+  }
+});
+
+app.post("/system/approve", async (req, res) => {
+  try {
+    const { actionId, editedCommand } = req.body || {};
+    if (!actionId) {
+      return res.status(400).json(failure("Missing actionId."));
+    }
+    const outcome = await systemAgent.approveAction(actionId, editedCommand);
+    return res.json(
+      success({
+        mode: "system",
+        status: outcome.success ? "completed" : "failed",
+        ...outcome,
+      }),
+    );
+  } catch (err) {
+    return res.status(400).json(failure(err));
+  }
+});
+
+app.post("/system/reject", async (req, res) => {
+  try {
+    const { actionId } = req.body || {};
+    if (!actionId) {
+      return res.status(400).json(failure("Missing actionId."));
+    }
+    const outcome = systemAgent.rejectAction(actionId);
+    return res.json(
+      success({
+        mode: "system",
+        status: "cancelled",
+        ...outcome,
+      }),
+    );
+  } catch (err) {
+    return res.status(400).json(failure(err));
+  }
+});
+
+//==========================================================
+// INTERACTIVE AGENT PERMISSION / CLARIFICATION ENDPOINTS
+//==========================================================
+
+app.post("/agent/respond", async (req, res) => {
+  const started = startTimer();
+  const { sessionId, promptId, choice, customInput, cancelled } = req.body || {};
+
+  if (!sessionId) {
+    stopTimer(started);
+    return res.status(400).json(failure("Missing sessionId."));
+  }
+
+  if (!acquireRunLock(req.requestId, `agent-respond:${sessionId}`)) {
+    stopTimer(started);
+    return res.status(409).json({
+      success: false,
+      mode: "busy",
+      error: "Another browser automation command is already running.",
+    });
+  }
+
+  try {
+    await ensureBrowserReady();
+    const agentResult = await interactiveAgent.respondToSession(sessionId, {
+      promptId,
+      choice,
+      customInput,
+      cancelled: Boolean(cancelled),
+    });
+    stopTimer(started);
+    return res.json(
+      success({
+        ...agentResult,
+        statistics: {
+          duration: stats.lastRequestTime,
+        },
+      }),
+    );
+  } catch (err) {
+    stopTimer(started);
+    return res.status(400).json(failure(err));
+  } finally {
+    releaseRunLock();
+  }
+});
+
+app.post("/agent/cancel", async (req, res) => {
+  try {
+    const { sessionId } = req.body || {};
+    if (!sessionId) {
+      return res.status(400).json(failure("Missing sessionId."));
+    }
+    const outcome = interactiveAgent.cancelSession(sessionId);
+    return res.json(
+      success({
+        mode: "action",
+        status: "cancelled",
+        ...outcome,
+      }),
+    );
+  } catch (err) {
+    return res.status(400).json(failure(err));
+  }
+});
+
+//==========================================================
+// OFFICE TIMER & ATTENDANCE (FIREBASE)
+//==========================================================
+
+app.get("/api/office-timer/config", async (req, res) => {
+  const result = await getOfficeTimerConfig();
+  return res.status(result.success ? 200 : 500).json(result);
+});
+
+app.post("/api/office-timer/config", async (req, res) => {
+  const result = await saveOfficeTimerConfig(req.body || {});
+  return res.status(result.success ? 200 : 500).json(result);
+});
+
+app.get("/api/office-timer/attendance", async (req, res) => {
+  const { date, start, end } = req.query || {};
+  if (start || end) {
+    const result = await getOfficeAttendanceRange(start, end);
+    return res.status(result.success ? 200 : 500).json(result);
+  }
+  const result = await getOfficeAttendance(date);
+  return res.status(result.success ? 200 : 500).json(result);
+});
+
+app.post("/api/office-timer/attendance", async (req, res) => {
+  const { date, ...payload } = req.body || {};
+  const result = await saveOfficeAttendance(date, payload);
+  return res.status(result.success ? 200 : 500).json(result);
+});
+
+//==========================================================
 // NOT FOUND
 //==========================================================
 
@@ -2958,4 +3271,6 @@ export {
   mcp,
   stats,
   serverState,
+  interactiveAgent,
+  systemAgent,
 };

@@ -12,6 +12,8 @@
     foodPlans: "jarvis.food.meals",
     produce: "jarvis.food.produce",
     sidebarCollapsed: "jarvis.dashboard.sidebarCollapsed",
+    officeConfig: "jarvis.office.config",
+    officeAttendance: "jarvis.office.attendance",
   };
 
   const pages = new Set([
@@ -123,6 +125,8 @@
     water: load(keys.water, {}),
     foodPlans: load(keys.foodPlans, {}),
     produce: load(keys.produce, []),
+    officeConfig: load(keys.officeConfig, null),
+    officeAttendance: load(keys.officeAttendance, {}),
   };
 
   if (!Array.isArray(store.bookmarks)) store.bookmarks = [];
@@ -152,6 +156,695 @@
     store.foodPlans = {};
   }
   if (!Array.isArray(store.produce)) store.produce = [];
+  if (!store.officeAttendance || typeof store.officeAttendance !== "object" || Array.isArray(store.officeAttendance)) {
+    store.officeAttendance = {};
+  }
+
+  const OFFICE_TARGETS = [510, 420]; // 8h 30m (510m), 7h 00m (420m)
+  const DEFAULT_OFFICE_CONFIG = {
+    officeNetworks: ["CS-B5F-AP"],
+    defaultTargetMinutes: 510,
+    autoStartOnOfficeNetwork: true,
+  };
+
+  function normalizeOfficeConfig(raw) {
+    const src = raw && typeof raw === "object" ? raw : {};
+    const hasExplicit = Array.isArray(src.officeNetworks);
+    const networks = hasExplicit
+      ? Array.from(
+          new Set(
+            src.officeNetworks
+              .map((n) => String(n || "").trim())
+              .filter(Boolean),
+          ),
+        )
+      : [...DEFAULT_OFFICE_CONFIG.officeNetworks];
+    return {
+      officeNetworks: networks,
+      defaultTargetMinutes: Number(src.defaultTargetMinutes) === 420 ? 420 : 510,
+      autoStartOnOfficeNetwork: src.autoStartOnOfficeNetwork !== false,
+    };
+  }
+
+  store.officeConfig = normalizeOfficeConfig(store.officeConfig);
+
+  const officeState = {
+    network: { connected: false, name: "", ssid: "", profile: "", identifiers: [] },
+    activeDateKey: formatDateKey(new Date()),
+    isRunning: false,
+    manualPausedOnCurrentConnection: false,
+    wasOnOfficeNetwork: false,
+    lastTickMs: Date.now(),
+    lastSyncMs: 0,
+    firebaseStatus: "Syncing...",
+    inspectDateKey: formatDateKey(new Date()),
+    notifiedDateKey: "",
+    fetchedRanges: new Set(),
+  };
+
+  function formatHMS(totalSeconds) {
+    const secs = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    const s = secs % 60;
+    return [h, m, s].map((v) => String(v).padStart(2, "0")).join(":");
+  }
+
+  function formatHM(totalSeconds) {
+    const secs = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+    const totalMinutes = Math.floor(secs / 60);
+    const h = Math.floor(totalMinutes / 60);
+    const m = totalMinutes % 60;
+    return `${h}h ${String(m).padStart(2, "0")}m`;
+  }
+
+  function formatTargetShort(targetMinutes) {
+    return Number(targetMinutes) === 420 ? "7h 00m" : "8h 30m";
+  }
+
+  function getOfficeRecord(dateKey = formatDateKey(new Date())) {
+    const existing = store.officeAttendance[dateKey];
+    if (existing && typeof existing === "object") {
+      return {
+        date: dateKey,
+        targetMinutes: Number(existing.targetMinutes) === 420 ? 420 : store.officeConfig.defaultTargetMinutes,
+        elapsedSeconds: Math.max(0, Math.floor(Number(existing.elapsedSeconds) || 0)),
+        networkName: String(existing.networkName || ""),
+        firstCheckIn: String(existing.firstCheckIn || ""),
+        lastCheckOut: String(existing.lastCheckOut || ""),
+        sessions: Array.isArray(existing.sessions) ? existing.sessions : [],
+      };
+    }
+    return {
+      date: dateKey,
+      targetMinutes: store.officeConfig.defaultTargetMinutes,
+      elapsedSeconds: 0,
+      networkName: "",
+      firstCheckIn: "",
+      lastCheckOut: "",
+      sessions: [],
+    };
+  }
+
+  function setOfficeRecord(dateKey, record) {
+    const targetMinutes = Number(record.targetMinutes) === 420 ? 420 : 510;
+    const elapsedSeconds = Math.max(0, Math.floor(Number(record.elapsedSeconds) || 0));
+    const normalized = {
+      date: dateKey,
+      targetMinutes,
+      elapsedSeconds,
+      status: elapsedSeconds >= targetMinutes * 60 ? "completed" : elapsedSeconds > 0 ? "in_progress" : "not_started",
+      networkName: String(record.networkName || ""),
+      firstCheckIn: String(record.firstCheckIn || ""),
+      lastCheckOut: String(record.lastCheckOut || ""),
+      sessions: Array.isArray(record.sessions) ? record.sessions : [],
+    };
+    store.officeAttendance[dateKey] = normalized;
+    save(keys.officeAttendance, store.officeAttendance);
+    return normalized;
+  }
+
+  function matchesOfficeNetwork(networkInfo, officeNetworks = store.officeConfig.officeNetworks) {
+    if (!networkInfo || !networkInfo.connected) return false;
+    if (!Array.isArray(officeNetworks) || !officeNetworks.length) return false;
+    const allowed = new Set(officeNetworks.map((n) => String(n || "").trim().toLowerCase()).filter(Boolean));
+    const candidates = [
+      networkInfo.name,
+      networkInfo.ssid,
+      networkInfo.profile,
+      ...(Array.isArray(networkInfo.identifiers) ? networkInfo.identifiers : []),
+    ]
+      .map((v) => String(v || "").trim().toLowerCase())
+      .filter(Boolean);
+    return candidates.some((c) => allowed.has(c));
+  }
+
+  const OFFICE_API_BASE = window.aiState?.backendUrl || "http://localhost:9000";
+
+  async function callOfficeApi(methodName, httpPath, httpMethod = "GET", body = null) {
+    if (window.officeTimerAPI && typeof window.officeTimerAPI[methodName] === "function") {
+      if (methodName === "saveDay") return await window.officeTimerAPI.saveDay(body.date, body);
+      if (methodName === "getDay") return await window.officeTimerAPI.getDay(body);
+      if (methodName === "getRange") return await window.officeTimerAPI.getRange(body.start, body.end);
+      if (methodName === "saveConfig") return await window.officeTimerAPI.saveConfig(body);
+      return await window.officeTimerAPI[methodName]();
+    }
+    try {
+      const res = await fetch(`${OFFICE_API_BASE}${httpPath}`, {
+        method: httpMethod,
+        headers: { "Content-Type": "application/json" },
+        body: httpMethod === "POST" ? JSON.stringify(body) : undefined,
+      });
+      return await res.json();
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  function updateFirebaseBadge(text) {
+    officeState.firebaseStatus = text;
+    const badge = document.getElementById("officeFirebaseStatus");
+    if (badge) badge.textContent = text;
+  }
+
+  async function syncOfficeConfigToFirebase() {
+    save(keys.officeConfig, store.officeConfig);
+    updateFirebaseBadge("Saving config...");
+    const res = await callOfficeApi("saveConfig", "/api/office-timer/config", "POST", store.officeConfig);
+    updateFirebaseBadge(res?.success ? "FIREBASE SYNCED" : "LOCAL SAVED (OFFLINE)");
+  }
+
+  async function syncOfficeDayToFirebase(dateKey) {
+    const record = getOfficeRecord(dateKey);
+    save(keys.officeAttendance, store.officeAttendance);
+    officeState.lastSyncMs = Date.now();
+    updateFirebaseBadge("Syncing...");
+    const res = await callOfficeApi("saveDay", "/api/office-timer/attendance", "POST", {
+      ...record,
+      date: dateKey,
+    });
+    updateFirebaseBadge(res?.success ? "FIREBASE SYNCED" : "LOCAL SAVED (OFFLINE)");
+  }
+
+  async function loadOfficeRangeFromFirebase(startKey, endKey, force = false) {
+    const rangeKey = `${startKey}_${endKey}`;
+    if (!force && officeState.fetchedRanges.has(rangeKey)) return;
+    officeState.fetchedRanges.add(rangeKey);
+    const res = await callOfficeApi(
+      "getRange",
+      `/api/office-timer/attendance?start=${encodeURIComponent(startKey)}&end=${encodeURIComponent(endKey)}`,
+      "GET",
+      { start: startKey, end: endKey },
+    );
+    if (res?.success && res.records) {
+      const todayKey = formatDateKey(new Date());
+      for (const [dateKey, remoteRec] of Object.entries(res.records)) {
+        const localRec = store.officeAttendance[dateKey];
+        if (dateKey === todayKey && localRec && localRec.elapsedSeconds > remoteRec.elapsedSeconds) {
+          continue;
+        }
+        setOfficeRecord(dateKey, remoteRec);
+      }
+      renderCalendar();
+      renderHomeSchedule();
+      renderOfficeTimerUI();
+    }
+  }
+
+  function formatTimeShort(date = new Date()) {
+    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  function startOfficeTimer(reason = "manual") {
+    const todayKey = formatDateKey(new Date());
+    officeState.activeDateKey = todayKey;
+    const rec = getOfficeRecord(todayKey);
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const activeNetName = officeState.network.name || store.officeConfig.officeNetworks[0] || "Office";
+
+    if (!officeState.isRunning) {
+      if (rec.elapsedSeconds >= rec.targetMinutes * 60) {
+        return;
+      }
+      officeState.isRunning = true;
+      officeState.lastTickMs = Date.now();
+      officeState.manualPausedOnCurrentConnection = false;
+      if (!rec.firstCheckIn) rec.firstCheckIn = formatTimeShort(now);
+      if (!rec.networkName) rec.networkName = activeNetName;
+      rec.lastCheckOut = formatTimeShort(now);
+      rec.sessions.push({
+        network: activeNetName,
+        start: nowIso,
+        end: nowIso,
+        durationSeconds: 0,
+        active: true,
+      });
+      setOfficeRecord(todayKey, rec);
+      syncOfficeDayToFirebase(todayKey);
+    }
+    renderOfficeTimerUI();
+    renderCalendar();
+    renderHomeSchedule();
+  }
+
+  function flushActiveSession(rec, active = officeState.isRunning) {
+    const now = new Date();
+    if (rec.sessions.length) {
+      const last = rec.sessions[rec.sessions.length - 1];
+      if (last && last.active) {
+        last.end = now.toISOString();
+        const sessionStartMs = Date.parse(last.start);
+        if (Number.isFinite(sessionStartMs)) {
+          last.durationSeconds = Math.max(
+            Number(last.durationSeconds) || 0,
+            Math.floor((now.getTime() - sessionStartMs) / 1000),
+          );
+        }
+        last.active = active;
+      }
+    }
+    if (!active) rec.lastCheckOut = formatTimeShort(now);
+  }
+
+  function pauseOfficeTimer(reason = "manual") {
+    const todayKey = officeState.activeDateKey || formatDateKey(new Date());
+    const rec = getOfficeRecord(todayKey);
+    const nowMs = Date.now();
+    if (officeState.isRunning) {
+      const firstSession = rec.sessions.find((session) => Number.isFinite(Date.parse(session.start)));
+      const startMs = firstSession ? Date.parse(firstSession.start) : NaN;
+      if (Number.isFinite(startMs)) {
+        rec.elapsedSeconds = Math.min(
+          rec.targetMinutes * 60,
+          Math.max(0, Math.floor((nowMs - startMs) / 1000)),
+        );
+      }
+    }
+    flushActiveSession(rec, false);
+
+    officeState.isRunning = false;
+    officeState.lastTickMs = nowMs;
+    if (reason === "manual") {
+      officeState.manualPausedOnCurrentConnection = true;
+    }
+    setOfficeRecord(todayKey, rec);
+    syncOfficeDayToFirebase(todayKey);
+    renderOfficeTimerUI();
+    renderCalendar();
+    renderHomeSchedule();
+  }
+
+  function setOfficeDayTarget(minutes, dateKey = formatDateKey(new Date())) {
+    const normalized = Number(minutes) === 420 ? 420 : 510;
+    const rec = getOfficeRecord(dateKey);
+    rec.targetMinutes = normalized;
+    setOfficeRecord(dateKey, rec);
+    if (dateKey === formatDateKey(new Date())) {
+      store.officeConfig.defaultTargetMinutes = normalized;
+      syncOfficeConfigToFirebase();
+    }
+    syncOfficeDayToFirebase(dateKey);
+    renderOfficeTimerUI();
+    renderCalendar();
+    renderHomeSchedule();
+    if (document.getElementById("officeTimerDialog")?.open) {
+      renderOfficeDialog();
+    }
+  }
+
+  function handleOfficeNetworkUpdate(networkInfo) {
+    if (!networkInfo || typeof networkInfo !== "object") return;
+    officeState.network = networkInfo;
+    const isOffice = matchesOfficeNetwork(networkInfo, store.officeConfig.officeNetworks);
+    const reconnected = !officeState.wasOnOfficeNetwork && isOffice;
+
+    if (reconnected) {
+      officeState.manualPausedOnCurrentConnection = false;
+      if (store.officeConfig.autoStartOnOfficeNetwork && !officeState.isRunning) {
+        startOfficeTimer("network-reconnect");
+      }
+    } else if (
+      isOffice &&
+      store.officeConfig.autoStartOnOfficeNetwork &&
+      !officeState.isRunning &&
+      !officeState.manualPausedOnCurrentConnection
+    ) {
+      startOfficeTimer("network-auto");
+    } else if (!isOffice) {
+      officeState.manualPausedOnCurrentConnection = false;
+    }
+
+    officeState.wasOnOfficeNetwork = isOffice;
+    renderOfficeTimerUI();
+    if (document.getElementById("officeTimerDialog")?.open) {
+      renderOfficeDialog();
+    }
+  }
+
+  async function refreshOfficeNetwork() {
+    if (window.officeTimerAPI?.getNetwork) {
+      try {
+        const net = await window.officeTimerAPI.getNetwork();
+        handleOfficeNetworkUpdate(net);
+        return net;
+      } catch (err) {
+        console.error("Failed to detect network:", err);
+      }
+    }
+    const fallback = {
+      connected: navigator.onLine,
+      type: navigator.onLine ? "online" : "none",
+      name: navigator.onLine ? (store.officeConfig.officeNetworks[0] || "Online") : "",
+      identifiers: [],
+    };
+    handleOfficeNetworkUpdate(fallback);
+    return fallback;
+  }
+
+  function tickOfficeTimer() {
+    const nowMs = Date.now();
+    const currentKey = formatDateKey(new Date(nowMs));
+
+    if (currentKey !== officeState.activeDateKey) {
+      const wasRunning = officeState.isRunning;
+      if (wasRunning) {
+        pauseOfficeTimer("midnight-rollover");
+      }
+      officeState.activeDateKey = currentKey;
+      officeState.manualPausedOnCurrentConnection = false;
+      if (
+        wasRunning ||
+        (store.officeConfig.autoStartOnOfficeNetwork &&
+          matchesOfficeNetwork(officeState.network, store.officeConfig.officeNetworks))
+      ) {
+        startOfficeTimer("midnight-continue");
+      }
+    }
+
+    if (officeState.isRunning) {
+      officeState.lastTickMs = nowMs;
+      const rec = getOfficeRecord(currentKey);
+      const firstSession = rec.sessions.find((session) => Number.isFinite(Date.parse(session.start)));
+      const startMs = firstSession ? Date.parse(firstSession.start) : NaN;
+      const targetSecs = rec.targetMinutes * 60;
+
+      if (Number.isFinite(startMs)) {
+        rec.elapsedSeconds = Math.min(
+          targetSecs,
+          Math.max(0, Math.floor((nowMs - startMs) / 1000)),
+        );
+      }
+
+      const completed = rec.elapsedSeconds >= targetSecs;
+      flushActiveSession(rec, !completed);
+      setOfficeRecord(currentKey, rec);
+
+      if (completed) {
+        officeState.isRunning = false;
+        officeState.manualPausedOnCurrentConnection = true;
+        syncOfficeDayToFirebase(currentKey);
+      }
+
+      if (completed && officeState.notifiedDateKey !== currentKey) {
+        officeState.notifiedDateKey = currentKey;
+        if ("Notification" in window && Notification.permission === "granted") {
+          new Notification("Office target complete", {
+            body: `You completed ${formatTargetShort(rec.targetMinutes)} in office today!`,
+          });
+        }
+      }
+
+      if (nowMs - officeState.lastSyncMs >= 30000) {
+        syncOfficeDayToFirebase(currentKey);
+      }
+    } else {
+      officeState.lastTickMs = nowMs;
+    }
+
+    renderOfficeTimerUI();
+  }
+
+  function renderOfficeTimerUI() {
+    const todayKey = formatDateKey(new Date());
+    const rec = getOfficeRecord(todayKey);
+    const targetSecs = rec.targetMinutes * 60;
+    const firstSession = rec.sessions.find((session) => Number.isFinite(Date.parse(session.start)));
+    const startedAt = firstSession ? new Date(firstSession.start) : null;
+    const nowMs = Date.now();
+    const elapsedSeconds = officeState.isRunning && startedAt
+      ? Math.min(targetSecs, Math.max(0, Math.floor((nowMs - startedAt.getTime()) / 1000)))
+      : Math.min(targetSecs, rec.elapsedSeconds);
+    const remainingSecs = targetSecs - elapsedSeconds;
+    const completed = remainingSecs <= 0;
+    const pct = Math.min(100, (elapsedSeconds / targetSecs) * 100);
+    const expectedEnd = startedAt
+      ? new Date(startedAt.getTime() + targetSecs * 1000)
+      : null;
+    const timeRangeEl = document.getElementById("officeTimerTimeRange");
+    if (timeRangeEl) {
+      timeRangeEl.textContent = startedAt
+        ? `Start ${formatTimeShort(startedAt)} · End ${formatTimeShort(expectedEnd)}`
+        : "Connect to office Wi-Fi to start";
+      timeRangeEl.title = startedAt
+        ? `Started ${startedAt.toLocaleString()} · Target end ${expectedEnd.toLocaleString()}`
+        : "Timer starts automatically when you connect to a noted office network";
+    }
+
+    const bar = document.getElementById("officeTimerBar");
+    if (bar) {
+      bar.classList.toggle("is-running", officeState.isRunning);
+      bar.classList.toggle("is-completed", completed);
+    }
+
+    const remainingEl = document.getElementById("officeTimerRemaining");
+    if (remainingEl) {
+      remainingEl.textContent = completed
+        ? `Goal met (+${formatHM(Math.abs(remainingSecs))})`
+        : `${formatHM(remainingSecs)} left`;
+    }
+
+    const fillEl = document.getElementById("officeTimerProgressFill");
+    if (fillEl) fillEl.style.width = `${pct}%`;
+    const progressEl = document.querySelector(".office-timer-progress");
+    if (progressEl) {
+      progressEl.setAttribute("aria-valuenow", String(Math.round(pct)));
+      progressEl.setAttribute("aria-valuetext", `${Math.round(pct)}% complete`);
+    }
+
+    document.querySelectorAll("[data-office-target]").forEach((btn) => {
+      btn.classList.toggle(
+        "active",
+        Number(btn.dataset.officeTarget) === rec.targetMinutes,
+      );
+    });
+
+    const toggleBtn = document.getElementById("officeTimerToggleBtn");
+    if (toggleBtn) {
+      const icon = toggleBtn.querySelector(".feather-icon");
+      if (icon) {
+        icon.dataset.feather = officeState.isRunning ? "pause" : "play";
+        initializeFeatherIcons(toggleBtn);
+      }
+      toggleBtn.setAttribute(
+        "aria-label",
+        officeState.isRunning ? "Pause office timer" : "Start office timer",
+      );
+      toggleBtn.title = officeState.isRunning
+        ? "Pause office timer"
+        : "Start office timer";
+    }
+
+    const isOffice = matchesOfficeNetwork(officeState.network, store.officeConfig.officeNetworks);
+    const netPill = document.getElementById("officeNetworkBtn");
+    const netText = document.getElementById("officeNetworkText");
+    if (netPill && netText) {
+      netPill.classList.toggle("is-office", isOffice);
+      const netIcon = netPill.querySelector(".feather-icon");
+      if (netIcon) {
+        netIcon.dataset.feather = officeState.network.connected ? "wifi" : "wifi-off";
+        initializeFeatherIcons(netPill);
+      }
+      if (officeState.network.connected && officeState.network.name) {
+        netText.textContent = isOffice
+          ? `${officeState.network.name} · Office`
+          : officeState.network.name;
+      } else {
+        netText.textContent = "Offline";
+      }
+    }
+
+    // Live-update Calendar summary & today chip if Calendar is visible
+    const calTodayEl = document.getElementById("calOfficeTodayValue");
+    if (calTodayEl) {
+      calTodayEl.textContent = `${formatHM(elapsedSeconds)} / ${formatTargetShort(rec.targetMinutes)}`;
+    }
+    const calTodayMeta = document.getElementById("calOfficeTodayMeta");
+    if (calTodayMeta) {
+      calTodayMeta.textContent = officeState.isRunning
+        ? `Tracking live on ${officeState.network.name || "office network"}`
+        : completed
+          ? "Daily office target reached"
+          : isOffice
+            ? "Connected to office network (paused)"
+            : "Waiting for office network";
+    }
+    const todayChip = document.querySelector(`.calendar-office-chip[data-office-date="${todayKey}"]`);
+    if (todayChip) {
+      todayChip.textContent = `Office ${formatHM(elapsedSeconds)}${completed ? " ✓" : ""}`;
+      todayChip.classList.toggle("is-met", completed);
+    }
+  }
+
+  function renderOfficeDialog() {
+    const net = officeState.network;
+    const isOffice = matchesOfficeNetwork(net, store.officeConfig.officeNetworks);
+    const currentNetEl = document.getElementById("officeDialogCurrentNet");
+    const matchStatusEl = document.getElementById("officeDialogMatchStatus");
+    if (currentNetEl) {
+      currentNetEl.textContent = net.connected && net.name ? net.name : "Not connected";
+    }
+    if (matchStatusEl) {
+      matchStatusEl.textContent = !net.connected
+        ? "Connect to your office Wi-Fi or LAN to auto-start"
+        : isOffice
+          ? "Matches noted office network · auto-start ready"
+          : "Connected, but not noted as an office network yet";
+    }
+
+    const listEl = document.getElementById("officeNotedNetworksList");
+    if (listEl) {
+      listEl.replaceChildren(
+        ...store.officeConfig.officeNetworks.map((netName) => {
+          const chip = makeElement("span", "produce-chip");
+          chip.append(makeElement("span", "", netName));
+          const remove = makeElement("button", "produce-remove");
+          remove.type = "button";
+          remove.dataset.removeOfficeNetwork = netName;
+          remove.setAttribute("aria-label", `Remove ${netName}`);
+          remove.append(makeFeatherIcon("x"));
+          chip.append(remove);
+          return chip;
+        }),
+      );
+    }
+
+    document.getElementById("officeDefaultTargetSelect").value = String(
+      store.officeConfig.defaultTargetMinutes,
+    );
+    document.getElementById("officeAutoStartToggle").checked =
+      store.officeConfig.autoStartOnOfficeNetwork !== false;
+
+    const inspectDate = officeState.inspectDateKey || formatDateKey(new Date());
+    document.getElementById("officeInspectDate").value = inspectDate;
+    document.getElementById("officeInspectHeading").textContent =
+      inspectDate === formatDateKey(new Date())
+        ? "TODAY'S LOG"
+        : `LOG FOR ${inspectDate}`;
+
+    const rec = getOfficeRecord(inspectDate);
+    document.getElementById("officeDayTargetSelect").value = String(rec.targetMinutes);
+    document.getElementById("officeDayMinutesInput").value = String(
+      Math.round(rec.elapsedSeconds / 60),
+    );
+    updateFirebaseBadge(officeState.firebaseStatus);
+
+    const sessionsEl = document.getElementById("officeDaySessionsList");
+    if (sessionsEl) {
+      if (!rec.sessions.length) {
+        sessionsEl.replaceChildren(
+          makeElement("div", "empty-state", "No sessions logged for this date yet."),
+        );
+      } else {
+        sessionsEl.replaceChildren(
+          ...rec.sessions.map((s) => {
+            const row = makeElement("div", "office-session-row");
+            const startLabel = new Date(s.start).toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            });
+            const endLabel = s.active
+              ? "Active"
+              : s.end
+              ? new Date(s.end).toLocaleTimeString([], {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })
+              : "—";
+            row.append(
+              makeElement("span", "", `${s.network || "Office"} · ${startLabel} – ${endLabel}`),
+              makeElement("small", "", formatHM(s.durationSeconds)),
+            );
+            return row;
+          }),
+        );
+      }
+    }
+  }
+
+  function openOfficeDialog(dateKey = formatDateKey(new Date())) {
+    officeState.inspectDateKey = dateKey;
+    renderOfficeDialog();
+    document.getElementById("officeTimerDialog").showModal();
+  }
+
+  async function initOfficeTimer() {
+    renderOfficeTimerUI();
+
+    const todayKey = formatDateKey(new Date());
+    const [configRes, todayRes] = await Promise.all([
+      callOfficeApi("getConfig", "/api/office-timer/config", "GET"),
+      callOfficeApi(
+        "getDay",
+        `/api/office-timer/attendance?date=${encodeURIComponent(todayKey)}`,
+        "GET",
+        todayKey,
+      ),
+    ]);
+
+    if (configRes?.success && configRes.config) {
+      store.officeConfig = normalizeOfficeConfig(configRes.config);
+      save(keys.officeConfig, store.officeConfig);
+    }
+
+    if (todayRes?.success && todayRes.record) {
+      const localToday = getOfficeRecord(todayKey);
+      if (todayRes.record.elapsedSeconds >= localToday.elapsedSeconds) {
+        setOfficeRecord(todayKey, todayRes.record);
+      } else if (localToday.elapsedSeconds > 0) {
+        syncOfficeDayToFirebase(todayKey);
+      }
+      updateFirebaseBadge("FIREBASE SYNCED");
+    } else {
+      updateFirebaseBadge(todayRes?.success ? "FIREBASE READY" : "LOCAL MODE");
+    }
+
+    const todayRecord = getOfficeRecord(todayKey);
+    const activeSession = [...todayRecord.sessions].reverse().find((session) => session.active === true);
+    if (activeSession) {
+      const nowMs = Date.now();
+      const firstSession = todayRecord.sessions.find((session) => Number.isFinite(Date.parse(session.start)));
+      const startMs = firstSession ? Date.parse(firstSession.start) : Date.parse(activeSession.start);
+      const sessionStartMs = Date.parse(activeSession.start);
+      const targetSeconds = todayRecord.targetMinutes * 60;
+      todayRecord.elapsedSeconds = Number.isFinite(startMs)
+        ? Math.min(targetSeconds, Math.max(0, Math.floor((nowMs - startMs) / 1000)))
+        : todayRecord.elapsedSeconds;
+      activeSession.durationSeconds = Number.isFinite(sessionStartMs)
+        ? Math.max(0, Math.floor((nowMs - sessionStartMs) / 1000))
+        : activeSession.durationSeconds;
+      activeSession.end = new Date(nowMs).toISOString();
+      if (todayRecord.elapsedSeconds >= targetSeconds) {
+        activeSession.active = false;
+        todayRecord.lastCheckOut = formatTimeShort(new Date(nowMs));
+      } else {
+        officeState.isRunning = true;
+      }
+      officeState.lastTickMs = nowMs;
+      setOfficeRecord(todayKey, todayRecord);
+      await syncOfficeDayToFirebase(todayKey);
+    }
+
+    if (window.officeTimerAPI?.onNetworkChanged) {
+      window.officeTimerAPI.onNetworkChanged((net) => handleOfficeNetworkUpdate(net));
+    }
+    if (window.officeTimerAPI?.onPowerEvent) {
+      window.officeTimerAPI.onPowerEvent((evt) => {
+        if (evt?.type === "resume") {
+          refreshOfficeNetwork();
+        }
+      });
+    }
+
+    window.addEventListener("online", () => refreshOfficeNetwork());
+    window.addEventListener("offline", () => refreshOfficeNetwork());
+
+    await refreshOfficeNetwork();
+    renderOfficeTimerUI();
+    renderCalendar();
+    renderHomeSchedule();
+    window.setInterval(tickOfficeTimer, 1000);
+  }
   store.produce = store.produce.filter(
     (item) =>
       item &&
@@ -527,12 +1220,41 @@
     const container = document.getElementById("homeSchedule");
     container.replaceChildren();
     const today = formatDateKey(new Date());
+    const officeRec = getOfficeRecord(today);
+    const hasOfficeRow = officeRec.elapsedSeconds > 0 || officeState.isRunning;
+
     const todaysEvents = store.events
       .filter((event) => event.date === today)
       .sort((a, b) => (a.time || "").localeCompare(b.time || ""))
-      .slice(0, 2);
+      .slice(0, hasOfficeRow ? 2 : 2);
 
-    if (!todaysEvents.length) {
+    if (hasOfficeRow) {
+      const met = officeRec.elapsedSeconds >= officeRec.targetMinutes * 60;
+      const row = makeElement("div", "compact-event");
+      row.append(
+        makeElement("span", "event-date-chip", met ? "DONE" : "OFFICE"),
+        makeElement("span"),
+      );
+      row.children[1].append(
+        makeElement(
+          "strong",
+          "",
+          `Office Hours · ${formatHM(officeRec.elapsedSeconds)} / ${formatTargetShort(officeRec.targetMinutes)}`,
+        ),
+        makeElement(
+          "small",
+          "",
+          officeState.isRunning
+            ? `Tracking live (${officeState.network.name || "Office"})`
+            : met
+              ? "Target completed today"
+              : "Paused · resumes on office network",
+        ),
+      );
+      container.append(row);
+    }
+
+    if (!todaysEvents.length && !hasOfficeRow) {
       showEmpty(container, "Nothing scheduled yet. Add an event when you’re ready.");
       return;
     }
@@ -666,12 +1388,23 @@
       });
     }
 
+    const todayDateKey = formatDateKey(new Date());
+    if (dates.length) {
+      const startKey = formatDateKey(dates[0]);
+      const endKey = formatDateKey(dates[dates.length - 1]);
+      loadOfficeRangeFromFirebase(startKey, endKey);
+    }
+
+    let periodSeconds = 0;
+    let periodLoggedDays = 0;
+    let periodMetDays = 0;
+
     dates.forEach((date) => {
       const dateKey = formatDateKey(date);
       const cell = makeElement("div", "calendar-day");
       cell.dataset.date = dateKey;
       cell.classList.toggle("outside-month", date.getMonth() !== store.cursor.getMonth() && store.calendarView === "month");
-      cell.classList.toggle("today", dateKey === formatDateKey(new Date()));
+      cell.classList.toggle("today", dateKey === todayDateKey);
       if (store.calendarView === "week") cell.classList.add("week-mode");
       if (store.calendarView === "day") cell.classList.add("day-mode");
       const dayNumber = makeElement("button", "day-number", String(date.getDate()));
@@ -683,19 +1416,64 @@
       );
       cell.append(dayNumber);
 
-      getEventsForDate(date).slice(0, 3).forEach((event) => {
+      const officeRec = store.officeAttendance[dateKey];
+      const showOfficeChip =
+        officeRec && (officeRec.elapsedSeconds > 0 || (dateKey === todayDateKey && officeState.isRunning));
+      if (showOfficeChip) {
+        const met = officeRec.elapsedSeconds >= officeRec.targetMinutes * 60;
+        const inCurrentMonth =
+          store.calendarView !== "month" || date.getMonth() === store.cursor.getMonth();
+        if (inCurrentMonth && officeRec.elapsedSeconds > 0) {
+          periodSeconds += officeRec.elapsedSeconds;
+          periodLoggedDays += 1;
+          if (met) periodMetDays += 1;
+        }
+        const officeChip = makeElement(
+          "button",
+          `calendar-office-chip${met ? " is-met" : ""}`,
+          `Office ${formatHM(officeRec.elapsedSeconds)}${met ? " ✓" : ""}`,
+        );
+        officeChip.type = "button";
+        officeChip.dataset.officeDate = dateKey;
+        officeChip.setAttribute(
+          "aria-label",
+          `Office attendance on ${dateKey}: ${formatHM(officeRec.elapsedSeconds)} of ${formatTargetShort(officeRec.targetMinutes)}`,
+        );
+        cell.append(officeChip);
+      }
+
+      getEventsForDate(date).slice(0, showOfficeChip ? 2 : 3).forEach((event) => {
         const chip = makeElement("button", "calendar-event-chip", event.title);
         chip.type = "button";
         chip.dataset.eventEdit = event.id;
         chip.setAttribute("aria-label", `Edit ${event.title}`);
         cell.append(chip);
       });
-      const extraCount = getEventsForDate(date).length - 3;
+      const maxEvents = showOfficeChip ? 2 : 3;
+      const extraCount = getEventsForDate(date).length - maxEvents;
       if (extraCount > 0) {
         cell.append(makeElement("span", "calendar-event-chip", `+${extraCount} more`));
       }
       grid.append(cell);
     });
+
+    const todayRec = getOfficeRecord(todayDateKey);
+    const calTodayVal = document.getElementById("calOfficeTodayValue");
+    const calPeriodVal = document.getElementById("calOfficePeriodValue");
+    const calPeriodMeta = document.getElementById("calOfficePeriodMeta");
+    const calNetVal = document.getElementById("calOfficeNetworkValue");
+    if (calTodayVal) {
+      calTodayVal.textContent = `${formatHM(todayRec.elapsedSeconds)} / ${formatTargetShort(todayRec.targetMinutes)}`;
+    }
+    if (calPeriodVal) {
+      calPeriodVal.textContent = formatHM(periodSeconds);
+    }
+    if (calPeriodMeta) {
+      calPeriodMeta.textContent = `${periodMetDays} / ${periodLoggedDays} logged days met target`;
+    }
+    if (calNetVal) {
+      calNetVal.textContent = store.officeConfig.officeNetworks.join(", ") || "Not set";
+    }
 
     document.querySelectorAll("[data-calendar-view]").forEach((button) => {
       button.classList.toggle(
@@ -1186,6 +1964,11 @@
     document
       .getElementById("calendarGrid")
       .addEventListener("click", (event) => {
+        const officeChip = event.target.closest("[data-office-date]");
+        if (officeChip) {
+          openOfficeDialog(officeChip.dataset.officeDate);
+          return;
+        }
         const editButton = event.target.closest("[data-event-edit]");
         if (editButton) {
           const selected = store.events.find(
@@ -1197,6 +1980,124 @@
         const cell = event.target.closest("[data-date]");
         if (cell) openEventDialog(cell.dataset.date);
       });
+
+    // Office Timer UI bindings
+    document.getElementById("officeTimerToggleBtn")?.addEventListener("click", () => {
+      if (officeState.isRunning) {
+        pauseOfficeTimer("manual");
+      } else {
+        startOfficeTimer("manual");
+      }
+    });
+
+    document.querySelectorAll("[data-office-target]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        setOfficeDayTarget(Number(btn.dataset.officeTarget));
+      });
+    });
+
+    document.getElementById("officeNetworkBtn")?.addEventListener("click", () => {
+      openOfficeDialog(formatDateKey(new Date()));
+    });
+
+    document.getElementById("calOfficeSettingsBtn")?.addEventListener("click", () => {
+      openOfficeDialog(formatDateKey(new Date()));
+    });
+
+    document.querySelectorAll('[data-action="close-office-dialog"]').forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.getElementById("officeTimerDialog").close();
+      });
+    });
+
+    document.getElementById("noteCurrentNetworkBtn")?.addEventListener("click", async () => {
+      const net = await refreshOfficeNetwork();
+      const candidates = Array.from(
+        new Set([net.name, net.ssid, net.profile, ...(net.identifiers || [])].filter(Boolean)),
+      );
+      if (!candidates.length) {
+        updateFirebaseBadge("NO ACTIVE NETWORK");
+        return;
+      }
+      store.officeConfig.officeNetworks = Array.from(
+        new Set([...store.officeConfig.officeNetworks, ...candidates]),
+      );
+      await syncOfficeConfigToFirebase();
+      handleOfficeNetworkUpdate(net);
+      renderOfficeDialog();
+      renderCalendar();
+    });
+
+    document.getElementById("addOfficeNetworkForm")?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const input = document.getElementById("addOfficeNetworkInput");
+      const val = String(input.value || "").trim();
+      if (!val) return;
+      if (!store.officeConfig.officeNetworks.some((n) => n.toLowerCase() === val.toLowerCase())) {
+        store.officeConfig.officeNetworks.push(val);
+        await syncOfficeConfigToFirebase();
+      }
+      input.value = "";
+      handleOfficeNetworkUpdate(officeState.network);
+      renderOfficeDialog();
+      renderCalendar();
+    });
+
+    document.getElementById("officeNotedNetworksList")?.addEventListener("click", async (event) => {
+      const btn = event.target.closest("[data-remove-office-network]");
+      if (!btn) return;
+      const targetNet = btn.dataset.removeOfficeNetwork;
+      store.officeConfig.officeNetworks = store.officeConfig.officeNetworks.filter(
+        (n) => n !== targetNet,
+      );
+      await syncOfficeConfigToFirebase();
+      handleOfficeNetworkUpdate(officeState.network);
+      renderOfficeDialog();
+      renderCalendar();
+    });
+
+    document.getElementById("officeDefaultTargetSelect")?.addEventListener("change", async (event) => {
+      store.officeConfig.defaultTargetMinutes = Number(event.target.value) === 420 ? 420 : 510;
+      await syncOfficeConfigToFirebase();
+      renderOfficeTimerUI();
+    });
+
+    document.getElementById("officeAutoStartToggle")?.addEventListener("change", async (event) => {
+      store.officeConfig.autoStartOnOfficeNetwork = event.target.checked;
+      await syncOfficeConfigToFirebase();
+      if (event.target.checked) {
+        handleOfficeNetworkUpdate(officeState.network);
+      }
+    });
+
+    document.getElementById("officeInspectDate")?.addEventListener("change", (event) => {
+      if (event.target.value) {
+        officeState.inspectDateKey = event.target.value;
+        renderOfficeDialog();
+      }
+    });
+
+    document.getElementById("officeSaveDayBtn")?.addEventListener("click", async () => {
+      const dateKey = officeState.inspectDateKey || formatDateKey(new Date());
+      const targetMinutes =
+        Number(document.getElementById("officeDayTargetSelect").value) === 420 ? 420 : 510;
+      const minutesInput = Math.max(
+        0,
+        Math.min(1440, Math.round(Number(document.getElementById("officeDayMinutesInput").value) || 0)),
+      );
+      const rec = getOfficeRecord(dateKey);
+      rec.targetMinutes = targetMinutes;
+      rec.elapsedSeconds = minutesInput * 60;
+      if (!rec.networkName && store.officeConfig.officeNetworks.length) {
+        rec.networkName = store.officeConfig.officeNetworks[0];
+      }
+      setOfficeRecord(dateKey, rec);
+      await syncOfficeDayToFirebase(dateKey);
+      renderOfficeDialog();
+      renderOfficeTimerUI();
+      renderCalendar();
+      renderHomeSchedule();
+    });
     document
       .getElementById("upcomingEvents")
       .addEventListener("click", (event) => {
@@ -1315,6 +2216,7 @@
     renderTabs();
     renderHome();
     renderCalendar();
+    initOfficeTimer();
     setPage("dashboard");
     window.setInterval(checkReminders, 30000);
   }

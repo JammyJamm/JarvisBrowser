@@ -46,6 +46,11 @@ async function runBrowserIntegrationTest() {
           <button type="submit" id="loginBtn">Log in</button>
         </form>
 
+        <a id="blankTargetLink" href="#same-tab-navigation" target="_blank">Open in new tab</a>
+        <form id="blankTargetForm" action="#same-tab-form" target="_blank">
+          <button type="submit">Submit in new tab</button>
+        </form>
+
         <div id="msg" style="margin-top: 10px; font-weight: bold;"></div>
 
         <div style="margin-top: 50px;">
@@ -117,6 +122,21 @@ async function runBrowserIntegrationTest() {
     console.log("Test 6: Clean Page Text Extraction");
     const content = await browserController.readContent();
     assert(content.includes("Jarvis Browser Automation Sandbox"), "Should extract page heading");
+    console.log("  PASSED");
+
+    // 7. Links and forms targeting _blank must navigate in the active page.
+    console.log("Test 7: Keep _blank link and form navigation in the active tab");
+    const pagesBeforeBlankLink = context.pages().length;
+    const linkRes = await browserController.clickSmart("Open in new tab");
+    assert.strictEqual(linkRes.success, true);
+    assert.match(page.url(), /#same-tab-navigation$/);
+    assert.strictEqual(context.pages().length, pagesBeforeBlankLink);
+
+    const pagesBeforeBlankForm = context.pages().length;
+    const formRes = await browserController.clickSmart("Submit in new tab");
+    assert.strictEqual(formRes.success, true);
+    assert.match(page.url(), /#same-tab-form$/);
+    assert.strictEqual(context.pages().length, pagesBeforeBlankForm);
     console.log("  PASSED");
 
     console.log("=== All Real Playwright Integration Tests Passed Successfully ===");

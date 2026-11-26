@@ -488,10 +488,17 @@ class BrowserController {
       });
     }
 
-    // 3. Keep current live page if no preferred target or already matching
+    // 3. Keep current live page if no preferred target or already matching (prefer healthy http(s) over chrome-error://)
+    const isHealthyWebPage = (p) => {
+      const u = String(p?.url?.() || "").toLowerCase();
+      return u.startsWith("http://") || u.startsWith("https://") || u.startsWith("file://");
+    };
+
     if (!active && this.page && !this.page.isClosed() && pages.includes(this.page)) {
-      this.lastURL = this.page.url();
-      return this.page;
+      if (isHealthyWebPage(this.page) || !pages.some(isHealthyWebPage)) {
+        this.lastURL = this.page.url();
+        return this.page;
+      }
     }
 
     // 4. Otherwise try previous URL
@@ -499,9 +506,10 @@ class BrowserController {
       active = pages.find((page) => page.url() === this.lastURL);
     }
 
-    // 5. Otherwise use the last automation page
+    // 5. Otherwise prefer the last healthy automation page, or any automation page
     if (!active) {
-      active = pages[pages.length - 1];
+      const healthyPages = pages.filter(isHealthyWebPage);
+      active = healthyPages.length ? healthyPages[healthyPages.length - 1] : pages[pages.length - 1];
     }
 
     //--------------------------------------------------------
@@ -610,7 +618,7 @@ class BrowserController {
       throw new Error("URL is required.");
     }
 
-    const page = await this.getPage();
+    const page = options.page || (await this.getPage());
 
     const targetURL = String(url).trim();
 
@@ -1251,8 +1259,8 @@ class BrowserController {
   // PAGE-ONLY AGENT PRIMITIVES & VERIFICATION
   //==========================================================
 
-  async getInteractiveElements() {
-    const page = await this.getPage();
+  async getInteractiveElements(options = {}) {
+    const page = options.page || (await this.getPage());
     if (!page || page.isClosed()) return [];
 
     try {
@@ -1313,8 +1321,8 @@ class BrowserController {
     }
   }
 
-  async readContent() {
-    const page = await this.getPage();
+  async readContent(options = {}) {
+    const page = options.page || (await this.getPage());
     if (!page || page.isClosed()) return "";
 
     try {
@@ -1333,7 +1341,7 @@ class BrowserController {
   }
 
   async clickSmart(target, options = {}) {
-    const page = await this.getPage();
+    const page = options.page || (await this.getPage());
     if (!page || page.isClosed()) throw new Error("Active page is not available");
 
     const query = String(target || "").trim();
@@ -1350,6 +1358,17 @@ class BrowserController {
         if ((await loc.count()) > 0) {
           const first = loc.first();
           await first.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => {});
+          await first.evaluate((element) => {
+            const link = element.closest("a, area");
+            if (link?.hasAttribute("target")) {
+              link.setAttribute("target", "_self");
+            }
+
+            const form = element.form || element.closest("form");
+            if (form?.hasAttribute("target")) {
+              form.setAttribute("target", "_self");
+            }
+          });
           try {
             await first.click({ timeout: 4000 });
           } catch (clickErr) {
@@ -1421,6 +1440,14 @@ class BrowserController {
             val === lower ||
             (lower.length > 2 && (t.includes(lower) || aria.includes(lower) || val.includes(lower)))
           ) {
+            const link = el.closest("a, area");
+            if (link?.hasAttribute("target")) {
+              link.setAttribute("target", "_self");
+            }
+            const form = el.form || el.closest("form");
+            if (form?.hasAttribute("target")) {
+              form.setAttribute("target", "_self");
+            }
             el.click();
             return true;
           }
@@ -1457,7 +1484,7 @@ class BrowserController {
   }
 
   async typeText(field, value, options = {}) {
-    const page = await this.getPage();
+    const page = options.page || (await this.getPage());
     if (!page || page.isClosed()) throw new Error("Active page is not available");
 
     const query = String(field || "").trim();
@@ -1601,8 +1628,8 @@ class BrowserController {
     };
   }
 
-  async selectOption(field, value) {
-    const page = await this.getPage();
+  async selectOption(field, value, options = {}) {
+    const page = options.page || (await this.getPage());
     if (!page || page.isClosed()) throw new Error("Active page is not available");
 
     const query = String(field || "").trim();
@@ -1635,8 +1662,8 @@ class BrowserController {
     };
   }
 
-  async scrollPage(direction = "down", amount = 500) {
-    const page = await this.getPage();
+  async scrollPage(direction = "down", amount = 500, options = {}) {
+    const page = options.page || (await this.getPage());
     if (!page || page.isClosed()) throw new Error("Active page is not available");
 
     const dir = String(direction).toLowerCase() === "up" ? -1 : 1;
@@ -1660,8 +1687,8 @@ class BrowserController {
     };
   }
 
-  async pressKey(key = "Enter") {
-    const page = await this.getPage();
+  async pressKey(key = "Enter", options = {}) {
+    const page = options.page || (await this.getPage());
     if (!page || page.isClosed()) throw new Error("Active page is not available");
 
     await page.keyboard.press(key);
